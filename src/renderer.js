@@ -28491,6 +28491,22 @@ async function _slskCorrectQuery(query) {
   return { query: query, correction: null }
 }
 
+// Put the section into its "searching" state and clear the last query's cards.
+// Called once before the spelling-correction lookup (which is a network round
+// trip) and again once the real search is about to start, so there is never a
+// window where the previous album's results are on screen under a new query.
+function _slskBeginSearchPaint(query) {
+  slsk.lastQuery = query
+  slsk.searching = true
+  slsk.searched  = false
+  slsk.throttledRecently = false
+  slsk.results   = []
+  slsk.pendingSearches = 0
+  slsk.searchStart = Date.now()
+  const sectionEarly = document.getElementById('slsk-section')
+  if (sectionEarly) { sectionEarly.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+}
+
 async function runSlskSearch(query) {
   // Second positional arg (opts) is read via arguments so the function signature
   // stays exactly `runSlskSearch(query)` — several structure tests grep for that
@@ -28510,6 +28526,11 @@ async function runSlskSearch(query) {
   // was the verified dead end.
   if (!opts.skipCorrect && slsk.lastQuery !== query && slsk.noCorrectFor !== query) {
     slsk.correction = null
+    // _slskCorrectQuery is a network lookup with a six-second timeout. Until
+    // this paint existed, the PREVIOUS query's cards sat on screen the whole
+    // time, with no searching state — you typed a new album and the old one's
+    // results looked like the answer.
+    _slskBeginSearchPaint(query)
     var fix = await _slskCorrectQuery(query)
     if (!current()) return // superseded while awaiting the suggestion
     if (fix.correction) {
@@ -28542,14 +28563,7 @@ async function runSlskSearch(query) {
   if (navQ) navQ.textContent = query
 
   // Show "Searching…" immediately — avoids flash while status is fetched
-  slsk.searching = true
-  slsk.searched  = false
-  slsk.throttledRecently = false
-  slsk.results   = []
-  slsk.pendingSearches = 0
-  slsk.searchStart = Date.now()
-  const sectionEarly = document.getElementById('slsk-section')
-  if (sectionEarly) { sectionEarly.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+  _slskBeginSearchPaint(query)
 
   await refreshSlskStatus()
 
