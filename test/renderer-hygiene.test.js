@@ -127,7 +127,11 @@ test('preload.on returns an unsubscribe function', () => {
   // off() is removeAllListeners on the channel, so two subscribers to
   // slsk-progress tore down each other.
   const on = PRELOAD.slice(PRELOAD.indexOf('  on: (channel, cb) => {'), PRELOAD.indexOf('  off: (channel)'))
-  assert.match(on, /return \(\) => ipcRenderer\.removeListener\(channel, h\)/)
+  // Its OWN listener, by handle -- never removeAllListeners on the channel.
+  assert.match(on, /ipcRenderer\.removeListener\(channel, h\)/)
+  assert.ok(!/removeAllListeners/.test(on), 'the per-subscriber unsubscribe must not tear down the channel')
+  // And the unsubscribe is what `on` hands back.
+  assert.match(on, /return \(\) => \{[\s\S]*ipcRenderer\.removeListener\(channel, h\)/)
   assert.match(on, /if \(!allowed\.includes\(channel\)\) return \(\) => \{\}/,
     'a disallowed channel must still return something callable')
 })
