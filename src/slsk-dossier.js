@@ -115,7 +115,7 @@
       <div class="slr-sec" id="slr-compare"><b>Tracks vs yours</b>${m.compareHtml || '<div class="slr-muted">You don\'t have this album.</div>'}</div>`
   }
 
-  function open({ album, username, host, deps, siblings }) {
+  function open({ album, username, host, deps, siblings, autoVerify }) {
     const esc = deps.esc || (s => String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'))
     const showSnackbar = deps.showSnackbar || (() => {})
@@ -225,7 +225,13 @@
         case 'chat': if (deps.openSlskChat) deps.openSlskChat(username); break
       }
     })
-    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close() } }
+    // A room teardown wipes host.innerHTML, which removes this root without
+    // ever calling close() — so the listener would outlive the panel. First
+    // keystroke after that unhooks it.
+    function onKey(e) {
+      if (!root.isConnected) { document.removeEventListener('keydown', onKey, true); return }
+      if (e.key === 'Escape') { e.stopPropagation(); close() }
+    }
     document.addEventListener('keydown', onKey, true)
     function close() { document.removeEventListener('keydown', onKey, true); root.remove() }
 
@@ -234,7 +240,12 @@
     try { const c = localStorage.getItem('slr_rip:' + username + ':' + album.folderPath); if (c) { const r = JSON.parse(c); if (r && r.at && Date.now() - r.at < 30 * 86400e3) { m.rip = r; repaintBody() } } } catch (_) {}
     if (window.api && window.api.discogsAlbum) window.api.discogsAlbum({ artist: m.artist, album: m.title }).then(r => { m.reception = r; if (root.isConnected) repaintBody() }).catch(() => {})
     if (window.api && window.api.artistInfo && m.artist) window.api.artistInfo({ artist: m.artist }).then(r => { m.about = r; if (root.isConnected) repaintBody() }).catch(() => {})
-    requestAnimationFrame(() => root.classList.add('is-open'))
+    requestAnimationFrame(() => {
+      root.classList.add('is-open')
+      // "Verify this rip" opens the dossier and starts the check in one go;
+      // a cached verdict already on screen is answer enough.
+      if (autoVerify && !m.rip) verify()
+    })
     return { close }
   }
 

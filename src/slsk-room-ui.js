@@ -11,6 +11,7 @@
 
   function modeKey(username) { return 'slsk_lib_mode:' + String(username || '').toLowerCase() }
   function sortKey(username) { return 'slsk_hunt_sort:' + String(username || '').toLowerCase() }
+  function audioKey(username) { return 'slsk_folders_audio:' + String(username || '').toLowerCase() }
 
   // localStorage is user-editable and outlives any rename of these comparators,
   // so a stored sort is only honoured when it names one sortRows actually has.
@@ -73,6 +74,10 @@
     let tree = null, albums = [], shelves = null, fresh = [], columns = null, dead = false
     let searchEl = null
     const hunt = { sort: 'verdict', dir: 'asc', filter: null, query: '' }
+    // Mirrors slsk-columns' own defaults — audio-only ON, surround-only off.
+    const folders = { audioOnly: true, surroundOnly: false }
+    try { const v = localStorage.getItem(audioKey(username)); if (v != null) folders.audioOnly = v === '1' } catch (_) {}
+    let lastStatus = null
     const albumsByPath = new Map()
     // Identity set, so a card can ask "is this one of the ones I lack?" in O(1)
     // instead of an includes() scan per card.
@@ -87,7 +92,10 @@
           <div class="slr-muted">${esc([hm.line, ((hm.stats && hm.stats.albums) || 0).toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · '))}<span id="slr-cache" class="slr-cache"></span></div>
           <div class="slr-modes" role="tablist">${['hunt', 'wander', 'folders'].map(m => `<button role="tab" class="slr-mode${m === mode ? ' is-on' : ''}" data-mode="${m}" aria-selected="${m === mode}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
         </div>
-        <div class="slr-head-tools"><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
+        <div class="slr-head-tools"><span class="slr-folder-filters" id="slr-folder-filters"${mode === 'folders' ? '' : ' hidden'}>
+            <label class="slr-toggle"><input type="checkbox" id="slr-f-audio"${folders.audioOnly ? ' checked' : ''}> Audio only</label>
+            <label class="slr-toggle"><input type="checkbox" id="slr-f-surround"${folders.surroundOnly ? ' checked' : ''}> Surround only</label>
+          </span><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
       headEl.querySelector('#slr-close').addEventListener('click', () => deps.onClose && deps.onClose())
       headEl.querySelectorAll('.slr-mode').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)))
       searchEl = headEl.querySelector('#slr-search')
@@ -100,6 +108,21 @@
           else paintBody()
         }, 160)
       })
+      const audioBox = headEl.querySelector('#slr-f-audio')
+      const surroundBox = headEl.querySelector('#slr-f-surround')
+      audioBox.addEventListener('change', () => {
+        folders.audioOnly = audioBox.checked
+        try { localStorage.setItem(audioKey(username), folders.audioOnly ? '1' : '0') } catch (_) {}
+        applyFolderFilters()
+      })
+      surroundBox.addEventListener('change', () => {
+        folders.surroundOnly = surroundBox.checked
+        applyFolderFilters()
+      })
+    }
+
+    function applyFolderFilters() {
+      if (columns) columns.setFilters({ audioOnly: folders.audioOnly, surroundOnly: folders.surroundOnly })
     }
 
     // The columns module drops its own query when a search hit is clicked, but
@@ -118,15 +141,17 @@
       mode = m
       try { localStorage.setItem(modeKey(username), m) } catch (_) {}
       headEl.querySelectorAll('.slr-mode').forEach(b => { b.classList.toggle('is-on', b.dataset.mode === m); b.setAttribute('aria-selected', String(b.dataset.mode === m)) })
+      const ff = headEl.querySelector('#slr-folder-filters')
+      if (ff) ff.hidden = m !== 'folders'
       paintBody()
     }
 
-    function openDossier(album) {
+    function openDossier(album, opts) {
       const D = typeof window !== 'undefined' ? window.PapaSlskDossier : null
       const Wm = W()
       if (!D) return
       const sibs = Wm ? albums.filter(a => a !== album && a.artist && album.artist && Wm.norm(a.artist) === Wm.norm(album.artist)) : []
-      D.open({ album, username, host: root, deps: { ...deps, openDossier }, siblings: sibs })
+      D.open({ album, username, host: root, deps: { ...deps, openDossier }, siblings: sibs, autoVerify: !!(opts && opts.autoVerify) })
     }
 
     function cardHtml(a) {
@@ -272,7 +297,15 @@
       }
     }
 
-    function onFoldersClick() { clearSearchBox() }
+    // Any click inside the columns navigates, and navigating drops the module's
+    // surround-only list — so the toggle must follow it back down.
+    function onFoldersClick() {
+      clearSearchBox()
+      if (!folders.surroundOnly) return
+      folders.surroundOnly = false
+      const box = headEl.querySelector('#slr-f-surround')
+      if (box) box.checked = false
+    }
 
     function paintFolders() {
       bodyEl.innerHTML = ''
@@ -282,6 +315,7 @@
         return
       }
       columns = C.mount({ host: bodyEl, tree, username, deps, albumsByPath, openDossier })
+      applyFolderFilters()
       if (hunt.query) columns.search(hunt.query)
       bodyEl.addEventListener('click', onFoldersClick)
     }
@@ -295,35 +329,163 @@
     }
 
     // ── Load ─────────────────────────────────────────────────────────────────
-    const res = await window.api.slskBrowseUser({ username }).catch(e => ({ error: e.message }))
-    if (dead || !host.isConnected) return
-    if (!res || res.error || !Array.isArray(res.directories)) {
-      bodyEl.innerHTML = `<div class="slr-empty">Could not read this library. ${esc((res && res.error) || '')}</div>`
+    // The whole library in one IPC reply was measured at ~1.8 s of frozen
+    // window on a large share, none of it interruptible. So when the engine
+    // has the sliced handlers, pull it Begin/Chunk/End and build the tree
+    // cooperatively, with the loading line doubling as the progress readout.
+    // Without them, the single-shot call behaves exactly as it always did.
+    let browseFp = null, fromCache = false, cachedAt = 0, newDirs = []
+
+    function noteNewDirs(reply) {
+      if (reply && Array.isArray(reply.newDirs) && reply.newDirs.length) newDirs = reply.newDirs
+    }
+    function loadingLine(pct) {
+      const el = bodyEl.querySelector('.slr-loading')
+      if (!el || !el.isConnected) return
+      el.textContent = `Reading ${username}'s library… ${Math.max(0, Math.min(100, Math.round(pct)))}%`
+    }
+    function paintCacheLine(text) {
+      const el = headEl.querySelector('#slr-cache')
+      if (el) el.textContent = text
+    }
+    function cacheText() {
+      if (!fromCache) return ''
+      return ' · from cache' + (cachedAt ? ', ' + Math.round((Date.now() - cachedAt) / 60000) + ' min old' : '')
+    }
+
+    async function pullBrowse() {
+      const SHm = SH()
+      const streaming = !!(window.api.slskBrowseBegin && SHm && SHm.createTreeBuilder)
+      const res = streaming
+        ? await window.api.slskBrowseBegin({ username }).catch(e => ({ error: e.message }))
+        : await window.api.slskBrowseUser({ username }).catch(e => ({ error: e.message }))
+      if (!res || res.error || (streaming ? res.ok === false : !Array.isArray(res.directories))) {
+        return { error: (res && res.error) || '' }
+      }
+      fromCache = !!res.fromCache
+      cachedAt = Number(res.cachedAt) || 0
+      noteNewDirs(res)
+      if (!streaming) return { tree: T().buildTree(res.directories) }
+      const builder = SHm.createTreeBuilder()
+      const total = Number(res.dirCount) || 0
+      let pulled = 0
+      let failure = null
+      try {
+        for (let off = 0; off < total; off += 400) {
+          // Leaving the page is simply "stop asking" — no cancel protocol.
+          if (dead || !host.isConnected) return { aborted: true }
+          const slice = await window.api.slskBrowseChunk({ token: res.token, offset: off, limit: 400 }).catch(() => null)
+          // An expired token must not read as "the library ends here".
+          if (!slice || !slice.ok) {
+            failure = { error: slice && slice.expired ? 'That browse timed out — open it again.' : '' }
+            break
+          }
+          builder.add(slice.directories || [])
+          pulled += (slice.directories || []).length
+          if (total) loadingLine((pulled / total) * 100)
+        }
+      } finally {
+        // Main hashed the payload while we pulled and hands the hash back.
+        try {
+          const end = await window.api.slskBrowseEnd({ token: res.token })
+          if (end && end.fingerprint) browseFp = end.fingerprint
+          noteNewDirs(end)
+        } catch (_) {}
+      }
+      if (failure) return failure
+      if (dead || !host.isConnected) return { aborted: true }
+      return { tree: builder.finish() }
+    }
+
+    // Albums, shelves and the fresh set, all derived from whatever `tree` is.
+    // Returns false when the page died mid-build.
+    async function buildFromTree() {
+      const SHm = SH()
+      albums = SHm.extractAlbumsChunked ? await SHm.extractAlbumsChunked(tree, { minTracks: 2, shouldAbort: () => dead }) : SHm.extractAlbums(tree, { minTracks: 2 })
+      albums = albums || []
+      if (dead || !host.isConnected) return false
+      albumsByPath.clear()
+      for (const a of albums) albumsByPath.set(String(a.folderPath).toLowerCase(), a)
+      const detect = SF() ? SF().detectSurround : null
+      shelves = SHm.buildShelvesChunked ? await SHm.buildShelvesChunked(albums, state.library, { detectSurround: detect, shouldAbort: () => dead }) : SHm.buildShelves(albums, state.library, { detectSurround: detect })
+      if (dead || !shelves || !host.isConnected) return false
+      missingSet = new Set(shelves.missing || [])
+      for (const u of shelves.upgrades) albumsByPath.set(String(u.folderPath).toLowerCase(), u)
+      const nd = new Set((newDirs || []).map(x => String(x).toLowerCase()))
+      fresh = nd.size ? albums.filter(a => nd.has(String(a.folderPath).toLowerCase())) : []
+      return true
+    }
+
+    function repaintHead() {
+      const Wm = W()
+      paintHead(headerModel(shelves.stats, Wm ? Wm.characterLine(tree, albums) : '', lastStatus))
+      if (searchEl && hunt.query) searchEl.value = hunt.query
+    }
+
+    // A background refresh landing means what is on screen is now stale.
+    // Subscribed BEFORE the first pull: slsk-browse-begin kicks the refresh
+    // itself, so a fast one could land with nobody listening.
+    let offBrowseRefreshed = null
+    if (window.api && typeof window.api.onSlskBrowseRefreshed === 'function') {
+      offBrowseRefreshed = window.api.onSlskBrowseRefreshed(async (evt) => {
+        if (dead || !host.isConnected) return
+        if (!evt || String(evt.username || '') !== String(username)) return
+        try {
+          // Same hash as the one this page opened with: nothing changed.
+          if (evt.fingerprint && browseFp && evt.fingerprint === browseFp) {
+            fromCache = true
+            cachedAt = Date.now()
+            paintCacheLine(' · Updated just now')
+            return
+          }
+          // The refresh wrote the cache a moment ago, so read it rather than
+          // making slskd serve the whole library a second time.
+          const res = await window.api.slskBrowseUser({ username }).catch(() => null)
+          if (!res || !Array.isArray(res.directories) || dead || !host.isConnected) return
+          const SHm = SH()
+          let fp = null
+          if (SHm && SHm.fingerprintBrowseChunked) {
+            fp = await SHm.fingerprintBrowseChunked(res.directories, { shouldAbort: () => dead }).catch(() => null)
+          }
+          if (dead || !host.isConnected) return
+          fromCache = !!res.fromCache
+          cachedAt = Number(res.cachedAt) || Date.now()
+          // Identical content: the multi-second rebuild would reproduce exactly
+          // what is already painted. Freshen the provenance line and stop.
+          if (fp && browseFp && fp === browseFp) { paintCacheLine(' · Updated just now'); return }
+          if (fp) browseFp = fp
+          noteNewDirs(res)
+          const next = (SHm && SHm.buildTreeChunked)
+            ? await SHm.buildTreeChunked(res.directories, { shouldAbort: () => dead })
+            : T().buildTree(res.directories)
+          if (!next || dead || !host.isConnected) return
+          tree = next
+          if (!(await buildFromTree())) return
+          repaintHead()
+          paintCacheLine(' · Updated just now')
+          paintBody()
+        } catch (_) { /* a failed refresh must never disrupt the open page */ }
+      })
+    }
+
+    const first = await pullBrowse()
+    if (dead || !host.isConnected || first.aborted) return
+    if (first.error !== undefined || !first.tree) {
+      bodyEl.innerHTML = `<div class="slr-empty">Could not read this library. ${esc(first.error || '')}</div>`
       return
     }
-    tree = T().buildTree(res.directories)
-    albums = SH().extractAlbumsChunked ? await SH().extractAlbumsChunked(tree, { minTracks: 2, shouldAbort: () => dead }) : SH().extractAlbums(tree, { minTracks: 2 })
-    albums = albums || []
-    if (dead) return
-    for (const a of albums) albumsByPath.set(String(a.folderPath).toLowerCase(), a)
-    const detect = SF() ? SF().detectSurround : null
-    shelves = SH().buildShelvesChunked ? await SH().buildShelvesChunked(albums, state.library, { detectSurround: detect, shouldAbort: () => dead }) : SH().buildShelves(albums, state.library, { detectSurround: detect })
-    if (dead || !shelves) return
-    missingSet = new Set(shelves.missing || [])
-    for (const u of shelves.upgrades) albumsByPath.set(String(u.folderPath).toLowerCase(), u)
-    const nd = new Set((res.newDirs || []).map(s => String(s).toLowerCase()))
-    fresh = nd.size ? albums.filter(a => nd.has(String(a.folderPath).toLowerCase())) : []
+    tree = first.tree
+    if (!(await buildFromTree())) return
     try {
-      const s = localStorage.getItem(sortKey(username))
-      if (s) { const [k, d] = s.split(':'); if (SORT_KEYS.includes(k) && SORT_DIRS.includes(d)) { hunt.sort = k; hunt.dir = d } }
+      const st0 = localStorage.getItem(sortKey(username))
+      if (st0) { const [k, d] = st0.split(':'); if (SORT_KEYS.includes(k) && SORT_DIRS.includes(d)) { hunt.sort = k; hunt.dir = d } }
     } catch (_) {}
     const statuses = window.api.slskUserStatuses ? await window.api.slskUserStatuses().catch(() => null) : null
-    if (dead) return
+    if (dead || !host.isConnected) return
     const st = statuses && (statuses[username] || (Array.isArray(statuses) && statuses.find(x => x.username === username)))
-    const Wm = W()
-    paintHead(headerModel(shelves.stats, Wm ? Wm.characterLine(tree, albums) : '', st ? { online: !!(st.online || st.isOnline || st.status === 'online'), queue: st.queueLength != null ? st.queueLength : st.queue } : null))
-    const cache = headEl.querySelector('#slr-cache')
-    if (cache && res.fromCache) cache.textContent = ' · from cache' + (res.cachedAt ? ', ' + Math.round((Date.now() - res.cachedAt) / 60000) + ' min old' : '')
+    lastStatus = st ? { online: !!(st.online || st.isOnline || st.status === 'online'), queue: st.queueLength != null ? st.queueLength : st.queue } : null
+    repaintHead()
+    paintCacheLine(cacheText())
     paintBody()
 
     // Background: seeds and tags for "Because you own", other peers for "Only here".
@@ -352,6 +514,7 @@
       close() {
         dead = true
         if (artObs) artObs.disconnect()
+        if (offBrowseRefreshed) { try { offBrowseRefreshed() } catch (_) {} offBrowseRefreshed = null }
         if (columns) columns.destroy()
         host.innerHTML = ''
       },

@@ -26,6 +26,9 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 .slr-mode.is-on{background:var(--text);color:var(--bg)}
 .slr-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .slr-head-tools{display:flex;gap:8px;align-items:center}
+.slr-folder-filters{display:flex;gap:10px;align-items:center}
+.slr-folder-filters[hidden]{display:none}
+.slr-toggle{display:flex;gap:4px;align-items:center;font-size:12px;color:var(--slr-muted);white-space:nowrap;cursor:pointer}
 .slr-search{width:260px;max-width:40vw;background:var(--glass);border:1px solid var(--hairline);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px}
 .slr-body{flex:1;min-height:0;overflow:auto;padding:16px 24px 40px}
 

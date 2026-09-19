@@ -177,7 +177,7 @@
         <div class="slr-muted">${esc([a && a.artist, a && a.year, q].filter(Boolean).join(' · '))}</div>
         <dl class="slr-kv"><dt>Tracks</dt><dd class="slr-mono">${num(m.tracks.length)}</dd><dt>Size</dt><dd class="slr-mono">${esc(fmtSize(m.size))}</dd>${ex ? `<dt>Extras</dt><dd>${esc(ex)}</dd>` : ''}${a && a.upgrade ? `<dt>Yours</dt><dd class="slr-mono">${esc(a.upgrade.yours || '')}</dd><dt>Verdict</dt><dd class="slr-v-up">upgrade</dd>` : ''}</dl>
         <div class="slr-tracks">${tracks}</div>
-        <div class="slr-acts"><button class="slr-btn slr-btn-pri" data-act="dl-album">Download album</button><button class="slr-btn" data-act="preview-first">Preview</button><button class="slr-btn" data-act="dossier">Open dossier</button></div></div>`
+        <div class="slr-acts"><button class="slr-btn slr-btn-pri" data-act="dl-album">Download album</button><button class="slr-btn" data-act="preview-first">Preview</button><button class="slr-btn" data-act="dossier">Open dossier</button><button class="slr-btn" data-act="dossier-verify">Verify this rip</button></div></div>`
     }
 
     // One flat column of results, used by both search and the surround filter.
@@ -283,13 +283,13 @@
               })
             }
             break
-          case 'dossier':
+          case 'dossier': case 'dossier-verify':
             if (openDossier) {
               openDossier(m.album || {
                 artist: '', album: m.name, folderName: m.name, folderPath: m.path,
                 files: m.node.files, totalSize: m.size,
                 lossless: m.tracks.every(t => /\.(flac|wav|ape|wv|alac|aiff?|dsf|dff)$/i.test(t.name)),
-              })
+              }, { autoVerify: act.dataset.act === 'dossier-verify' })
             }
             break
           case 'dl-tree': {
