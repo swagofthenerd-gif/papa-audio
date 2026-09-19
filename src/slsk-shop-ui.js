@@ -1938,7 +1938,24 @@
       if (!dlg.isConnected) return
       if (!evt || String(evt.username || '') !== String(username)) return
       try {
-        const fresh = await window.api.slskBrowseUser({ username, noCache: true }).catch(() => null)
+        // Main sends the fresh payload's hash. Same hash as the one this shop
+        // opened with: freshen the provenance line and stop — no pull, no
+        // rebuild. This is the case on nearly every open.
+        if (evt.fingerprint && shBrowseFp && evt.fingerprint === shBrowseFp) {
+          shFromCache = true
+          shCachedAt = Date.now()
+          const hero = shBody.querySelector('.slsh-hero-cache')
+          if (hero) { hero.classList.remove('slsh-hero-pulse'); hero.textContent = 'from cache · updated ' + _shAgo(shCachedAt) }
+          return
+        }
+        // The library really changed. Never rebuild under a moving finger:
+        // wait for the scroll to settle and for an idle moment.
+        while (shScrolling && dlg.isConnected) await new Promise(r => setTimeout(r, 250))
+        if (!dlg.isConnected) return
+        await new Promise(r => (window.requestIdleCallback || (cb => setTimeout(cb, 50)))(r))
+        // The cache was written a moment ago by the refresh itself, so read it —
+        // `noCache` here re-fetched the whole library from slskd a second time.
+        const fresh = await window.api.slskBrowseUser({ username }).catch(() => null)
         if (!fresh || !fresh.ok || !dlg.isConnected) return
         // W-S2: fingerprint the fresh payload first. Identical content means
         // the multi-second rebuild would reproduce exactly what is on screen —

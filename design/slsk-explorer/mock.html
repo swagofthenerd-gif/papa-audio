@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soulseek Explorer — design mock</title>
+<link rel="stylesheet" href="../../src/styles.css">
+<link rel="stylesheet" href="explorer.css">
+<style>
+  /* Mock scaffolding only. The app locks html/body to the viewport; the mock
+     is a scrolling gallery of frames, so it unlocks them here and nowhere else. */
+  html.slx-mock, html.slx-mock body { height: auto; overflow: auto; user-select: text; }
+  .slx-mock-nav {
+    position: sticky; top: 0; z-index: 50; display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    padding: 10px 20px; background: var(--bg); border-bottom: 1px solid var(--hairline); font-size: 12px;
+  }
+  .slx-mock-nav a { color: var(--text2); text-decoration: none; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); }
+  .slx-mock-nav a:hover { color: var(--text); }
+  .slx-mock-nav .slx-mock-tog { margin-left: auto; }
+  .slx-mock-sec { padding: 28px 20px 8px; }
+  .slx-mock-sec h2 { font: 500 15px/1.2 'Newsreader', Georgia, serif; color: var(--text); letter-spacing: .01em; }
+  .slx-mock-sec p { font-size: 12px; color: var(--text2); margin: 4px 0 12px; max-width: 900px; }
+  .slx-mock-frame {
+    height: 640px; max-width: 1400px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35); resize: horizontal; min-width: 1024px;
+  }
+  .slx-mock-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+  html.slx-mock-only body { background: transparent; }
+  html.slx-mock-only .slx-mock-nav, html.slx-mock-only .slx-mock-sec:not(.is-only) { display: none; }
+  html.slx-mock-only .slx-mock-sec.is-only { padding: 0; }
+  html.slx-mock-only .slx-mock-sec.is-only h2, html.slx-mock-only .slx-mock-sec.is-only p { display: none; }
+  html.slx-mock-only .slx-mock-frame { border: 0; border-radius: 0; box-shadow: none; max-width: none; height: 100vh; min-width: 0; }
+</style>
+</head>
+<body>
+<nav class="slx-mock-nav" aria-label="Mock states">
+  <a href="#loading">Loading</a><a href="#populated">Populated</a><a href="#batch">Batch bar</a>
+  <a href="#compare">Compare drawer</a><a href="#empty">Empty</a><a href="#error">Error</a><a href="#light">Light theme</a>
+  <button class="slx-btn slx-mock-tog" id="mock-theme" type="button">Toggle theme</button>
+</nav>
+
+<section class="slx-mock-sec" id="loading"><h2>1 · Loading</h2>
+  <p>Skeletons take the exact shape of what they stand in for — header, one rail, the grid — so nothing jumps when the file list lands.</p>
+  <div class="slx-mock-frame" data-state="loading"></div></section>
+
+<section class="slx-mock-sec" id="populated"><h2>2 · Populated</h2>
+  <p>Header, peer sidebar, sticky filter bar, five rails, then the full grid. Hover or Tab into a card: it lifts, the action row and checkbox reveal (Play is always visible — the app rule). Chips toggle. The search box widens on focus.</p>
+  <div class="slx-mock-frame" data-state="populated"></div></section>
+
+<section class="slx-mock-sec" id="batch"><h2>3 · Batch bar shown</h2>
+  <p>Three cards selected; the bar rises 18 px above the bottom edge. Tick more checkboxes — the count ticks. Replace is amber-inked because it overwrites.</p>
+  <div class="slx-mock-frame" data-state="batch"></div></section>
+
+<section class="slx-mock-sec" id="compare"><h2>4 · Compare drawer open</h2>
+  <p>Peer copy vs yours, track by track. Verdict glyphs: ▲ better · = same · ▼ worse · ○ missing on one side. The count mismatch disables Replace and says why.</p>
+  <div class="slx-mock-frame" data-state="compare"></div></section>
+
+<section class="slx-mock-sec" id="empty"><h2>5 · Empty</h2>
+  <p>The peer is online but shares nothing readable.</p>
+  <div class="slx-mock-frame" data-state="empty"></div></section>
+
+<section class="slx-mock-sec" id="error"><h2>6 · Error</h2>
+  <p>slskd could not fetch the list (peer offline or timed out). Retry is primary; the dry-run pill sits in the header tools untouched.</p>
+  <div class="slx-mock-frame" data-state="error"></div></section>
+
+<section class="slx-mock-sec" id="light"><h2>7 · Light theme</h2>
+  <p>The same populated page rendered with the app's real <code>body.theme-light</code> tokens (this frame is this file, embedded with <code>?theme=light</code>).</p>
+  <div class="slx-mock-frame"><iframe title="Light theme" src="mock.html?theme=light&only=compare"></iframe></div></section>
+
+<script>
+(function () {
+  'use strict'
+  const q = new URLSearchParams(location.search)
+  document.documentElement.classList.add('slx-mock')
+  if (q.get('theme') === 'light') document.body.classList.add('theme-light')
+  const only = q.get('only')
+  if (only) {
+    document.documentElement.classList.add('slx-mock-only')
+    const sec = document.getElementById(only); if (sec) sec.classList.add('is-only')
+  }
+  document.getElementById('mock-theme').addEventListener('click', () => {
+    document.body.classList.toggle('theme-light')
+    document.querySelectorAll('iframe').forEach(f => { try { f.contentDocument.body.classList.toggle('theme-light') } catch (_) {} })
+  })
+
+  // ── Fake data ────────────────────────────────────────────────────────────
+  const PEER = { name: 'substrata_hifi', albums: 7612, tracks: 91340, size: '2.9 TB', speed: '1.8 MB/s', queue: 3, lastVisit: '3 days ago', newSince: 42, common: 138 }
+  const tier = (bits, rate, ch, fmt) => fmt !== 'FLAC' ? 'lossy' : ch > 2 ? 'surround' : (bits >= 24 || rate >= 88.2) ? 'hires' : 'lossless'
+  const TIER_LABEL = { hires: 'Hi-Res', surround: 'Surround', lossless: 'Lossless', lossy: 'Lossy' }
+  const A = [
+    ['Spirit of Eden', 'Talk Talk', 1988, 'FLAC', 24, 96, 2, 6, '1.32 GB', 'new inlib'],
+    ['Gaucho', 'Steely Dan', 1980, 'FLAC', 24, 88.2, 6, 7, '2.41 GB', 'new upgrade', { yours: '16/44.1 · 7', theirs: '24/88.2 · 5.1' }],
+    ['Kind of Blue', 'Miles Davis', 1959, 'FLAC', 24, 192, 2, 5, '1.94 GB', 'upgrade', { yours: '16/44.1 · 5', theirs: '24/192', count: '6 tracks · yours 5' }],
+    ['In Rainbows', 'Radiohead', 2007, 'FLAC', 16, 44.1, 2, 10, '318 MB', 'inlib'],
+    ['Rumours', 'Fleetwood Mac', 1977, 'FLAC', 24, 96, 6, 11, '3.02 GB', 'surround upgrade', { yours: '16/44.1 · stereo', theirs: '24/96 · 5.1' }],
+    ['Music Has the Right to Children', 'Boards of Canada', 1998, 'FLAC', 16, 44.1, 2, 17, '451 MB', 'missing new'],
+    ['Aja', 'Steely Dan', 1977, 'FLAC', 24, 176.4, 2, 7, '1.71 GB', 'missing'],
+    ['The Dark Side of the Moon', 'Pink Floyd', 1973, 'FLAC', 24, 96, 6, 10, '2.88 GB', 'surround'],
+    ['Blue', 'Joni Mitchell', 1971, 'FLAC', 24, 192, 2, 10, '2.12 GB', 'missing new'],
+    ['Discovery', 'Daft Punk', 2001, 'MP3', 0, 44.1, 2, 14, '112 MB', 'lossy inlib'],
+    ['Laughing Stock', 'Talk Talk', 1991, 'FLAC', 16, 44.1, 2, 6, '287 MB', 'missing'],
+    ['Brothers in Arms', 'Dire Straits', 1985, 'FLAC', 24, 96, 6, 9, '2.55 GB', 'surround new'],
+    ['Selected Ambient Works 85–92', 'Aphex Twin', 1992, 'FLAC', 16, 44.1, 2, 13, '402 MB', 'inlib'],
+    ['Graceland', 'Paul Simon', 1986, 'FLAC', 24, 96, 2, 11, '1.48 GB', 'upgrade', { yours: 'MP3 320', theirs: '24/96 FLAC' }],
+    ['A Love Supreme', 'John Coltrane', 1965, 'FLAC', 24, 192, 2, 4, '1.66 GB', 'missing'],
+    ['Wish You Were Here', 'Pink Floyd', 1975, 'FLAC', 24, 96, 6, 5, '2.31 GB', 'surround'],
+    ['Untrue', 'Burial', 2007, 'FLAC', 16, 44.1, 2, 13, '384 MB', 'missing new'],
+    ['Hejira', 'Joni Mitchell', 1976, 'FLAC', 24, 192, 2, 9, '2.04 GB', 'upgrade', { yours: '16/44.1', theirs: '24/192' }],
+    ['Random Access Memories', 'Daft Punk', 2013, 'FLAC', 24, 88.2, 2, 13, '1.83 GB', 'inlib'],
+    ['Court and Spark', 'Joni Mitchell', 1974, 'FLAC', 16, 44.1, 2, 11, '301 MB', 'missing'],
+  ].map(([title, artist, year, fmt, bits, rate, ch, n, size, flags, up], i) => ({ id: i, title, artist, year, fmt, bits, rate, ch, n, size, flags: flags.split(' '), up, tier: tier(bits, rate, ch, fmt) }))
+  const hue = s => Math.abs([...s].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+  // ── Renderers ────────────────────────────────────────────────────────────
+  const spec = a => a.fmt !== 'FLAC' ? 'MP3 320' : `${a.bits}/${a.rate}${a.ch > 2 ? ' · 5.1' : ''}`
+  function card(a, { selected = false, skel = false } = {}) {
+    if (skel) return `<div class="slx-card slx-skel-card" aria-hidden="true">
+      <div class="slx-card-art slx-skel"></div>
+      <div class="slx-card-title"><span class="slx-skel slx-skel-text" style="width:78%"></span></div>
+      <div class="slx-card-artist"><span class="slx-skel slx-skel-text" style="width:55%"></span></div>
+      <span class="slx-q slx-skel" style="width:88px;height:18px"></span></div>`
+    const h = hue(a.title), inlib = a.flags.includes('inlib') || a.flags.includes('upgrade'), upg = a.flags.includes('upgrade')
+    return `<article class="slx-card${selected ? ' is-selected' : ''}${inlib ? ' is-inlib' : ''}" data-tier="${a.tier}" data-id="${a.id}" tabindex="0"
+        aria-label="${esc(a.title)}, ${esc(a.artist)}, ${a.year}, ${TIER_LABEL[a.tier]} ${esc(spec(a))}${inlib ? ', in your library' : ''}">
+      <div class="slx-card-art">
+        <div class="slx-art-fb" style="background:linear-gradient(135deg,hsl(${h},42%,22%),hsl(${(h + 40) % 360},34%,12%))">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+        <span class="slx-label" title="${TIER_LABEL[a.tier]}" aria-hidden="true"></span>
+        ${inlib ? '<span class="slx-inlib">In Library</span>' : ''}
+        <label class="slx-sel" title="Select"><input type="checkbox" ${selected ? 'checked' : ''} aria-label="Select ${esc(a.title)}"></label>
+      </div>
+      <div class="slx-card-title">${esc(a.title)}</div>
+      <div class="slx-card-artist">${esc(a.artist)}<span class="slx-year">${a.year}</span></div>
+      <span class="slx-q">${TIER_LABEL[a.tier]} <span class="slx-q-spec">${esc(spec(a))}</span></span>
+      ${upg && a.up ? `<div class="slx-upgrade"><span class="slx-yours">${esc(a.up.yours)}</span><span class="slx-arrow">→</span><span class="slx-theirs">${esc(a.up.theirs)}</span>${a.up.count ? `<span class="slx-countwarn">${esc(a.up.count)}</span>` : ''}</div>` : ''}
+      <div class="slx-card-meta">${a.n} tracks · ${a.size}</div>
+      <div class="slx-acts">
+        <button class="slx-act" data-act="preview" title="Preview — hear it before you download" aria-label="Preview">⚡</button>
+        <button class="slx-act" data-act="play" title="Play" aria-label="Play">▶</button>
+        <button class="slx-act" data-act="download" title="Download" aria-label="Download">⬇</button>
+        ${upg ? `<button class="slx-act" data-act="replace" title="Replace your copy${a.up && a.up.count ? ' — ' + esc(a.up.count) : ''}" aria-label="Replace your copy">⇄</button>` : ''}
+        <button class="slx-act" data-act="wish" title="Add to wishlist" aria-label="Add to wishlist">＋</button>
+      </div>
+    </article>`
+  }
+  const railDefs = [
+    ['New since last visit', 'lossless', a => a.flags.includes('new'), `since ${PEER.lastVisit}`],
+    ['Upgrades for you', 'hires', a => a.flags.includes('upgrade'), 'better than your copy'],
+    ["You don't have these", 'missing', a => a.flags.includes('missing'), 'not in your library'],
+    ['Surround', 'surround', a => a.ch > 2, '5.1 masters'],
+    ['Hi-Res', 'hires', a => a.tier === 'hires', '24-bit or ≥ 88.2 kHz'],
+  ]
+  const railSkel = () => `<section class="slx-rail" aria-hidden="true">
+    <header class="slx-rail-head" style="--slx-spine:var(--slx-line-2)"><h3 class="slx-rail-title"><span class="slx-skel slx-skel-text" style="width:210px;height:20px"></span></h3></header>
+    <div class="slx-rail-track">${Array.from({ length: 8 }, () => card(null, { skel: true })).join('')}</div></section>`
+
+  const chip = (label, n, extra = '', pressed = false) => `<button class="slx-chip" type="button" aria-pressed="${pressed}" ${extra}>${label}${n != null ? ` <span class="slx-n">${n}</span>` : ''}</button>`
+  const filters = ({ count = 7612, total = 7612, skel = false } = {}) => `<div class="slx-filters" role="toolbar" aria-label="Filters">
+    <div class="slx-chipgroup" aria-label="Format">${chip('FLAC', '7,104', '', true)}${chip('MP3', '486', 'data-tier="lossy"')}${chip('Other', '22', 'data-tier="lossy"')}</div>
+    <div class="slx-chipgroup" aria-label="Bit depth">${chip('16-bit', '5,911')}${chip('24-bit', '1,193', 'data-tier="hires"')}</div>
+    <div class="slx-chipgroup" aria-label="Sample rate">${chip('44.1')}${chip('48')}${chip('88.2+', null, 'data-tier="hires"')}${chip('176+', null, 'data-tier="hires"')}</div>
+    <div class="slx-chipgroup" aria-label="Channels">${chip('Stereo')}${chip('Surround', '214', 'data-tier="surround"')}</div>
+    <div class="slx-chipgroup">${chip('Year ›')}${chip('Size ›')}</div>
+    <div class="slx-chipgroup" aria-label="Against your library">${chip('Not in my library', '7,474')}${chip('Better than mine', '61', 'data-tier="hires"')}${chip('New since last visit', PEER.newSince)}</div>
+    <div class="slx-filters-right">
+      <label class="slx-search"><span aria-hidden="true">⌕</span><input type="search" placeholder="Search this library…" aria-label="Search within this library"></label>
+      <select class="slx-sort" aria-label="Sort"><option>Sort · Quality</option><option>Year</option><option>Size</option><option>Artist</option><option>Newest</option></select>
+      ${skel ? '<span class="slx-count slx-skel slx-skel-text" style="width:92px"></span>' : `<span class="slx-count"><b>${count.toLocaleString()}</b> of ${total.toLocaleString()}</span>`}
+    </div></div>`
+
+  const header = ({ skel = false, offline = false, dry = false } = {}) => `<header class="slx-head">
+    <div>
+      <div class="slx-eyebrow">Explore library</div>
+      <div class="slx-head-title">
+        <h1 class="slx-peer">${skel ? '<span class="slx-skel slx-skel-text" style="width:260px;height:28px"></span>' : `${esc(PEER.name)}<em>’s shelves</em>`}</h1>
+        <span class="slx-presence ${offline ? '' : 'is-online'}" role="img" aria-label="${offline ? 'Offline' : 'Online'}"></span>
+      </div>
+      ${skel ? `<div class="slx-stats"><span class="slx-skel slx-skel-text" style="width:420px"></span></div>`
+             : `<div class="slx-stats"><span class="slx-stat"><b>${PEER.albums.toLocaleString()}</b> albums</span><span class="slx-stat"><b>${PEER.tracks.toLocaleString()}</b> tracks</span><span class="slx-stat"><b>${PEER.size}</b></span><span class="slx-stat"><b>${PEER.speed}</b> upload</span><span class="slx-stat">queue <b>${PEER.queue}</b></span></div>
+                <div class="slx-visit">Last visit ${PEER.lastVisit}<span class="slx-new-count"><b>${PEER.newSince}</b> new since</span></div>`}
+    </div>
+    <div class="slx-head-tools">
+      ${dry ? '<span class="dry-run-pill" id="dry-run-pill">DRY RUN</span>' : ''}
+      <div class="slx-viewtoggle" role="group" aria-label="View"><button type="button" aria-pressed="true">Shelves</button><button type="button" aria-pressed="false">Folders</button></div>
+      <button class="slx-icon-btn" type="button" aria-label="Back" title="Back">←</button>
+      <button class="slx-icon-btn" type="button" aria-label="Close" title="Close">✕</button>
+    </div></header>`
+
+  const sidebar = () => `<aside class="slx-side" aria-label="Peer">
+    <div class="slx-side-sec"><div class="slx-side-h">Quick facts<button class="slx-btn slx-btn-ghost" type="button" style="padding:2px 6px;min-height:24px" aria-label="Collapse sidebar">‹</button></div>
+      <dl class="slx-facts"><dt>Country</dt><dd>Netherlands</dd><dt>Client</dt><dd>Nicotine+ 3.3</dd><dt>Slots</dt><dd>2 free</dd><dt>Seen</dt><dd>2 min ago</dd><dt>Avg speed</dt><dd>1.8 MB/s</dd></dl></div>
+    <div class="slx-side-sec"><div class="slx-common"><b>${PEER.common}</b><span>albums you both have</span></div></div>
+    <div class="slx-side-sec"><div class="slx-side-h">Shared folders</div>
+      <ul class="slx-tree">
+        <li><button type="button" aria-current="true" style="--depth:0"><span class="slx-tree-glyph">▾</span><span class="slx-tree-name">Music</span><span class="slx-tree-n">7,612</span></button></li>
+        <li><button type="button" style="--depth:1"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Hi-Res</span><span class="slx-tree-n">1,193</span></button></li>
+        <li><button type="button" style="--depth:1"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Surround (SACD, DVD-A, Blu-ray)</span><span class="slx-tree-n">214</span></button></li>
+        <li><button type="button" style="--depth:1"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Jazz</span><span class="slx-tree-n">1,840</span></button></li>
+        <li><button type="button" style="--depth:1"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Rock</span><span class="slx-tree-n">2,913</span></button></li>
+        <li><button type="button" style="--depth:1"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Electronic</span><span class="slx-tree-n">1,452</span></button></li>
+        <li><button type="button" style="--depth:0"><span class="slx-tree-glyph">›</span><span class="slx-tree-name">Incoming</span><span class="slx-tree-n">38</span></button></li>
+      </ul></div>
+    <div class="slx-side-actions"><button class="slx-btn" type="button" aria-pressed="true">★ Saved</button><button class="slx-btn" type="button">✉ Message</button></div></aside>`
+
+
+  const batchbar = (n, hidden) => `<div class="slx-batchbar" role="region" aria-label="Selection" ${hidden ? 'hidden' : ''}>
+    <div class="slx-batch-n"><b class="slx-batch-count">${n}</b><span>selected</span> <span class="slx-batch-sub">· 6.4 GB · 1 upgrade</span></div>
+    <button class="slx-btn slx-btn-primary" type="button">⬇ Download</button>
+    <button class="slx-btn" data-act="replace" type="button">⇄ Replace</button>
+    <button class="slx-btn" type="button">＋ Wishlist</button>
+    <button class="slx-btn" type="button">Compare</button>
+    <button class="slx-btn slx-btn-ghost" type="button" data-act="clear">Clear</button></div>`
+
+  const drawer = (open) => {
+    const rows = [
+      ['Babylon Sisters', '5:51', '5:49', '24/88.2 · 5.1', '16/44.1', '221 MB', '41 MB', 'better'],
+      ['Hey Nineteen', '5:07', '5:05', '24/88.2 · 5.1', '16/44.1', '194 MB', '36 MB', 'better'],
+      ['Glamour Profession', '7:29', '7:29', '24/88.2 · 5.1', '16/44.1', '286 MB', '52 MB', 'better'],
+      ['Gaucho', '5:32', '5:31', '24/88.2 · 5.1', '16/44.1', '210 MB', '39 MB', 'better'],
+      ['Time Out of Mind', '4:13', '4:12', '24/88.2 · 5.1', '16/44.1', '160 MB', '30 MB', 'better'],
+      ['My Rival', '', '4:33', '', '16/44.1', '', '32 MB', 'missing'],
+      ['Third World Man', '', '5:15', '', '16/44.1', '', '37 MB', 'missing'],
+    ]
+    const V = { better: '▲', same: '=', worse: '▼', missing: '○' }
+    return `<aside class="slx-drawer${open ? ' is-open' : ''}" role="dialog" aria-modal="true" aria-label="Compare Gaucho">
+      <div class="slx-cmp-head">
+        <div><div class="slx-cmp-title">Gaucho</div><div class="slx-cmp-artist">Steely Dan · 1980</div></div>
+        <button class="slx-icon-btn slx-cmp-close" type="button" aria-label="Close compare">✕</button>
+        <div class="slx-cmp-sides">
+          <div class="slx-cmp-side" data-tier="surround"><div class="slx-cmp-side-h">${esc(PEER.name)}</div><span class="slx-q">Surround <span class="slx-q-spec">24/88.2 · 5.1</span></span><div class="slx-cmp-spec"><b>5</b> tracks · <b>2.41 GB</b> · SACD rip</div></div>
+          <div class="slx-cmp-side" data-tier="lossless"><div class="slx-cmp-side-h">Your copy</div><span class="slx-q">Lossless <span class="slx-q-spec">16/44.1</span></span><div class="slx-cmp-spec"><b>7</b> tracks · <b>267 MB</b> · 1980 CD</div></div>
+        </div>
+        <div class="slx-verdict is-mixed"><b>Higher resolution and surround,</b> but two tracks fewer than yours — a different edition, not a straight upgrade.</div>
+      </div>
+      <div class="slx-cmp-body"><table class="slx-cmp-table"><thead><tr><th>#</th><th>Title</th><th>Duration</th><th>Format</th><th>Size</th><th>Verdict</th></tr></thead><tbody>
+        ${rows.map(([t, d1, d2, f1, f2, s1, s2, v], i) => `<tr class="is-${v}" tabindex="0"><td class="slx-n">${i + 1}</td><td class="slx-t">${esc(t)}</td>
+          <td><div class="slx-pair"><span>${d1}</span><span class="slx-mine">${d2}</span></div></td>
+          <td><div class="slx-pair"><span>${f1}</span><span class="slx-mine">${f2}</span></div></td>
+          <td><div class="slx-pair"><span>${s1}</span><span class="slx-mine">${s2}</span></div></td>
+          <td><span class="slx-v is-${v}" role="img" aria-label="${v}">${V[v]}</span></td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="slx-cmp-foot"><span class="slx-reason">Replace disabled — 5 tracks vs your 7</span>
+        <button class="slx-btn" type="button" disabled title="Track counts differ">⇄ Replace</button>
+        <button class="slx-btn slx-btn-primary" type="button">⬇ Download</button>
+        <button class="slx-btn slx-btn-ghost" type="button">Close</button></div></aside><div class="slx-scrim${open ? ' is-open' : ''}"></div>`
+  }
+
+  function build(state) {
+    const sel = state === 'batch' ? [1, 4, 6] : []
+    const cardsFor = () => { A.forEach(a => { a._sel = sel.includes(a.id) }); return A }
+    let body, head = header({ dry: state === 'error' })
+    if (state === 'loading') {
+      head = header({ skel: true })
+      body = `${railSkel()}<section class="slx-grid-sec"><header class="slx-rail-head" style="--slx-spine:var(--slx-line-2)"><h3 class="slx-rail-title"><span class="slx-skel slx-skel-text" style="width:140px;height:20px"></span></h3></header>
+        <div class="slx-grid">${Array.from({ length: 14 }, () => card(null, { skel: true })).join('')}</div></section>`
+    } else if (state === 'empty') {
+      body = `<div class="slx-state"><div class="slx-state-sleeve" aria-hidden="true"></div><div class="slx-state-title">Nothing on the shelves</div>
+        <div class="slx-state-sub">${esc(PEER.name)} is online but shares no folders we can read — the list came back with 0 files. Some clients hide their shares until you message them.</div>
+        <div class="slx-state-acts"><button class="slx-btn slx-btn-primary" type="button">✉ Message ${esc(PEER.name)}</button><button class="slx-btn" type="button">Refresh</button></div></div>`
+    } else if (state === 'error') {
+      head = header({ offline: true, dry: true })
+      body = `<div class="slx-state is-error"><div class="slx-state-sleeve" aria-hidden="true"></div><div class="slx-state-title">Couldn’t reach ${esc(PEER.name)}</div>
+        <div class="slx-state-sub">slskd timed out fetching the file list after 30 s — the peer looks offline. <code>GET /users/${esc(PEER.name)}/browse → 504</code></div>
+        <div class="slx-state-acts"><button class="slx-btn slx-btn-primary" type="button">Retry</button><button class="slx-btn" type="button">Show cached shelves (3 days old)</button><button class="slx-btn slx-btn-ghost" type="button">Back</button></div></div>`
+    } else {
+      cardsFor()
+      const c = a => card(a, { selected: a._sel })
+      body = railDefs.map(([title, t, f, sub]) => { const items = A.filter(f); return `<section class="slx-rail" data-tier="${t}" aria-label="${esc(title)}"><header class="slx-rail-head"><h3 class="slx-rail-title">${esc(title)}</h3><span class="slx-rail-sub">${items.length * 37} albums · ${esc(sub)}</span><button class="slx-rail-seeall" type="button">See all</button></header><div class="slx-rail-track">${items.map(c).join('')}</div></section>` }).join('')
+      body += `<section class="slx-grid-sec" aria-label="Everything"><header class="slx-rail-head"><h3 class="slx-rail-title">Everything</h3><span class="slx-rail-sub">A → Z · ${PEER.albums.toLocaleString()} albums</span></header><div class="slx-grid" role="grid" aria-label="Albums">${A.map(c).join('')}${A.map(c).join('')}</div></section>`
+    }
+    const populated = !['loading', 'empty', 'error'].includes(state)
+    return `<div class="slsk-explore${sel.length ? ' slx-selecting' : ''}">
+      ${sidebar()}${head}${filters(populated ? {} : state === 'loading' ? { skel: true } : { count: 0 })}
+      <div class="slx-body"><div class="slx-body-inner">${body}</div>
+        ${populated ? batchbar(sel.length, sel.length === 0) : ''}
+        ${populated ? drawer(state === 'compare') : ''}
+      </div></div>`
+  }
+
+  // ── Mount + light interactivity ─────────────────────────────────────────
+  document.querySelectorAll('.slx-mock-frame[data-state]').forEach(f => { f.innerHTML = build(f.dataset.state) })
+
+  document.addEventListener('click', e => {
+    const root = e.target.closest('.slsk-explore'); if (!root) return
+    const chipEl = e.target.closest('.slx-chip, .slx-viewtoggle button, .slx-side-actions .slx-btn[aria-pressed]')
+    if (chipEl) {
+      if (chipEl.closest('.slx-viewtoggle')) chipEl.parentElement.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === chipEl)))
+      else chipEl.setAttribute('aria-pressed', String(chipEl.getAttribute('aria-pressed') !== 'true'))
+      return
+    }
+    if (e.target.closest('.slx-cmp-close, .slx-cmp-foot .slx-btn-ghost, .slx-scrim')) { root.querySelector('.slx-drawer')?.classList.remove('is-open'); root.querySelector('.slx-scrim')?.classList.remove('is-open'); return }
+    if (e.target.closest('.slx-batchbar .slx-btn:not([data-act="clear"])') && e.target.textContent.includes('Compare')) { root.querySelector('.slx-drawer')?.classList.add('is-open'); root.querySelector('.slx-scrim')?.classList.add('is-open'); return }
+    if (e.target.closest('[data-act="clear"]')) { root.querySelectorAll('.slx-sel input').forEach(i => { i.checked = false; i.closest('.slx-card').classList.remove('is-selected') }); sync(root); return }
+    if (e.target.closest('[aria-label="Collapse sidebar"]')) { root.classList.toggle('slx-side-collapsed'); return }
+    if (e.target.closest('.slx-act')) { e.stopPropagation(); return }
+  })
+  document.addEventListener('change', e => {
+    const cb = e.target.closest('.slx-sel input'); if (!cb) return
+    cb.closest('.slx-card').classList.toggle('is-selected', cb.checked); sync(cb.closest('.slsk-explore'))
+  })
+  function sync(root) {
+    const n = root.querySelectorAll('.slx-sel input:checked').length, bar = root.querySelector('.slx-batchbar'); if (!bar) return
+    const b = bar.querySelector('.slx-batch-count'); b.textContent = n; b.classList.remove('slx-tick'); void b.offsetWidth; b.classList.add('slx-tick')
+    bar.hidden = n === 0; root.classList.toggle('slx-selecting', n > 0)
+  }
+  // Roving grid focus: arrows move between cards, Space toggles selection.
+  document.addEventListener('keydown', e => {
+    const c = e.target.closest?.('.slx-card'); if (!c) return
+    const cards = [...c.parentElement.querySelectorAll('.slx-card')], i = cards.indexOf(c)
+    const cols = Math.max(1, Math.round(c.parentElement.clientWidth / (c.offsetWidth + 14)))
+    const go = { ArrowRight: i + 1, ArrowLeft: i - 1, ArrowDown: i + cols, ArrowUp: i - cols, Home: 0, End: cards.length - 1 }[e.key]
+    if (go != null) { e.preventDefault(); cards[Math.max(0, Math.min(cards.length - 1, go))]?.focus() }
+    if (e.key === ' ') { e.preventDefault(); const cb = c.querySelector('.slx-sel input'); cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })) }
+  })
+})()
+</script>
+</body>
+</html>

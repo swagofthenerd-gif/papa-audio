@@ -1,0 +1,690 @@
+/* ════════════════════════════════════════════════════════════════════════
+   SOULSEEK EXPLORER  ·  "Explore <peer>'s library" as a full page
+   ────────────────────────────────────────────────────────────────────────
+   Design deliverable only. Everything is scoped under `.slsk-explore` and
+   every class is prefixed `slx-`, so dropping this file into styles.css
+   changes nothing outside the explorer. It reads the app's existing tokens
+   (--bg*, --text*, --accent, --*-ink, --hairline, --r*, --ease*) and adds
+   its own only under the scope root.
+
+   The one idea carried everywhere: THE LABEL. A record's centre label is
+   the small coloured disc that tells you what pressing you are holding
+   before you read a word. Here every quality tier is a label colour —
+   gold = hi-res, plum = surround, green = lossless, stone = lossy — and
+   that disc appears identically on cards, chips, rail spines, the compare
+   drawer header and the verdict column. Rails carry a sleeve-edge spine in
+   the same colour. Nothing else is coloured, so colour always means one
+   thing: what the sound is made of.
+
+   Sections
+     1. Scope tokens (dark, then light)
+     2. Page frame (header · sidebar · filters · body · batch bar · drawer)
+     3. Header
+     4. Peer sidebar
+     5. Filter bar (sticky) + chips + sort + search
+     6. Rails (sleeve-edge motif)
+     7. Album card + label badge + actions + selection
+     8. Batch action bar
+     9. Compare drawer
+    10. States: loading skeletons · empty · error · dry-run pill
+    11. Motion + reduced-motion
+    12. Breakpoints
+   ════════════════════════════════════════════════════════════════════════ */
+
+
+/* ── 1. Scope tokens ─────────────────────────────────────────────────────
+   Inks are measured (see README): every ink clears 4.5:1 on every surface
+   it is allowed to sit on. "-fill" tokens are the translucent tints the ink
+   sits on inside a badge/chip; the README measures the ink against the
+   BLENDED result, not the raw card ground. */
+.slsk-explore {
+  /* type */
+  --slx-display:   'Newsreader', Georgia, 'Times New Roman', serif;
+  --slx-body:      'Poppins', -apple-system, 'Segoe UI', sans-serif;
+  --slx-mono:      var(--font-mono);
+
+  /* ink (text) — dark ground */
+  --slx-ink:       var(--text);           /* #f0f0f0 */
+  --slx-ink-2:     #a8a8a8;               /* secondary: ≥6.0:1 on bg…bg5 */
+  --slx-ink-3:     #8f8f8f;               /* tertiary: only on bg/bg2/bg3 */
+
+  /* surfaces */
+  --slx-ground:    var(--bg);
+  --slx-well:      var(--bg2);            /* sidebar, filter bar */
+  --slx-card:      var(--bg3);
+  --slx-card-hi:   var(--bg4);            /* hover */
+  --slx-raised:    var(--bg4);            /* batch bar, drawer */
+  --slx-line:      var(--hairline);
+  --slx-line-2:    rgba(255,255,255,.12);
+
+  /* THE LABEL — quality tiers. ink = text/disc, fill = tint behind it */
+  --slx-q-hires:        #e6bd5c;  --slx-q-hires-fill:    rgba(230,189,92,.14);
+  --slx-q-surround:     #c9a9ff;  --slx-q-surround-fill: rgba(201,169,255,.14);
+  --slx-q-lossless:     var(--accent-ink); --slx-q-lossless-fill: rgba(29,185,84,.14);
+  --slx-q-lossy:        #a8a8a8;  --slx-q-lossy-fill:    rgba(255,255,255,.08);
+
+  /* verdicts (compare drawer, upgrade lines) */
+  --slx-better:    var(--accent-ink);
+  --slx-same:      var(--slx-ink-3);
+  --slx-worse:     var(--error-ink);
+  --slx-missing:   var(--amber-ink);
+  --slx-worse-fill:   rgba(245,128,128,.14);
+  --slx-warn-fill:    rgba(240,165,0,.14);
+  --slx-warn-ink:     var(--warn-ink);    /* amber ON A RAISED bar */
+
+  /* selection */
+  --slx-sel-fill:  rgba(29,185,84,.10);
+
+  /* geometry + motion */
+  --slx-side-w:    248px;
+  --slx-drawer-w:  min(660px, 100%);
+  --slx-card-min:  168px;
+  --slx-r:         var(--r);              /* 10px */
+  --slx-r-sm:      var(--r-sm);           /* 6px */
+  --slx-t-fast:    120ms;
+  --slx-t-lift:    160ms;
+  --slx-t-drawer:  200ms;
+  --slx-t-bar:     180ms;
+  --slx-shadow:    0 10px 28px rgba(0,0,0,.42);
+  --slx-shadow-sm: 0 4px 12px rgba(0,0,0,.35);
+}
+
+body.theme-light .slsk-explore {
+  --slx-ink-2:     var(--text2);          /* #5c564c — never on bg5 */
+  --slx-ink-3:     #625b4f;               /* 5.1:1 on bg3 (text3 fails there) */
+  --slx-line-2:    rgba(0,0,0,.14);
+
+  --slx-q-hires:        var(--amber-ink); --slx-q-hires-fill:    rgba(201,150,42,.12);
+  --slx-q-surround:     #573a96;          --slx-q-surround-fill: rgba(125,95,196,.16);
+  --slx-q-lossless:     var(--accent-ink); --slx-q-lossless-fill: rgba(29,185,84,.16);
+  --slx-q-lossy:        var(--text2);     --slx-q-lossy-fill:    rgba(0,0,0,.06);
+
+  --slx-worse-fill:   rgba(192,57,43,.14);
+  --slx-warn-fill:    rgba(201,150,42,.18);
+  --slx-shadow:    0 10px 28px rgba(60,40,10,.18);
+  --slx-shadow-sm: 0 4px 12px rgba(60,40,10,.14);
+}
+
+
+/* ── 2. Page frame ───────────────────────────────────────────────────────
+   One grid, two columns. The sidebar column collapses to 0 with
+   `.slx-side-collapsed` on the root; the body scrolls, the page never does.
+   Batch bar and compare drawer are positioned inside the frame so they
+   respect the app's player bar beneath. */
+.slsk-explore {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--slx-side-w) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "side head"
+    "side filters"
+    "side body";
+  height: 100%; min-height: 0;
+  overflow: hidden;
+  background: var(--slx-ground); color: var(--slx-ink);
+  font-family: var(--slx-body); font-size: 13px; line-height: 1.45;
+  transition: grid-template-columns var(--slx-t-drawer) var(--ease);
+}
+.slsk-explore.slx-side-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+.slsk-explore.slx-side-collapsed .slx-side { visibility: hidden; }
+
+.slx-head    { grid-area: head; }
+.slx-side    { grid-area: side; }
+.slx-filters { grid-area: filters; }
+.slx-body    { grid-area: body; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+.slx-body-inner { max-width: 1760px; margin: 0 auto; padding: 4px 28px 120px; }
+
+/* Focus ring — the app's ring, on everything interactive in the explorer. */
+.slsk-explore :is(button, a, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.slsk-explore button { font-family: inherit; cursor: pointer; color: inherit; }
+.slsk-explore button:disabled { cursor: default; }
+/* Minimum hit target: nothing clickable is smaller than 24 px. */
+.slsk-explore :is(button, [role="button"], input[type="checkbox"], .slx-chip) { min-width: 24px; min-height: 24px; }
+
+
+/* ── 3. Header ──────────────────────────────────────────────────────────
+   Typography-led: the peer's name is set in Newsreader like a shop
+   fascia; stats sit beneath it as a single running line, tabular. */
+.slx-head {
+  display: grid; grid-template-columns: minmax(0,1fr) auto;
+  gap: 8px 18px; align-items: start;
+  padding: 22px 28px 14px; border-bottom: 1px solid var(--slx-line);
+  background: var(--slx-ground);
+}
+.slx-head-title { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.slx-eyebrow {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--slx-ink-3); font-weight: 600; margin-bottom: 4px;
+}
+.slx-peer {
+  font-family: var(--slx-display); font-weight: 500; font-size: 30px;
+  line-height: 1.05; letter-spacing: -.01em; color: var(--slx-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.slx-peer em { font-style: italic; font-weight: 400; color: var(--slx-ink-2); }
+.slx-presence {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--slx-ink-3); vertical-align: middle; flex-shrink: 0;
+  transform: translateY(-4px);
+}
+.slx-presence.is-online { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.slx-presence.is-away   { background: var(--amber-ink); }
+
+.slx-stats {
+  display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 8px;
+  font-size: 12.5px; color: var(--slx-ink-2); font-variant-numeric: tabular-nums;
+}
+.slx-stat b { color: var(--slx-ink); font-weight: 600; }
+.slx-stat + .slx-stat::before { content: "·"; margin: 0 9px; color: var(--slx-ink-3); }
+.slx-visit { margin-top: 6px; font-size: 12px; color: var(--slx-ink-3); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.slx-new-count {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px 2px 7px; border-radius: 999px;
+  background: var(--slx-q-lossless-fill); color: var(--accent-ink); font-weight: 600;
+}
+.slx-new-count b { font-variant-numeric: tabular-nums; }
+
+.slx-head-tools { display: flex; align-items: center; gap: 10px; padding-top: 22px; }
+.slx-viewtoggle {
+  display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px;
+  background: var(--glass); border: 1px solid var(--slx-line);
+}
+.slx-viewtoggle button {
+  border: 0; background: transparent; color: var(--slx-ink-2);
+  font-size: 12px; font-weight: 600; padding: 4px 14px; border-radius: 999px;
+  transition: background var(--slx-t-fast), color var(--slx-t-fast);
+}
+.slx-viewtoggle button:hover { color: var(--slx-ink); }
+.slx-viewtoggle button[aria-pressed="true"] { background: var(--accent); color: #000; }
+.slx-icon-btn {
+  width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--slx-line);
+  background: var(--glass); color: var(--slx-ink-2); font-size: 15px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--slx-t-fast), color var(--slx-t-fast), border-color var(--slx-t-fast);
+}
+.slx-icon-btn:hover { background: var(--glass-hi); color: var(--slx-ink); border-color: var(--slx-line-2); }
+.slx-icon-btn[aria-pressed="true"] { color: var(--slx-q-hires); border-color: currentColor; }
+
+
+/* ── 4. Peer sidebar ─────────────────────────────────────────────────────
+   A quiet well to the left. Sections are labelled in small caps; the
+   folder jump list is a plain tree, indent by depth attribute. */
+.slx-side {
+  background: var(--slx-well); border-right: 1px solid var(--slx-line);
+  overflow-y: auto; overflow-x: hidden; padding: 20px 16px 24px;
+  display: flex; flex-direction: column; gap: 22px; min-width: 0;
+}
+.slx-side-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.slx-side-h {
+  font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--slx-ink-3); font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.slx-facts { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12.5px; }
+.slx-facts dt { color: var(--slx-ink-3); }
+.slx-facts dd { color: var(--slx-ink); font-variant-numeric: tabular-nums; text-align: right; }
+
+.slx-common {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 12px 14px; border-radius: var(--slx-r);
+  background: var(--slx-card); border: 1px solid var(--slx-line);
+}
+.slx-common b { font-family: var(--slx-display); font-size: 26px; line-height: 1; font-weight: 500; }
+.slx-common span { font-size: 12px; color: var(--slx-ink-2); }
+
+.slx-tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.slx-tree button {
+  width: 100%; text-align: left; border: 0; background: transparent;
+  padding: 5px 8px; border-radius: var(--slx-r-sm); color: var(--slx-ink-2);
+  font-size: 12.5px; display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding-left: calc(8px + var(--depth, 0) * 14px);
+  transition: background var(--slx-t-fast), color var(--slx-t-fast);
+}
+.slx-tree button:hover { background: var(--glass); color: var(--slx-ink); }
+.slx-tree button[aria-current="true"] { background: var(--slx-sel-fill); color: var(--slx-ink); }
+.slx-tree .slx-tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slx-tree .slx-tree-n { font-size: 11px; color: var(--slx-ink-3); font-variant-numeric: tabular-nums; }
+.slx-tree-glyph { color: var(--slx-ink-3); font-size: 11px; width: 10px; }
+
+.slx-side-actions { display: flex; gap: 8px; margin-top: auto; }
+.slx-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1px solid var(--slx-line-2); background: var(--glass); color: var(--slx-ink);
+  border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 600;
+  line-height: 1.2; transition: background var(--slx-t-fast), border-color var(--slx-t-fast), color var(--slx-t-fast), transform var(--slx-t-fast);
+}
+.slx-btn:hover:not(:disabled) { background: var(--glass-hi); border-color: var(--slx-ink-3); }
+.slx-btn:active:not(:disabled) { transform: translateY(1px); }
+.slx-btn:disabled { opacity: .5; }
+.slx-btn-primary { background: var(--accent); border-color: var(--accent); color: #000; }
+.slx-btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.slx-btn-ghost { border-color: transparent; background: transparent; color: var(--slx-ink-2); }
+.slx-btn-ghost:hover:not(:disabled) { color: var(--slx-ink); background: var(--glass); }
+.slx-btn[aria-pressed="true"] { border-color: var(--slx-q-hires); color: var(--slx-q-hires); background: var(--slx-q-hires-fill); }
+.slx-side-actions .slx-btn { flex: 1; }
+
+
+/* ── 5. Filter bar ───────────────────────────────────────────────────────
+   Sticky beneath the header. Chip groups are separated by hairline
+   dividers, never by boxes; the active chip wears its tier's label. */
+.slx-filters {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 6px;
+  padding: 10px 28px; background: var(--slx-ground);
+  border-bottom: 1px solid var(--slx-line);
+}
+.slx-chipgroup { display: inline-flex; align-items: center; gap: 4px; }
+.slx-chipgroup + .slx-chipgroup::before {
+  content: ""; width: 1px; height: 18px; background: var(--slx-line-2); margin: 0 6px 0 4px;
+}
+.slx-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--slx-line-2); background: transparent; color: var(--slx-ink-2);
+  border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 500; line-height: 1.3;
+  transition: background var(--slx-t-fast), border-color var(--slx-t-fast), color var(--slx-t-fast);
+  white-space: nowrap;
+}
+.slx-chip:hover { color: var(--slx-ink); border-color: var(--slx-ink-3); }
+.slx-chip[aria-pressed="true"] { background: var(--slx-q-lossless-fill); border-color: var(--accent); color: var(--accent-ink); }
+.slx-chip[aria-pressed="true"]::after { content: "✕"; font-size: 9px; opacity: .8; }
+/* tier chips take on their label colour when pressed */
+.slx-chip[data-tier="hires"][aria-pressed="true"]    { background: var(--slx-q-hires-fill);    border-color: var(--slx-q-hires);    color: var(--slx-q-hires); }
+.slx-chip[data-tier="surround"][aria-pressed="true"] { background: var(--slx-q-surround-fill); border-color: var(--slx-q-surround); color: var(--slx-q-surround); }
+.slx-chip[data-tier="lossy"][aria-pressed="true"]    { background: var(--slx-q-lossy-fill);    border-color: var(--slx-q-lossy);    color: var(--slx-q-lossy); }
+.slx-chip .slx-n { font-size: 10.5px; color: var(--slx-ink-3); font-variant-numeric: tabular-nums; }
+.slx-chip[aria-pressed="true"] .slx-n { color: inherit; opacity: .8; }
+
+.slx-filters-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.slx-sort {
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--slx-line-2); background: var(--glass); color: var(--slx-ink);
+  border-radius: 999px; padding: 4px 28px 4px 12px; font-size: 12px; font-family: inherit;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(-45deg, transparent 50%, currentColor 50%);
+  background-position: right 14px center, right 10px center; background-size: 4px 4px; background-repeat: no-repeat;
+}
+.slx-search {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--slx-line-2); background: var(--glass); border-radius: 999px;
+  padding: 0 12px; height: 30px; width: 240px; color: var(--slx-ink-3);
+  transition: border-color var(--slx-t-fast), width var(--slx-t-drawer) var(--ease);
+}
+.slx-search:focus-within { border-color: var(--accent); width: 320px; color: var(--slx-ink-2); }
+.slx-search input {
+  flex: 1; min-width: 0; border: 0; background: transparent; outline: 0;
+  color: var(--slx-ink); font-family: inherit; font-size: 12.5px;
+}
+.slx-search input::placeholder { color: var(--slx-ink-3); }
+.slx-count { font-size: 12px; color: var(--slx-ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.slx-count b { color: var(--slx-ink); font-weight: 600; }
+
+
+/* ── 6. Rails ────────────────────────────────────────────────────────────
+   Each rail is a shelf. Its head carries a SLEEVE SPINE — a 4×24 px bar
+   in the rail's tier colour, the way a row of records shows you their
+   spines before you flip one out. The track fades at both edges. */
+.slx-rail { padding: 22px 0 6px; }
+.slx-rail-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; padding-left: 14px; position: relative; }
+.slx-rail-head::before {
+  content: ""; position: absolute; left: 0; top: 2px; width: 4px; height: 24px; border-radius: 2px;
+  background: var(--slx-spine, var(--accent));
+  box-shadow: inset -1px 0 0 rgba(0,0,0,.25);
+}
+.slx-rail[data-tier="hires"]    { --slx-spine: var(--slx-q-hires); }
+.slx-rail[data-tier="surround"] { --slx-spine: var(--slx-q-surround); }
+.slx-rail[data-tier="lossless"] { --slx-spine: var(--slx-q-lossless); }
+.slx-rail[data-tier="missing"]  { --slx-spine: var(--slx-ink-2); }
+.slx-rail-title {
+  font-family: var(--slx-display); font-size: 21px; font-weight: 500; line-height: 1.1;
+  letter-spacing: -.005em; color: var(--slx-ink);
+}
+.slx-rail-sub { font-size: 12px; color: var(--slx-ink-3); font-variant-numeric: tabular-nums; }
+.slx-rail-seeall {
+  margin-left: auto; border: 0; background: transparent; color: var(--slx-ink-2);
+  font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: var(--slx-r-sm);
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: color var(--slx-t-fast), background var(--slx-t-fast);
+}
+.slx-rail-seeall:hover { color: var(--slx-ink); background: var(--glass); }
+.slx-rail-seeall::after { content: "→"; transition: transform var(--slx-t-fast); }
+.slx-rail-seeall:hover::after { transform: translateX(2px); }
+.slx-rail-track {
+  display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden;
+  padding: 6px 2px 10px; scroll-snap-type: x proximity; scrollbar-width: thin;
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 48px), transparent);
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 48px), transparent);
+}
+.slx-rail-track::-webkit-scrollbar { height: 6px; }
+.slx-rail-track::-webkit-scrollbar-thumb { background: var(--slx-line-2); border-radius: 3px; }
+.slx-rail-track > .slx-card { flex: 0 0 var(--slx-card-min); scroll-snap-align: start; }
+
+/* The grid section head reuses the rail head, spine in ink. */
+.slx-grid-sec { padding-top: 26px; --slx-spine: var(--slx-ink-3); }
+.slx-grid {
+  display: grid; gap: 16px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--slx-card-min), 1fr));
+}
+
+
+/* ── 7. Album card ───────────────────────────────────────────────────────
+   Art, then two lines of type, then the label line. The card lifts on
+   hover/focus; the action row (all but Play) reveals with it. Play is
+   always visible at .85 — the app rule. Checkbox reveals the same way and
+   stays once checked. */
+.slx-card {
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  padding: 10px; border-radius: var(--slx-r);
+  background: var(--slx-card); border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--slx-t-lift) var(--ease), transform var(--slx-t-lift) var(--ease),
+              box-shadow var(--slx-t-lift) var(--ease), border-color var(--slx-t-lift);
+  content-visibility: auto; contain-intrinsic-size: 190px 268px;
+}
+.slx-card:hover, .slx-card:focus-within, .slx-card:focus-visible {
+  background: var(--slx-card-hi); transform: translateY(-3px); box-shadow: var(--slx-shadow-sm);
+}
+.slx-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slx-card.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--slx-card)); }
+.slx-card.is-inlib .slx-card-art img, .slx-card.is-inlib .slx-art-fb { filter: saturate(.85); }
+
+.slx-card-art {
+  position: relative; aspect-ratio: 1; border-radius: var(--slx-r-sm); overflow: hidden;
+  background: var(--slx-well); margin-bottom: 9px;
+}
+.slx-card-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.slx-art-fb { width: 100%; height: 100%; display: grid; place-items: center; }
+.slx-art-fb svg { width: 36%; height: 36%; fill: rgba(255,255,255,.22); }
+
+/* THE LABEL on the art: a small vinyl label in the tier colour, top-right.
+   A radial gradient makes the spindle hole; the ring is the tier ink. */
+.slx-label {
+  position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 50%;
+  background: radial-gradient(circle, var(--slx-card) 0 2.5px, var(--slx-lab, var(--slx-q-lossy)) 3px 100%);
+  box-shadow: 0 0 0 1.5px rgba(0,0,0,.45), 0 1px 4px rgba(0,0,0,.4);
+}
+.slx-label::after { /* groove */
+  content: ""; position: absolute; inset: 4px; border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.22);
+}
+[data-tier="hires"]    { --slx-lab: var(--slx-q-hires);    --slx-lab-fill: var(--slx-q-hires-fill); }
+[data-tier="surround"] { --slx-lab: var(--slx-q-surround); --slx-lab-fill: var(--slx-q-surround-fill); }
+[data-tier="lossless"] { --slx-lab: var(--slx-q-lossless); --slx-lab-fill: var(--slx-q-lossless-fill); }
+[data-tier="lossy"]    { --slx-lab: var(--slx-q-lossy);    --slx-lab-fill: var(--slx-q-lossy-fill); }
+
+/* "In Library" mark, bottom-left of the art. */
+.slx-inlib {
+  position: absolute; left: 8px; bottom: 8px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px 2px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(4px);
+}
+.slx-inlib::before { content: "✓"; color: var(--accent); }
+body.theme-light .slsk-explore .slx-inlib { background: rgba(255,255,255,.86); color: var(--text); }
+body.theme-light .slsk-explore .slx-inlib::before { color: var(--accent-ink); }
+
+/* Selection checkbox, top-left. Reveals with hover/focus, sticks when checked. */
+.slx-sel {
+  position: absolute; left: 6px; top: 6px; width: 24px; height: 24px; margin: 0;
+  display: grid; place-items: center; border-radius: 6px;
+  opacity: 0; transition: opacity var(--slx-t-fast);
+}
+.slx-sel input {
+  appearance: none; -webkit-appearance: none; margin: 0; width: 18px; height: 18px; border-radius: 5px;
+  border: 1.5px solid rgba(255,255,255,.85); background: rgba(0,0,0,.45); cursor: pointer;
+  display: grid; place-items: center; transition: background var(--slx-t-fast), border-color var(--slx-t-fast);
+}
+.slx-sel input:checked { background: var(--accent); border-color: var(--accent); }
+.slx-sel input:checked::after { content: "✓"; color: #000; font-size: 12px; font-weight: 800; line-height: 1; }
+.slx-card:hover .slx-sel, .slx-card:focus-within .slx-sel, .slx-card.is-selected .slx-sel,
+.slsk-explore.slx-selecting .slx-sel { opacity: 1; }
+
+.slx-card-title {
+  font-size: 13.5px; font-weight: 600; line-height: 1.3; color: var(--slx-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.slx-card-artist {
+  font-size: 12px; color: var(--slx-ink-2); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.slx-card-artist .slx-year { color: var(--slx-ink-3); }
+.slx-card-artist .slx-year::before { content: "·"; margin: 0 5px; }
+
+/* Quality badge: the label disc, then tier + the honest spec. */
+.slx-q {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 7px; align-self: flex-start;
+  padding: 2px 8px 2px 5px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+  background: var(--slx-lab-fill, var(--slx-q-lossy-fill)); color: var(--slx-lab, var(--slx-q-lossy));
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.slx-q::before {
+  content: ""; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: radial-gradient(circle, var(--slx-card) 0 1.3px, currentColor 1.8px 100%);
+}
+.slx-q .slx-q-spec { font-weight: 500; opacity: .9; }
+.slx-card-meta { font-size: 11px; color: var(--slx-ink-3); margin-top: 5px; font-variant-numeric: tabular-nums; }
+
+/* Upgrade line: what you have → what they have. */
+.slx-upgrade { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+.slx-upgrade .slx-yours  { color: var(--slx-ink-3); text-decoration: line-through; text-decoration-color: var(--slx-line-2); }
+.slx-upgrade .slx-arrow  { color: var(--slx-better); font-weight: 700; }
+.slx-upgrade .slx-theirs { color: var(--slx-better); font-weight: 600; }
+.slx-countwarn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
+  background: var(--slx-warn-fill); color: var(--amber-ink);
+}
+.slx-countwarn::before { content: "△"; font-size: 9px; }
+
+/* Actions. Play is always visible; the rest reveal. */
+.slx-acts { display: flex; gap: 5px; margin-top: 9px; }
+.slx-act {
+  flex: 1; height: 28px; border-radius: var(--slx-r-sm);
+  border: 1px solid var(--slx-line-2); background: var(--glass); color: var(--slx-ink);
+  font-size: 13px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--slx-t-lift) var(--ease), transform var(--slx-t-lift) var(--ease),
+              background var(--slx-t-fast), border-color var(--slx-t-fast), color var(--slx-t-fast);
+}
+.slx-act[data-act="play"] { opacity: .85; transform: none; }
+.slx-card:hover .slx-act, .slx-card:focus-within .slx-act, .slx-card:focus-visible .slx-act { opacity: 1; transform: none; }
+.slx-act:hover:not(:disabled) { background: var(--glass-hi); border-color: var(--slx-ink-3); }
+.slx-act[data-act="preview"]:hover { color: var(--slx-q-hires); border-color: var(--slx-q-hires); }
+.slx-act[data-act="play"]:hover    { color: var(--accent-ink); border-color: var(--accent); }
+.slx-act[data-act="download"]:hover{ color: var(--accent-ink); border-color: var(--accent); }
+.slx-act[data-act="replace"]       { color: var(--amber-ink); border-color: color-mix(in srgb, var(--amber-ink) 45%, transparent); }
+.slx-act[data-act="replace"]:hover { background: var(--slx-warn-fill); border-color: var(--amber-ink); }
+.slx-act[data-act="wish"]:hover    { color: var(--slx-q-surround); border-color: var(--slx-q-surround); }
+.slx-act:disabled { opacity: .35; }
+/* stagger the reveal so it reads as one gesture, not five */
+.slx-act:nth-child(1) { transition-delay: 0ms; } .slx-act:nth-child(2) { transition-delay: 15ms; }
+.slx-act:nth-child(3) { transition-delay: 30ms; } .slx-act:nth-child(4) { transition-delay: 45ms; }
+.slx-act:nth-child(5) { transition-delay: 60ms; }
+
+/* Download progress under the actions (existing behaviour, restyled). */
+.slx-progress { position: relative; height: 3px; margin-top: 8px; border-radius: 2px; background: var(--slx-line-2); overflow: hidden; }
+.slx-progress > span { display: block; height: 100%; background: var(--accent); transition: width .4s var(--ease-out); }
+
+
+/* ── 8. Batch action bar ─────────────────────────────────────────────────
+   Slides up from the bottom of the body when N > 0. Count ticks. */
+.slx-batchbar {
+  position: absolute; left: 50%; bottom: 18px; z-index: 8;
+  transform: translate(-50%, 0); width: min(760px, calc(100% - 48px));
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 16px; border-radius: 999px;
+  background: var(--slx-raised); border: 1px solid var(--slx-line-2); box-shadow: var(--slx-shadow);
+  transition: transform var(--slx-t-bar) var(--ease-out), opacity var(--slx-t-bar);
+}
+.slx-batchbar[hidden] { display: flex; opacity: 0; transform: translate(-50%, 24px); pointer-events: none; }
+.slx-batch-n { display: flex; align-items: baseline; gap: 6px; color: var(--slx-ink); margin-right: auto; }
+.slx-batch-n b { font-family: var(--slx-display); font-size: 22px; line-height: 1; font-weight: 500; font-variant-numeric: tabular-nums; display: inline-block; }
+.slx-batch-n b.slx-tick { animation: slxTick var(--slx-t-bar) var(--ease-out); }
+.slx-batch-n span { font-size: 12.5px; color: var(--slx-ink); }
+.slx-batch-sub { font-size: 11.5px; color: var(--slx-ink-2); }
+.slx-batchbar .slx-btn { padding: 6px 13px; }
+.slx-batchbar .slx-btn[data-act="replace"] { border-color: color-mix(in srgb, var(--slx-warn-ink) 45%, transparent); color: var(--slx-warn-ink); }
+.slx-batchbar .slx-btn[data-act="replace"]:hover:not(:disabled) { background: var(--slx-warn-fill); }
+
+
+/* ── 9. Compare drawer ───────────────────────────────────────────────────
+   Slides in from the right, full height of the explorer (it is a dialog;
+   the scrim dims header, filters and body alike). Closed, it is
+   visibility:hidden so it leaves the tab order and adds no off-canvas
+   layout width. Two columns of truth — theirs, yours — one verdict line. */
+.slx-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 9;
+  width: var(--slx-drawer-w); display: flex; flex-direction: column;
+  background: var(--slx-raised); border-left: 1px solid var(--slx-line-2);
+  box-shadow: -18px 0 44px rgba(0,0,0,.45);
+  transform: translateX(100%); visibility: hidden;
+  transition: transform var(--slx-t-drawer) var(--ease), visibility 0s linear var(--slx-t-drawer);
+}
+.slx-drawer.is-open { transform: none; visibility: visible; transition-delay: 0s; }
+.slx-scrim {
+  position: absolute; inset: 0; z-index: 8; background: rgba(0,0,0,.28);
+  opacity: 0; pointer-events: none; transition: opacity var(--slx-t-drawer);
+}
+.slx-drawer.is-open ~ .slx-scrim, .slx-scrim.is-open { opacity: 1; pointer-events: auto; }
+
+.slx-cmp-head { padding: 18px 22px 14px; border-bottom: 1px solid var(--slx-line); display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px 14px; }
+.slx-cmp-title { font-family: var(--slx-display); font-size: 22px; font-weight: 500; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slx-cmp-artist { font-size: 12.5px; color: var(--slx-ink-2); margin-top: 2px; }
+.slx-cmp-close { grid-row: 1 / span 2; align-self: start; }
+.slx-cmp-sides { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.slx-cmp-side { padding: 10px 12px; border-radius: var(--slx-r); background: var(--slx-card); border: 1px solid var(--slx-line); min-width: 0; }
+.slx-cmp-side-h { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--slx-ink-3); font-weight: 600; margin-bottom: 6px; }
+.slx-cmp-side .slx-q { margin-top: 0; }
+.slx-cmp-side .slx-cmp-spec { margin-top: 6px; font-size: 12px; color: var(--slx-ink-2); font-variant-numeric: tabular-nums; }
+.slx-cmp-side .slx-cmp-spec b { color: var(--slx-ink); }
+.slx-verdict {
+  grid-column: 1 / -1; margin-top: 10px; padding: 9px 12px; border-radius: var(--slx-r-sm);
+  font-size: 12.5px; line-height: 1.45;
+  background: var(--slx-card); color: var(--slx-ink); border-left: 3px solid var(--slx-better);
+}
+.slx-verdict.is-mixed  { border-left-color: var(--amber-ink); }
+.slx-verdict.is-worse  { border-left-color: var(--slx-worse); }
+.slx-verdict b { font-weight: 600; }
+
+.slx-cmp-body { flex: 1; min-height: 0; overflow: auto; }
+.slx-cmp-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.slx-cmp-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--slx-raised);
+  text-align: left; padding: 8px 10px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--slx-ink-3); font-weight: 600; border-bottom: 1px solid var(--slx-line);
+}
+.slx-cmp-table th:first-child, .slx-cmp-table td:first-child { padding-left: 22px; }
+.slx-cmp-table th:last-child,  .slx-cmp-table td:last-child  { padding-right: 22px; text-align: center; }
+.slx-cmp-table td { padding: 7px 10px; border-bottom: 1px solid var(--slx-line); vertical-align: middle; color: var(--slx-ink); }
+.slx-cmp-table tbody tr { transition: background var(--slx-t-fast); }
+.slx-cmp-table tbody tr:hover, .slx-cmp-table tbody tr:focus-visible { background: var(--glass); outline: none; }
+.slx-cmp-table tbody tr:focus-visible { box-shadow: inset 2px 0 0 var(--accent); }
+.slx-cmp-table td.slx-n { color: var(--slx-ink-3); text-align: right; width: 34px; }
+.slx-cmp-table td.slx-t { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* paired cells: theirs over yours */
+.slx-pair { display: grid; gap: 1px; line-height: 1.25; }
+.slx-pair .slx-mine { color: var(--slx-ink-3); font-size: 11px; }
+.slx-pair > span:empty::before { content: "—"; }
+/* verdict glyphs */
+.slx-v { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 800; }
+.slx-v.is-better  { color: var(--slx-better);  background: var(--slx-q-lossless-fill); }
+.slx-v.is-same    { color: var(--slx-same);    background: var(--glass); }
+.slx-v.is-worse   { color: var(--slx-worse);   background: var(--slx-worse-fill); }
+.slx-v.is-missing { color: var(--slx-missing); background: var(--slx-warn-fill); }
+.slx-cmp-table tr.is-missing td { color: var(--slx-ink-2); }
+
+.slx-cmp-foot {
+  display: flex; align-items: center; gap: 8px; padding: 12px 22px;
+  border-top: 1px solid var(--slx-line); background: var(--slx-raised);
+}
+.slx-cmp-foot .slx-reason { font-size: 11.5px; color: var(--slx-warn-ink); margin-right: auto; display: inline-flex; gap: 6px; align-items: center; }
+.slx-cmp-foot .slx-reason::before { content: "△"; font-size: 10px; }
+
+
+/* ── 10. States ──────────────────────────────────────────────────────────
+   Skeletons take the exact shape of what they stand in for, so nothing
+   jumps when data lands. Empty and error are typeset, not iconographic. */
+.slx-skel { position: relative; overflow: hidden; background: var(--glass); border-radius: var(--slx-r-sm); color: transparent !important; pointer-events: none; }
+.slx-skel::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, var(--glass-hi), transparent);
+  transform: translateX(-100%); animation: slxShimmer 1.4s var(--ease) infinite;
+}
+.slx-skel-text { display: inline-block; height: .9em; border-radius: 4px; vertical-align: middle; }
+.slx-card.slx-skel-card { cursor: default; pointer-events: none; }
+.slx-card.slx-skel-card:hover { transform: none; box-shadow: none; background: var(--slx-card); }
+.slx-skel-card .slx-card-art { background: var(--glass); }
+.slx-skel-card .slx-card-title, .slx-skel-card .slx-card-artist, .slx-skel-card .slx-q { color: transparent; }
+
+.slx-state {
+  grid-column: 1 / -1; display: grid; place-items: center; text-align: center;
+  padding: 72px 24px; gap: 8px;
+}
+.slx-state-sleeve { /* a tilted, empty sleeve — pure CSS */
+  width: 72px; height: 72px; border-radius: 4px; margin-bottom: 10px;
+  background: linear-gradient(135deg, var(--slx-card), var(--slx-well));
+  border: 1px solid var(--slx-line-2); transform: rotate(-6deg); position: relative;
+  box-shadow: 4px 6px 0 -2px var(--slx-well), 4px 6px 0 -1px var(--slx-line);
+}
+.slx-state-sleeve::after {
+  content: ""; position: absolute; right: -14px; top: 6px; width: 60px; height: 60px; border-radius: 50%;
+  background: radial-gradient(circle, var(--slx-raised) 0 6px, #0a0a0a 7px 100%);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.08);
+}
+body.theme-light .slsk-explore .slx-state-sleeve::after { background: radial-gradient(circle, var(--slx-raised) 0 6px, #2a2622 7px 100%); }
+.slx-state.is-error .slx-state-sleeve { border-color: color-mix(in srgb, var(--slx-worse) 50%, transparent); }
+.slx-state-title { font-family: var(--slx-display); font-size: 22px; font-weight: 500; color: var(--slx-ink); }
+.slx-state-sub { font-size: 12.5px; color: var(--slx-ink-2); max-width: 440px; }
+.slx-state-sub code { font-family: var(--slx-mono); font-size: 11.5px; color: var(--slx-ink); background: var(--glass); padding: 1px 5px; border-radius: 4px; }
+.slx-state-acts { display: flex; gap: 8px; margin-top: 10px; }
+
+/* Dry-run pill compatibility. The app's #dry-run-pill mounts into the
+   header tools; the amber on paper needs the ink token to clear AA. */
+.slsk-explore .dry-run-pill { margin-left: 0; align-self: center; }
+body.theme-light .slsk-explore .dry-run-pill { color: var(--amber-ink); border-color: var(--amber-ink); background: var(--slx-warn-fill); }
+
+
+/* ── 11. Motion ──────────────────────────────────────────────────────────
+   Purposeful and short. Cards lift 3 px in 160 ms; the drawer slides in
+   200 ms; the bar in 180 ms; the count ticks. Nothing loops except the
+   skeleton shimmer, and that stops under reduced motion. */
+@keyframes slxShimmer { to { transform: translateX(100%); } }
+@keyframes slxTick { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes slxRise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.slx-rail, .slx-grid-sec { animation: slxRise 220ms var(--ease-out) both; }
+.slx-rail:nth-of-type(2) { animation-delay: 30ms; } .slx-rail:nth-of-type(3) { animation-delay: 60ms; }
+.slx-rail:nth-of-type(4) { animation-delay: 90ms; } .slx-rail:nth-of-type(5) { animation-delay: 120ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .slsk-explore, .slsk-explore * , .slsk-explore *::after, .slsk-explore *::before {
+    animation-duration: 1ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important; transition-delay: 0ms !important;
+  }
+  .slx-card:hover, .slx-card:focus-within { transform: none; }
+  .slx-skel::after { display: none; }
+}
+
+
+/* ── 12. Breakpoints ─────────────────────────────────────────────────────
+   1024×640 must fit with no page-level horizontal scroll; the sidebar
+   auto-collapses and the header stacks. At 2560 the body is capped at
+   1760 px and centred so cards don't inflate. */
+@media (max-width: 1180px) {
+  .slsk-explore { --slx-side-w: 220px; }
+  .slx-head, .slx-filters { padding-left: 22px; padding-right: 22px; }
+  .slx-body-inner { padding-left: 22px; padding-right: 22px; }
+  .slx-search { width: 190px; } .slx-search:focus-within { width: 240px; }
+}
+@media (max-width: 1060px) {
+  .slsk-explore:not(.slx-side-open) { grid-template-columns: 0 minmax(0, 1fr); }
+  .slsk-explore:not(.slx-side-open) .slx-side { visibility: hidden; }
+  .slx-peer { font-size: 26px; }
+  .slx-head-tools { padding-top: 18px; }
+  .slx-filters-right { margin-left: 0; width: 100%; }
+  .slx-search, .slx-search:focus-within { width: 100%; flex: 1; }
+}
+@media (min-width: 2200px) {
+  .slsk-explore { --slx-card-min: 188px; font-size: 13.5px; }
+  .slx-peer { font-size: 34px; }
+}

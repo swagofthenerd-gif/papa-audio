@@ -11042,7 +11042,18 @@ function _browseRefresh(username) {
       // next open is supposed to show.
       // The renderer re-reads via the normal call, which now serves the fresh
       // cache. The UI agent subscribes to this via onSlskBrowseRefreshed.
-      safeSend('slsk-browse-refreshed', { username })
+      // Hash the fresh payload HERE, chunked and off the renderer, and send the
+      // hash with the event. The shop compares it with the one it already
+      // holds from the open: identical means nothing crosses the IPC and
+      // nothing is rebuilt — that rebuild (a 5,000-album re-parse plus a
+      // 100 MB structure-clone) was a 1.3 s freeze mid-scroll on every open.
+      let fingerprint = null
+      try {
+        fingerprint = await slskShelves.fingerprintBrowseChunked(dirs, {
+          budgetMs: 8, yieldFn: () => new Promise(r => setImmediate(r)),
+        })
+      } catch (_) {}
+      safeSend('slsk-browse-refreshed', { username, fingerprint })
     } catch (_) {
       // A failed refresh leaves the cache in place — cache wins silently.
     } finally {
