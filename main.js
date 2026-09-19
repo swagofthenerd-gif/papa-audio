@@ -1558,6 +1558,108 @@ function stopSlskd() {
   slskdReady = false
 }
 
+// A wedged daemon will not answer a SIGTERM promptly, and startSlskd returns
+// immediately while slskdProc is still set, so a restart that does not wait for
+// the old process to die is not a restart at all.
+const SLSKD_STOP_TIMEOUT_MS = 10000
+
+// Stop slskd and do not come back until it is actually gone. Resolves with the
+// pid that was killed, or null if there was nothing of ours to kill (slskd
+// running externally — not our process to restart).
+function stopSlskdAndWait() {
+  const proc = slskdProc
+  if (!proc) { stopSlskd(); return Promise.resolve(null) }
+  const pid = proc.pid || null
+  return new Promise(resolve => {
+    let done = false
+    let timer = null
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(pid)
+    }
+    proc.once('exit', finish)
+    timer = setTimeout(() => {
+      // SIGTERM did not land inside the cap. SIGKILL cannot be refused, and a
+      // daemon we are about to replace has nothing left to flush.
+      try { proc.kill('SIGKILL') } catch (_) {}
+      finish()
+    }, SLSKD_STOP_TIMEOUT_MS)
+    timer.unref?.()
+    stopSlskd()
+  })
+}
+
+// Ping slskd; restart it after three consecutive failures.
+//
+// This used to `await startSlskd()` and then log "slskd restarted after 3 failed
+// health checks" unconditionally. startSlskd returns immediately when slskdProc
+// is set — slskd is our own child — so nothing was restarted, nothing was fixed,
+// and the UI flickered "restarting" every three minutes for as long as the
+// daemon stayed wedged. The message was the only thing that ever changed.
+//
+// So: kill our child first and wait for it to die, then start a new one, and
+// claim a restart only when the pid actually changed. When it did not, say that
+// instead and leave the failure count alone so the next cycle tries again rather
+// than believing a restart that never happened.
+async function slskdHealthCheck() {
+  try {
+    await slskdFetch('GET', '/session')
+    _slskdFailures = 0
+    safeSend('slskd-status-change', { connected: true, restarting: false })
+    return 'ok'
+  } catch (e) {
+    // Being rate-limited is the opposite problem to being unhealthy: one needs
+    // patience, the other a restart. Counting a 429 as a failure meant that
+    // throttling got the daemon restarted, losing every in-flight transfer and
+    // then hammering it again from a cold start.
+    if (e && e.code === 'SLSKD_THROTTLED') {
+      console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
+      safeSend('slskd-status-change', { connected: true, restarting: false, throttled: true })
+      return 'throttled'
+    }
+    _slskdFailures++
+    if (_slskdFailures < 3) {
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'counting'
+    }
+    safeSend('slskd-status-change', { connected: false, restarting: true })
+    try {
+      const before = slskdProc && slskdProc.pid ? slskdProc.pid : null
+      if (slskdProc) await stopSlskdAndWait()
+      await startSlskd()
+      const after = slskdProc && slskdProc.pid ? slskdProc.pid : null
+      if (before && after && after !== before) {
+        console.log(`[papa] slskd restarted after 3 failed health checks (pid ${before} -> ${after})`)
+        _slskdFailures = 0
+        return 'restarted'
+      }
+      if (!before) {
+        // Nothing of ours was running: either slskd runs externally and startSlskd
+        // just re-authenticated against it, or it spawned one for the first time.
+        console.log('[papa] slskd reconnected after 3 failed health checks')
+        _slskdFailures = 0
+        return after ? 'started' : 'reconnected'
+      }
+      // We had a child, we killed it, and there is still nothing running. Say so
+      // rather than reporting a restart, and keep the count so the next cycle
+      // tries again.
+      console.warn('[papa] slskd did not come back after 3 failed health checks; ' +
+        'it stays down and the next check will try again')
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'failed'
+    } catch (err) {
+      // A restart that fails leaves downloads dead with the UI still saying
+      // "restarting". Say so, and let the counter keep climbing so the next
+      // cycle tries again rather than believing it succeeded.
+      console.error('[papa] slskd restart failed:', String(err && err.message || err))
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'failed'
+    }
+  }
+}
+
 async function downloadSlskd(progressCb) {
   progressCb?.('Fetching latest release info…')
   const relRes = await fetch('https://api.github.com/repos/slskd/slskd/releases/latest',
@@ -2172,40 +2274,12 @@ app.whenReady().then(() => {
   if (fs.existsSync(SLSKD_BIN)) {
     startSlskd().catch(e => console.error('[papa] slskd failed to start at launch:', String(e && e.message || e)))
   }
-  // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive failures
-  setInterval(async () => {
-    try {
-      await slskdFetch('GET', '/session')
-      _slskdFailures = 0
-      safeSend('slskd-status-change', { connected: true, restarting: false })
-    } catch (e) {
-      // Being rate-limited is the opposite problem to being unhealthy: one needs
-      // patience, the other a restart. Counting a 429 as a failure meant that
-      // throttling got the daemon restarted, losing every in-flight transfer and
-      // then hammering it again from a cold start.
-      if (e && e.code === 'SLSKD_THROTTLED') {
-        console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
-        safeSend('slskd-status-change', { connected: true, restarting: false, throttled: true })
-        return
-      }
-      _slskdFailures++
-      if (_slskdFailures >= 3) {
-        safeSend('slskd-status-change', { connected: false, restarting: true })
-        try {
-          await startSlskd()
-          _slskdFailures = 0
-          console.log('[papa] slskd restarted after 3 failed health checks')
-        } catch (e) {
-          // A restart that fails leaves downloads dead with the UI still saying
-          // "restarting". Say so, and let the counter keep climbing so the next
-          // cycle tries again rather than believing it succeeded.
-          console.error('[papa] slskd restart failed:', String(e && e.message || e))
-          safeSend('slskd-status-change', { connected: false, restarting: false })
-        }
-      } else {
-        safeSend('slskd-status-change', { connected: false, restarting: false })
-      }
-    }
+  // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive
+  // failures. The decision lives in slskdHealthCheck so it can be run in a test
+  // without a timer and without a real daemon.
+  setInterval(() => {
+    slskdHealthCheck().catch(e =>
+      console.error('[papa] slskd health check threw:', String(e && e.message || e)))
   }, 60000)
   try {
     const configPath = path.join(app.getPath('userData'), 'config.json')
@@ -7507,6 +7581,53 @@ function dlTrackGroups(items) {
   }
 }
 
+// Remove files the scheduler would not take from the group ledger.
+//
+// dlTrackGroups runs BEFORE addItems (it is the only point that knows the
+// intended track count), so it records files addItems then refuses — an
+// abandoned identity, a duplicate, a lossy copy dropped because the same title
+// arrived lossless in the batch. isGroupComplete requires EVERY file in the
+// group to have succeeded, so one refused member meant the album could never
+// verify and never auto-organize, and the group sat in the ledger being
+// re-walked every four seconds for the life of the process.
+function dlUntrackGroupFiles(filenames) {
+  const drop = new Set((filenames || []).filter(Boolean))
+  if (!drop.size) return 0
+  let removed = 0
+  for (const [key, g] of dlGroups) {
+    for (const f of Array.from(g.files)) {
+      if (!drop.has(f)) continue
+      g.files.delete(f)
+      g.expected = Math.max(0, (g.expected || 1) - 1)
+      removed++
+    }
+    // A group with nothing left in it is not an album, it is a leak.
+    if (g.files.size === 0) dlGroups.delete(key)
+  }
+  return removed
+}
+
+// Groups that never complete — an abandoned peer, a folder whose last track is
+// dead — are never retired by dlCheckCompletedGroups, because retirement is what
+// completion triggers. Nothing else evicts them, so the ledger only ever grew,
+// and every tick walked all of it. Oldest first: a Map iterates in insertion
+// order, and the oldest incomplete album is the one least likely to finish.
+const DL_GROUP_CAP = 200
+function dlCapGroups(cap) {
+  const max = cap == null ? DL_GROUP_CAP : cap
+  let evicted = 0
+  while (dlGroups.size > max) {
+    const oldest = dlGroups.keys().next()
+    if (oldest.done) break
+    const g = dlGroups.get(oldest.value)
+    if (g && g.files) for (const f of g.files) dlSucceeded.delete(f)
+    dlGroups.delete(oldest.value)
+    dlVerifiedGroups.delete(oldest.value)
+    evicted++
+  }
+  return evicted
+}
+
 function dlConfig() {
   const saved = store.get('slskSchedulerConfig', {})
   const cfg = Object.assign({}, dlSched.DEFAULTS, saved)
@@ -7635,6 +7756,26 @@ function dlClassify(stateStr) {
 // Every file in the last snapshot, flat. The Map above keys by filename and so
 // keeps one entry per name; purging needs all of them, with their ids.
 let _dlLastSnapshotFiles = []
+
+// GET /transfers/downloads measured 1,020,307 bytes on the reported install, and
+// dlTick runs every four seconds for the life of the process. With nothing
+// pending, nothing in flight and no album group waiting to be verified, there is
+// nothing in that answer the tick would act on — the reconcile loop, the
+// dispatch plan and the stall check all iterate empty collections. So it is
+// fetched on a heartbeat instead of every tick, which keeps the daemon's own
+// state visible (a transfer someone queued in slskd's UI, a purge that is due)
+// without megabytes of JSON a minute for nothing.
+const DL_IDLE_SNAPSHOT_MS = 60 * 1000
+let _dlLastSnapshotAt = 0
+
+// Is there anything this tick that a transfer snapshot could inform?
+function dlNeedsSnapshot(state, groups, now, lastAt) {
+  if (!state) return true
+  if ((state.pending || []).length > 0) return true
+  if (Object.keys(state.inflight || {}).length > 0) return true
+  if (groups && groups.size > 0) return true
+  return (now - (lastAt || 0)) >= DL_IDLE_SNAPSHOT_MS
+}
 
 async function dlSnapshot() {
   const out = new Map()
@@ -8006,6 +8147,38 @@ async function dlTransferId(username, filename) {
 const DL_TICK_DEADLINE_MS = 60000
 let _dlTickStartedAt = 0
 
+// What to do about one in-flight entry slskd no longer lists.
+//
+// A transfer vanishing from a list that still holds OTHER transfers really does
+// mean it was removed — the user cancelled it in slskd's own UI, or we did — and
+// re-requesting it is how "cancel" turned into "download it again". That case
+// stays terminal.
+//
+// A transfer vanishing from an EMPTY list means nothing of the kind. The daemon
+// has no record of anything, which is what a restart looks like: our own health
+// monitor restarting it, a settings change (the download folder, the share mode,
+// the Soulseek password all bounce it), or a crash. Treating that as a user
+// cancel abandoned every in-flight file at IDENTITY level — terminal, persisted,
+// and written with a band-independent song key, so the song was refused from
+// every peer in every format, forever, across restarts. Eight seconds of silence
+// destroyed a queue that nobody had touched.
+//
+// So on an empty list the entry goes back to the scheduler the way a stall does:
+// attempts intact, nobody blamed, a reason a person can read.
+//
+// Returns 'wait' | 'requeued' | 'abandoned' so the caller can log and the test
+// can read the decision.
+function dlReconcileMissing(state, key, live, cfg, now, lostTrack) {
+  if ((now - live.since) <= 30000) return 'wait'
+  if (lostTrack) {
+    const requeued = dlSched.recordStall(state, key, live.username, cfg, now)
+    if (requeued) requeued.reason = 'slskd lost track of this transfer — re-queued'
+    return 'requeued'
+  }
+  dlSched.recordAbandoned(state, key)
+  return 'abandoned'
+}
+
 async function dlTick() {
   if (dlTicking) {
     const stuckFor = Date.now() - _dlTickStartedAt
@@ -8030,9 +8203,13 @@ async function dlTick() {
     // so a day→night boundary takes hold within a tick. No-op when the schedule is
     // disabled, and self-skipping when the limit has not changed since last tick.
     _applyBandwidthSchedule(now)
+    // Nothing queued, nothing moving, nothing awaiting verification: skip the
+    // megabyte and come back on the heartbeat. See dlNeedsSnapshot.
+    if (!dlNeedsSnapshot(dlState, dlGroups, now, _dlLastSnapshotAt)) return
     const snap = await dlSnapshot()
     // slskd unreachable — do nothing rather than double-request on recovery.
     if (!snap) return
+    _dlLastSnapshotAt = now
     // And an EMPTY answer while we believe files are in flight is not an
     // answer either. dlSnapshot only returns null when the fetch THROWS; a 204
     // or an empty body iterates nothing and hands back an empty Map, which is
@@ -8046,6 +8223,15 @@ async function dlTick() {
     // changing the download folder, the share mode or the Soulseek password
     // does. So: queue an album, change a setting, and the album silently
     // vanished and could never be re-added.
+    //
+    // Waiting one extra tick was not enough on its own. After eight seconds the
+    // guard fell through and the reconcile loop below read every in-flight file
+    // as "removed by the user" and abandoned it at identity level. But an empty
+    // list is not evidence about any individual transfer — it is evidence that
+    // slskd has no transfers at all, which is what a daemon that just restarted
+    // looks like. So the two-tick wait stands, and after it the missing entries
+    // are RE-QUEUED rather than abandoned: see dlReconcileMissing.
+    let snapshotLostTrack = false
     if (snap.size === 0 && Object.keys(dlState.inflight).length > 0) {
       _dlEmptySnapshots++
       // Two in a row before believing it. One is indistinguishable from a
@@ -8055,6 +8241,7 @@ async function dlTick() {
           `${Object.keys(dlState.inflight).length} are in flight; waiting a tick before believing it`)
         return
       }
+      snapshotLostTrack = true
     } else {
       _dlEmptySnapshots = 0
     }
@@ -8087,10 +8274,11 @@ async function dlTick() {
       // music differently, and looking up the original key missed every time.
       const seen = snap.get(live.sentFilename || live.filename)
       if (!seen) {
-        // A transfer only disappears from slskd because it was removed —
-        // by the user cancelling, or by us. Re-requesting it is how "cancel"
-        // turned into "download it again", so this is terminal, not a retry.
-        if (now - live.since > 30000) dlSched.recordAbandoned(dlState, key)
+        const verdict = dlReconcileMissing(dlState, key, live, cfg, now, snapshotLostTrack)
+        if (verdict === 'requeued') {
+          console.warn(`[papa][dl] ${dlBaseName(live.filename)}: slskd has no record of this transfer ` +
+            'and none of any other either; re-queued rather than treated as a cancellation')
+        }
         continue
       }
       // Transitions, at info, into the same daily log. When a download stalls
@@ -8122,16 +8310,30 @@ async function dlTick() {
           [{ filename: item.filename, size: item.size || 0 }])
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
       } catch (e) {
+        const outcome = dlSched.dispatchOutcome(e)
         // A dry-run refusal is not the peer's fault and must not be treated as
         // one. Counting it as a failure would burn the file's retry budget and
         // then mark it exhausted, so a twin would quietly destroy the queue it
         // was only supposed to look at — and the scheduler would keep re-asking
         // every tick forever. Leave it exactly where it is, pending, with a
         // reason a person can read, and say nothing more about it.
-        if (e && e.dryRun) {
+        if (outcome === 'skip') {
           const held = dlState.pending.find(x => x && x.key === item.key)
           if (held) held.reason = 'Dry run — not dispatched to ' + item.username
           continue
+        }
+        // Nothing was learned about the peer: slskd was unreachable, the request
+        // timed out, or the daemon is rate-limiting us. Blaming the peer here
+        // benched good sources for ten minutes and burned an attempt each time,
+        // so a daemon hiccup could exhaust a whole album on its own. Leave the
+        // item pending, untouched, and stop dispatching for this tick — the rest
+        // of the plan would hit the same wall.
+        if (outcome === 'defer') {
+          const held = dlState.pending.find(x => x && x.key === item.key)
+          if (held) held.reason = 'slskd could not be reached — still queued'
+          console.warn('[papa][dl] dispatch deferred, slskd did not answer:',
+            String(e && e.message || e))
+          break
         }
         // Rejected at request time counts against that peer, same as a failure.
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
@@ -8140,8 +8342,18 @@ async function dlTick() {
     }
 
     // A peer sitting on us for hours never errors, so failure logic never sees
-    // it. Move those files — but only where a better source already exists.
-    const stalled = dlSched.stalledItems(dlState, cfg, now)
+    // it. Move those files — but only where a better source already exists, and
+    // only when they are genuinely not moving. What slskd says about each
+    // in-flight key goes in with the question: Soulseek has no resume, so
+    // cancelling a transfer that is actually running throws away every byte it
+    // has fetched and starts again from zero.
+    const dlProgress = {}
+    for (const key of Object.keys(dlState.inflight)) {
+      const liveNow = dlState.inflight[key]
+      const rec = snap.get(liveNow.sentFilename || liveNow.filename)
+      if (rec) dlProgress[key] = { state: rec.state, bytesTransferred: rec.bytesTransferred }
+    }
+    const stalled = dlSched.stalledItems(dlState, cfg, now, dlProgress)
     for (const st of stalled) {
       const live = dlState.inflight[st.key]
       if (!live) continue
@@ -8194,6 +8406,10 @@ async function dlTick() {
     // no cap and no TTL, so it grew for the life of the process. Terminal entries
     // are the whole content of it, so pruning here is pruning all of it.
     pruneDlDone()
+    // peerFailures grew one entry per peer ever met and lost none. A peer whose
+    // bench has expired with no streak left is not remembered by anything.
+    dlSched.prunePeerFailures(dlState, now)
+    dlCapGroups()
 
     // After reconciliation, never before: see the comment on dlPurgeSucceeded.
     try { await dlPurgeSucceeded(now) } catch (e) {
@@ -8796,6 +9012,10 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacit
     payload.push({ filename: it.filename, size: it.size || 0, sources })
   }
   const res = dlSched.addItems(dlState, payload, { force: !!force })
+  // The ledger was filled in above, before the scheduler had its say. Take back
+  // out whatever it would not accept, or the album can never be complete.
+  dlUntrackGroupFiles(res.refused.map(r => r && r.filename).concat(res.droppedFiles || []))
+  dlCapGroups()
   added = res.added
   // A refusal used to be a silent null the caller discarded, so asking again
   // for something you had cancelled looked like a button that did nothing.
@@ -8890,15 +9110,52 @@ ipcMain.handle('slsk-retry-transfer', async (_, { username, id, filename, size }
     }
     if (!name) return { ok: false, error: 'nothing to retry' }
 
-    // 2. Re-enqueue the same music, forced past its own terminal/abandoned mark so
+    // 2. Drop the scheduler's own in-flight record of what we just DELETEd.
+    //
+    //    addItems re-enqueues under the path slskd knows, which is often NOT the
+    //    key the original was filed under (an alternate source names the same
+    //    music differently). So the original entry stayed in `inflight`, where it
+    //    did two kinds of damage: planDispatch refuses to race a second copy of an
+    //    identity that is already in flight, so the retry never went out; and the
+    //    next tick's reconcile looked the original up, found the transfer we had
+    //    just deleted, and after thirty seconds abandoned the identity — which is
+    //    terminal and blocks the song from every peer. Pressing Retry was a way to
+    //    lose a song for good.
+    for (const k of Object.keys(dlState.inflight)) {
+      const live = dlState.inflight[k]
+      if (!live) continue
+      if (k === name || live.sentFilename === name || live.filename === name) {
+        delete dlState.inflight[k]
+      }
+    }
+
+    // 3. Re-enqueue the same music, forced past its own terminal/abandoned mark so
     //    the retry actually takes. Force is scoped to this one item.
-    const sources = username && !/^searching/i.test(String(username))
-      ? [{ username, filename: name, size: size || 0 }]
-      : []
+    //
+    //    A row still showing "searching…" has no peer behind it. Re-enqueuing
+    //    gives the scheduler an item with nowhere to send it, and the handler used
+    //    to answer `added: 1` — a success for a download that cannot start. The
+    //    fresh-source hunt below is the useful half and still runs; the answer
+    //    says what actually happened.
+    const searchingRow = !username || /^searching/i.test(String(username))
+    if (searchingRow) {
+      if (dlDiscoveryEnabled()) {
+        const k = dlSched.itemKey(name)
+        dlDiscoverForItem({ key: k, filename: name, size: size || 0, sources: [] },
+          Date.now()).catch(() => {})
+      }
+      dlPersist()
+      dlBroadcast()
+      return {
+        ok: true, added: 0, searching: true, refused: [],
+        message: 'Still looking for a peer with this file — nothing to retry yet',
+      }
+    }
+    const sources = [{ username, filename: name, size: size || 0 }]
     const res = dlSched.addItems(dlState, [{ filename: name, size: size || 0, sources }],
       { force: true })
 
-    // 3. Kick a fingerprint-gated fresh-source hunt for this identity, so the
+    // 4. Kick a fingerprint-gated fresh-source hunt for this identity, so the
     //    retry is not limited to the one peer that just stalled. Behind the
     //    response; discovery is rate-limited per album inside dlDiscoverForItem.
     if (dlDiscoveryEnabled()) {

@@ -182,6 +182,35 @@ function _normTitle(base) {
     .replace(/\s+/g, ' ')
     .trim()
 }
+// The leading disc/track number _normTitle deliberately strips, recovered so an
+// album-scoped identity can keep two same-titled tracks apart.
+//
+// Stripping it was right for cross-peer matching: "19 - ItsNot…" and
+// "21 - ItsNot…" are one song two peers numbered differently, and leaving the
+// number in stopped them collapsing. But an album can hold several tracks with
+// the SAME title — three "Untitled"s, two "Interlude"s, "Reprise" twice — and
+// with the number gone they all produced one identity, so addItems merged them
+// into one item, the rest were refused as duplicates, and dlRestore threw them
+// away again on the next start. The user asked for twelve tracks and got ten.
+//
+// The number only goes back into the ALBUM-scoped key (the 'a:' form), where
+// artist and album already pin the release and two peers of that release number
+// its tracks identically. The loose-single 't:' form is untouched — that is the
+// cross-peer case the stripping exists for.
+//
+// Returns '' when there is no number to read, so an album whose files carry no
+// track numbers keys exactly as it did before.
+function _trackNo(base) {
+  var s = String(base || '').replace(/\.[a-z0-9]+$/i, '')
+  // Disc-track first ("1-04", "1.04", "1_04"): the disc matters, "1-04" and
+  // "2-04" are different tracks.
+  var m = /^\s*(\d{1,3})\s*[-_.]\s*(\d{1,3})\b/.exec(s)
+  if (m) return String(Number(m[1])) + '-' + String(Number(m[2]))
+  m = /^\s*(\d{1,3})\s*[-_.)\s]/.exec(s)
+  if (m) return String(Number(m[1]))
+  return ''
+}
+
 // A parsed album is "usable" only when it gives us a real disambiguator: an
 // artist, or an album that is not merely the peer's junk share folder. Without
 // one we cannot trust the folder to identify the release, and fall back to the
@@ -211,7 +240,9 @@ function identityKey(filename, size) {
   // across peers). Album alone is not enough: parseAlbumFolder happily returns
   // the peer's junk folder name as "album" for a loose single, and those differ
   // per peer — the whole reason the old key failed.
-  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  // The track number goes in ONLY here, where artist and album already pin the
+  // release: it is what keeps an album's three "Untitled"s apart. See _trackNo.
+  if (artist) return 'a:' + artist + '|' + album + '|' + _trackNo(_basename(name)) + '|' + title
   // Fallback: title + size-band. Comment the tradeoff at the top of this block.
   var band = _bandSize(size)
   return band != null ? 't:' + title + '|~' + band : 't:' + title
@@ -243,8 +274,10 @@ function songKey(filename) {
     } catch (_) { artist = ''; album = '' }
   }
   // With an artist the identity is already band-independent, so it IS the song
-  // key. Only the loose-single fallback needs the band stripped.
-  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  // key. Only the loose-single fallback needs the band stripped. The track
+  // number is carried here too: without it, cancelling one "Untitled" blocked
+  // every other "Untitled" on the same album, which is H2 wearing a cancel.
+  if (artist) return 'a:' + artist + '|' + album + '|' + _trackNo(_basename(name)) + '|' + title
   return 't:' + title
 }
 
@@ -348,6 +381,32 @@ function sameRecordingSize(wantSize, candidateSize) {
   if (!Number.isFinite(b) || b <= 0) return false
   if (a === b) return true
   return Math.abs(a - b) <= a * SIZE_TOLERANCE
+}
+
+// What a failed dispatch POST actually tells us.
+//
+// Every throw from the POST was treated as the peer's fault: markDispatched plus
+// recordFailure, which burns one of the file's four attempts and puts a strike
+// on the peer — five strikes and it is benched for ten minutes. But slskd being
+// unreachable, the request timing out, or the daemon rate-limiting us says
+// nothing whatever about the peer. A daemon restart could bench every good peer
+// we had and exhaust a whole album's attempt budget in a handful of ticks,
+// entirely on its own.
+//
+// Only an answer FROM slskd — an HTTP status — is evidence about the request.
+// Anything else is a transport problem: defer, change nothing, try again next
+// tick.
+//
+//   'skip'  — a dry-run refusal. Leave the item exactly as it is.
+//   'defer' — nothing was learned. Do not mark, do not blame, stop for this tick.
+//   'blame' — slskd answered and rejected it; that counts against the peer.
+function dispatchOutcome(err) {
+  if (!err) return 'blame'
+  if (err.dryRun) return 'skip'
+  if (err.code === 'SLSKD_THROTTLED' || err.throttled) return 'defer'
+  var status = Number(err.status != null ? err.status : err.statusCode)
+  if (Number.isFinite(status) && status > 0) return 'blame'
+  return 'defer'
 }
 
 function inflightIdentities(state) {
@@ -508,7 +567,7 @@ function _fpCompatible(orig, cand) {
 // exactly as addItem takes; opts is passed through to addItem (force, priority).
 // Returns { added, refused:[{filename,reason}], merged } for the caller to report.
 function addItems(state, items, opts) {
-  var out = { added: 0, refused: [], merged: 0, dropped: 0 }
+  var out = { added: 0, refused: [], merged: 0, dropped: 0, droppedFiles: [] }
   var list = (items || []).filter(function (it) { return it && it.filename })
   // Stable grouping by identity, preserving first-seen order so the file the user
   // actually clicked (first in the list) anchors the item.
@@ -546,6 +605,9 @@ function addItems(state, items, opts) {
       // A lossy group whose title also came in lossless this batch: drop it whole.
       for (var d = 0; d < members.length; d++) {
         out.dropped++
+        // Named, not just counted: the album-group ledger has to remove a file it
+        // was told to expect, or the group can never be complete.
+        out.droppedFiles.push(members[d].filename)
         logSubstitution(state, {
           at: Date.now(), key: itemKey(members[d].filename),
           from: null, to: members[d].filename,
@@ -588,6 +650,37 @@ function _foldSources(state, members, out) {
     var srcs = (m.sources && m.sources.length)
       ? m.sources
       : [{ username: (m.username || ''), filename: m.filename, size: m.size }]
+    // THE SIZE GATE, and it is the important one here.
+    //
+    // Discovery and the seed hunt both refuse a candidate whose size is not
+    // within 2% of what we asked for (sameRecordingSize, and see its own
+    // comment for why). This path did not — it had only the quality
+    // fingerprint, and bitDepth/sampleRate are undefined on an enqueue payload,
+    // so compatible() was reduced to a lossless-vs-lossy check. A 5.1 rip and a
+    // stereo rip of one track are both lossless FLACs with the same title in
+    // the same album, so the 5.1 copy folded in as an "alternate source" of the
+    // stereo one and the album came down half surround and half not. That is
+    // the exact field failure this scheduler was written after, re-opened on
+    // the DL-All, respread, wishlist and retry paths.
+    //
+    // Size is what tells them apart: a 5.1 FLAC is two to three times the bytes
+    // of its stereo twin, and a different master is a different byte count too,
+    // while one release circulating between peers is the same size everywhere.
+    // An unknown size on either side proves nothing and is refused, same as
+    // everywhere else.
+    var anchorSize = anchor.size != null ? anchor.size
+      : (anchor.sources && anchor.sources[0] && anchor.sources[0].size)
+    var candSize = m.size != null ? m.size : (srcs[0] && srcs[0].size)
+    if (!sameRecordingSize(anchorSize, candSize)) {
+      logSubstitution(state, {
+        at: Date.now(), key: key, from: anchor.filename, to: m.filename,
+        candidate: (srcs[0] && srcs[0].username) || null, accepted: false,
+        reason: 'same track name, different recording: ' + (anchorSize || 'unknown') +
+          ' bytes vs ' + (candSize || 'unknown') +
+          ' bytes — not folded in as an alternate source',
+      })
+      continue
+    }
     if (!_fpCompatible(origFp, candFp)) {
       logSubstitution(state, {
         at: Date.now(), key: key, from: anchor.filename, to: m.filename,
@@ -856,6 +949,35 @@ function recordFailure(state, key, username, cfg, now) {
   return entry
 }
 
+// peerFailures gained an entry per peer and never lost one. Discovery meets a
+// new peer on every hunt, so over a long run it is a map of every Soulseek user
+// the app has ever spoken to, persisted and reloaded on every start. Nothing
+// reads a peer whose cooldown has expired and whose streak is zero, so those are
+// exactly the ones to drop. The cap is the backstop for a run that meets more
+// live peers than that at once: oldest bench first.
+var PEER_FAILURE_CAP = 500
+function prunePeerFailures(state, now, cap) {
+  now = now == null ? Date.now() : now
+  cap = cap == null ? PEER_FAILURE_CAP : cap
+  var keys = Object.keys(state.peerFailures || {})
+  var kept = []
+  for (var i = 0; i < keys.length; i++) {
+    var f = state.peerFailures[keys[i]] || {}
+    var benched = Number(f.benchedUntil) || 0
+    // Spent: not benched any more, and no streak to carry into the next failure.
+    if (benched <= now && !(Number(f.consecutive) || 0)) {
+      delete state.peerFailures[keys[i]]
+      continue
+    }
+    kept.push({ u: keys[i], until: benched })
+  }
+  if (kept.length <= cap) return keys.length - kept.length
+  kept.sort(function (a, b) { return a.until - b.until })
+  var over = kept.length - cap
+  for (var j = 0; j < over; j++) delete state.peerFailures[kept[j].u]
+  return keys.length - cap
+}
+
 function addSources(state, key, sources, cfg) {
   cfg = Object.assign({}, DEFAULTS, cfg || {})
   var norm = (sources || []).map(normalizeSource).filter(Boolean)
@@ -957,12 +1079,35 @@ function starvedItems(state, cfg, now) {
   return out
 }
 
+// slskd reports an actually-moving transfer as "InProgress". Everything else —
+// "Queued, Remotely", "Requested", "Initializing" — is a wait, not a transfer.
+var _TRANSFERRING_RE = /inprogress/i
+
 // A peer that accepts a request and then never uploads looks perfectly healthy
 // to failure-based logic — it never errors, it just sits there. Only report a
 // stall when there is somewhere better to go: abandoning a queue position we
 // have already waited for, with no alternative lined up, is strictly worse
 // than waiting. That mistake is what makes downloads look like they vanished.
-function stalledItems(state, cfg, now) {
+//
+// `progress` is what slskd says about each in-flight key RIGHT NOW, as
+// { key: { state, bytesTransferred } }. Without it this function measured
+// nothing but wall clock: a 20-minute wait counted as a stall whether the file
+// was sitting at zero bytes in a peer's queue or streaming steadily the whole
+// time. The caller then DELETEd the transfer and re-requested it elsewhere —
+// and Soulseek has no resume, so a slow-but-healthy FLAC that was 19 minutes in
+// restarted from zero, over and over, and never finished. A big file on a slow
+// peer is the normal case, not the broken one.
+//
+// So: a transfer slskd calls InProgress is never a stall, and neither is one
+// whose byte count moved since the last tick — however slowly. The bytes are
+// stamped on the in-flight entry here (`_lastBytes` / `_lastBytesAt`) because
+// this is the one place that sees both the previous picture and the new one.
+// A transfer stuck at ZERO bytes never refreshes the clock, which is exactly
+// the "Queued, Remotely for twenty minutes" case the stall check exists for.
+//
+// Passing no `progress` keeps the old wall-clock-only behaviour, so a caller
+// with no snapshot in hand still works.
+function stalledItems(state, cfg, now, progress) {
   cfg = Object.assign({}, DEFAULTS, cfg || {})
   now = now == null ? Date.now() : now
   var byPeer = inflightByPeer(state)
@@ -971,7 +1116,24 @@ function stalledItems(state, cfg, now) {
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i]
     var live = state.inflight[key]
+    var p = progress ? progress[key] : null
+    var active = false
+    if (p) {
+      if (_TRANSFERRING_RE.test(String(p.state == null ? '' : p.state))) active = true
+      var bytes = Number(p.bytesTransferred)
+      if (!Number.isFinite(bytes) || bytes < 0) bytes = 0
+      var prev = live._lastBytes == null ? null : Number(live._lastBytes)
+      if (prev != null && bytes > prev) active = true
+      // Only real movement refreshes the clock. Stamping on a first sighting of
+      // a zero-byte transfer would hand every wedged file a fresh twenty minutes
+      // on every restart, which is the failure this check exists to catch.
+      if (bytes > 0 && (prev == null || bytes > prev)) live._lastBytesAt = now
+      live._lastBytes = bytes
+    }
+    if (active) continue
     if ((now - live.since) < cfg.stallAfterMs) continue
+    // Bytes that moved recently, even if nothing moved during THIS tick.
+    if (live._lastBytesAt != null && (now - live._lastBytesAt) < cfg.stallAfterMs) continue
     var pseudo = { sources: live.sources || [], tried: live.tried || [], triedAt: live.triedAt || {} }
     var alt = eligibleSource(state, pseudo, cfg, byPeer, now)
     if (!alt || alt.username === live.username) continue
@@ -1231,6 +1393,8 @@ var _PapaDownloadScheduler = {
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
   sameRecordingSize: sameRecordingSize,
+  prunePeerFailures: prunePeerFailures,
+  dispatchOutcome: dispatchOutcome,
   inflightIdentities: inflightIdentities,
   logSubstitution: logSubstitution,
   nextGlobalInflight: nextGlobalInflight,
