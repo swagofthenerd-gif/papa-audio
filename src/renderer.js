@@ -31705,6 +31705,11 @@ function showSlskConfigModal(query) {
   // re-run afterwards), so a second call focuses the open dialog.
   const existing = document.getElementById('slsk-config-modal')
   if (existing) { existing.querySelector('#slsk-cfg-user')?.focus(); return }
+  // Read the opener BEFORE the dialog exists, so closing can hand focus back
+  // to whatever opened it. This modal used to neither take focus on open
+  // (focus stayed on the Settings button behind the overlay) nor give it back
+  // on close (it landed on an unrelated button).
+  const opener = document.activeElement
   const dlg = document.createElement('div')
   dlg.id = 'slsk-config-modal'
   dlg.className = 'modal-overlay'
@@ -31727,12 +31732,19 @@ function showSlskConfigModal(query) {
     </div>
   </div>`
   document.body.appendChild(dlg)
+  // Focus goes into the dialog the moment it exists, and Tab stays inside it.
+  try { dlg.querySelector('#slsk-cfg-user')?.focus() } catch (_) {}
+  const _releaseCfgFocus = _trapFocus(dlg, { initial: '#slsk-cfg-user' })
   // This one had neither: Escape did nothing and every navigation left it
   // floating over the next page.
   const _closeCfg = () => {
     _unregisterNavDismiss(_closeCfg)
     document.removeEventListener('keydown', _onCfgKey)
     dlg.remove()
+    try { _releaseCfgFocus() } catch (_) {}
+    if (opener && opener.isConnected && typeof opener.focus === 'function') {
+      try { opener.focus() } catch (_) {}
+    }
   }
   const _onCfgKey = e => { if (e.key === 'Escape') { e.preventDefault(); _closeCfg() } }
   document.addEventListener('keydown', _onCfgKey)
@@ -38654,13 +38666,17 @@ var _slskFriends = {
   // Set when a status refresh fails, so a peer we could not look up says
   // "Couldn't check" rather than sitting on "Checking…" forever.
   statusFailed: false,
+  // Set when main tells us slskd is not logged in to Soulseek. Different fact
+  // from statusFailed: the lookup did not fail, it never happened, and every
+  // peer came back Unknown. Without this the whole list sat on "Checking…".
+  serverOffline: false,
 }
 
 function _slskFriendRows() {
   var P = window.PapaSlskPresence
   if (!P) return []
   return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses,
-    { checkFailed: _slskFriends.statusFailed }))
+    { checkFailed: _slskFriends.statusFailed, serverOffline: _slskFriends.serverOffline }))
 }
 
 function renderSlskFriends() {
@@ -38686,6 +38702,12 @@ function _slskFriendsApplyStatuses(payload) {
   if (!payload) return
   if (Array.isArray(payload.statuses)) _slskFriends.statuses = payload.statuses
   _slskFriends.statusFailed = false
+  // The IPC replies carry `connected`; the pushed broadcast calls it
+  // `serverConnected`. Either one, and only when it is an actual boolean —
+  // null means "no saved peers, nothing was asked", which is not a verdict.
+  var conn = typeof payload.connected === 'boolean' ? payload.connected
+    : (typeof payload.serverConnected === 'boolean' ? payload.serverConnected : null)
+  if (conn !== null) _slskFriends.serverOffline = !conn
   renderSlskFriends()
 }
 

@@ -49,6 +49,13 @@
   if (_slskExplorerClose) { try { _slskExplorerClose() } catch (_) {} }
   document.getElementById('slsk-user-lib-modal')?.remove()
 
+  // Focus came from somewhere and has to go back there when the shop closes.
+  // This has to be read BEFORE the dialog is appended and focused: read after
+  // that, it only ever sees the close button, which is removed with the dialog,
+  // so the isConnected guard in close() skipped the restore and focus fell to
+  // <body> -- Tab then restarted from the top of the page.
+  const opener = document.activeElement
+
   const T = window.PapaSlskTree
   const SH = window.PapaSlskShelves
   const AV = window.PapaSlskAlbumView   // the shared album view (slide-over)
@@ -156,11 +163,6 @@
       },
     })
   }
-
-  // Focus came from somewhere and has to go back there. Closing the shop used
-  // to leave focus on a removed node, which drops it to <body> -- Tab then
-  // restarted from the top of the page.
-  const opener = document.activeElement
 
   const close = () => {
     if (_slavPanel) { try { _slavPanel.close() } catch (_) {} _slavPanel = null }

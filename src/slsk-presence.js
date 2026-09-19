@@ -19,13 +19,18 @@ function presenceLabel(raw) {
   return PRESENCE_UNKNOWN
 }
 
-// `checkFailed` is the difference between "we have not asked yet" and "we
-// asked and could not find out". Without it a failed lookup sat on "Checking…"
-// forever, which reads as a request still in flight.
-function presenceText(label, checkFailed) {
+// Three different reasons a peer can be unknown, and each gets its own words.
+// `checkFailed` is "we asked and could not find out" — without it a failed
+// lookup sat on "Checking…" forever, which reads as a request still in flight.
+// `serverOffline` is "nobody asked, because slskd is not logged in to Soulseek
+// at all": main records every saved peer as Unknown in that case and resolves
+// normally, so nothing failed and "Couldn't check" would be wrong too. It wins
+// over checkFailed — the connection being down is the more specific fact.
+function presenceText(label, checkFailed, serverOffline) {
   if (label === PRESENCE_ONLINE) return 'Online'
   if (label === PRESENCE_AWAY) return 'Away'
   if (label === PRESENCE_OFFLINE) return 'Offline'
+  if (serverOffline) return 'Soulseek offline'
   return checkFailed ? "Couldn't check" : 'Checking…'
 }
 
@@ -54,6 +59,7 @@ function indexStatuses(statuses) {
 
 function mergeStatuses(users, statuses, opts) {
   var checkFailed = !!(opts && opts.checkFailed)
+  var serverOffline = !!(opts && opts.serverOffline)
   var byName = indexStatuses(statuses)
   return (users || []).map(function (u) {
     var s = byName[statusKey(u.username)]
@@ -66,7 +72,8 @@ function mergeStatuses(users, statuses, opts) {
       savedAt: u.savedAt || 0,
       lastBrowsedAt: u.lastBrowsedAt || null,
       presence: label,
-      presenceText: presenceText(label, checkFailed && label === PRESENCE_UNKNOWN),
+      presenceText: presenceText(label, checkFailed && label === PRESENCE_UNKNOWN,
+        serverOffline && label === PRESENCE_UNKNOWN),
       isPrivileged: !!(s && s.isPrivileged),
       checkedAt: s && s.checkedAt ? s.checkedAt : null,
     }

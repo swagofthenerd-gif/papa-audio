@@ -45,12 +45,13 @@ function makeDom() {
   function Stub(sel) {
     return {
       _sel: sel, value: '', textContent: '', disabled: false, focused: 0,
+      isConnected: true,
       dataset: {}, style: { display: '' }, classList: { add() {}, remove() {}, toggle() {} },
       _l: {},
       addEventListener(t, fn) { (this._l[t] = this._l[t] || []).push(fn) },
       removeEventListener() {},
       fire(t, ev) { for (const fn of this._l[t] || []) fn(ev || {}) },
-      focus() { this.focused++ },
+      focus() { this.focused++; document.activeElement = this },
       querySelector: () => null, querySelectorAll: () => [],
       remove() {},
     }
@@ -58,7 +59,7 @@ function makeDom() {
   function El(tag) {
     const stubs = new Map()
     return {
-      tagName: tag, id: '', className: '', innerHTML: '',
+      tagName: tag, id: '', className: '', innerHTML: '', isConnected: false,
       _stubs: stubs, _l: {},
       querySelector(sel) {
         if (!stubs.has(sel)) stubs.set(sel, Stub(sel))
@@ -69,15 +70,19 @@ function makeDom() {
       removeEventListener() {},
       fire(t, ev) { for (const fn of this._l[t] || []) fn(ev || {}) },
       remove() {
+        this.isConnected = false
         const i = document.body.children.indexOf(this)
         if (i > -1) document.body.children.splice(i, 1)
       },
     }
   }
   const document = {
+    // Focus is part of a dialog's lifecycle: something owned it before the
+    // dialog opened, and has to own it again after the dialog is gone.
+    activeElement: null,
     body: {
       children: [],
-      appendChild(el) { this.children.push(el); return el },
+      appendChild(el) { el.isConnected = true; this.children.push(el); return el },
     },
     createElement: (tag) => El(tag),
     getElementById(id) { return document.body.children.find(c => c.id === id) || null },
@@ -282,4 +287,98 @@ test('MUTATION: dropping the Soulseek Escape handler brings the trapped modal ba
   h.ctx.showSlskConfigModal('radiohead')
   h.document._fire('keydown', { key: 'Escape', preventDefault() {} })
   assert.strictEqual(h.document.body.children.length, 1, 'this is the reported bug')
+})
+
+// ── The Soulseek Account modal's focus, open and close ──────────────────────
+// It took no focus on open (focus stayed on the Settings button behind the
+// overlay) and gave none back on close (it landed on whatever the browser
+// picked next). Live: activeElement never left the Settings button while the
+// dialog was up, and after Escape it was on an unrelated button.
+
+// A control on the page behind the modal: the thing that opened it.
+function settingsButton(document) {
+  return {
+    tagName: 'BUTTON', isConnected: true, focused: 0,
+    focus() { this.focused++; document.activeElement = this },
+  }
+}
+
+test('the Soulseek Account modal takes focus into the username field', () => {
+  const h = harness(RENDERER)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  const user = h.document.body.children[0].querySelector('#slsk-cfg-user')
+  assert.strictEqual(h.document.activeElement, user,
+    'focus used to stay on the opener behind the overlay')
+  assert.ok(user.focused > 0)
+})
+
+test('and hands it back to the opener when Escape closes it', () => {
+  const h = harness(RENDERER)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  h.document._fire('keydown', { key: 'Escape', preventDefault() {} })
+  assert.deepStrictEqual(h.overlays(), [], 'it closed')
+  assert.strictEqual(h.document.activeElement, opener,
+    'focus used to land on an unrelated button')
+})
+
+test('Cancel restores the opener too, not just Escape', () => {
+  const h = harness(RENDERER)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  h.document.body.children[0].querySelector('#slsk-cfg-cancel').fire('click')
+  assert.deepStrictEqual(h.overlays(), [])
+  assert.strictEqual(h.document.activeElement, opener)
+})
+
+test('an opener that is gone by closing time is left alone', () => {
+  // The guard that keeps the restore from focusing a detached node.
+  const h = harness(RENDERER)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  opener.isConnected = false
+  const before = opener.focused
+  h.document._fire('keydown', { key: 'Escape', preventDefault() {} })
+  assert.strictEqual(opener.focused, before, 'a removed opener must not be focused')
+})
+
+test('the modal installs a focus trap so Tab cannot walk the page behind it', () => {
+  const h = harness(RENDERER)
+  const trapped = []
+  h.ctx._trapFocus = (container, opts) => { trapped.push(opts && opts.initial); return () => {} }
+  h.ctx.showSlskConfigModal('radiohead')
+  assert.deepStrictEqual(trapped, ['#slsk-cfg-user'])
+})
+
+test('MUTATION: dropping the opener restore drops focus on close again', () => {
+  const broken = RENDERER.replace(
+    "    if (opener && opener.isConnected && typeof opener.focus === 'function') {\n      try { opener.focus() } catch (_) {}\n    }\n",
+    '')
+  assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
+  const h = harness(broken)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  h.document._fire('keydown', { key: 'Escape', preventDefault() {} })
+  assert.notStrictEqual(h.document.activeElement, opener, 'this is the reported bug')
+})
+
+test('MUTATION: reading the opener after the dialog is focused breaks the restore', () => {
+  const line = '  const opener = document.activeElement\n'
+  const broken = RENDERER
+    .replace(line, '')
+    .replace('  // This one had neither:', line + '  // This one had neither:')
+  assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
+  const h = harness(broken)
+  const opener = settingsButton(h.document)
+  opener.focus()
+  h.ctx.showSlskConfigModal('radiohead')
+  h.document._fire('keydown', { key: 'Escape', preventDefault() {} })
+  assert.notStrictEqual(h.document.activeElement, opener,
+    'the capture has to happen before the dialog exists')
 })
