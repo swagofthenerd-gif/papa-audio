@@ -36,6 +36,12 @@ const SIDE_STORES = {
   savedQueues:    { file: 'saved-queues.json',    fallback: [] },
   playlists:      { file: 'playlists.json',       fallback: [] },
   likedTracks:    { file: 'liked-tracks.json',    fallback: [] },
+  // Not one of the eight retired keys — loudnessMap was never in config.json,
+  // it has been a SideStore since it was introduced. It is here because the
+  // phone asks for a track's ReplayGain (/api/loudness) and the desktop's
+  // measured value is the only honest answer. Shape:
+  // { [filePath]: { lufs, gainDb, at } }.
+  loudnessMap:    { file: 'loudness-map.json',    fallback: {} },
 }
 
 // The desktop rewrites these files while the bridge is running — a scan, a

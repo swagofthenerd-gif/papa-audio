@@ -1111,6 +1111,19 @@ const sideStores = {
   likedTracks:  new SideStore({ dir: USER_DATA, name: 'liked-tracks',  fallback: [], debounceMs: 400, onError: _sideErr }),
 }
 
+// Phone-side mutations reach the desktop from here. The LAN bridge must not
+// write these files (one writer per store), so it queues likes, playlists, play
+// counts, history, saved queues, recently-played and playback state in
+// bridge-inbox.json instead; this drains that queue through the stores above.
+// Without it a like made on the phone stayed a phone-only like forever.
+// See src/bridge-inbox-ingest.js.
+const bridgeInboxIngest = require('./src/bridge-inbox-ingest')
+bridgeInboxIngest.start({
+  userData: USER_DATA,
+  sideStores,
+  log: m => console.log(m),
+})
+
 // Move out of the shared config, and retire the legacy copy left behind.
 // adoptIfEmpty only takes the legacy value when the side file does not exist
 // yet, so a stale config value can never resurrect over data the app has since
@@ -2647,6 +2660,10 @@ app.on('will-quit', () => {
   // which Chromium commits to disk on its own delayed timer rather than
   // synchronously on write; force that flush before the process goes away.
   try { session.defaultSession.flushStorageData() } catch (_) {}
+  // Before flushSideStores, not after: stop() drains the bridge inbox one last
+  // time into the side stores' in-memory values, and the flush below is what
+  // puts them on disk.
+  try { bridgeInboxIngest.stop() } catch (_) {}
   flushSideStores()
   flushLogSync()
   // Before the unlink, or a write still in flight recreates the file.
