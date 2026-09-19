@@ -859,13 +859,23 @@ class TorrentStreamer extends EventEmitter {
     // the current episode fully downloaded and idle peers holding the next
     // episode's data, prefetchFile() still pulled zero bytes in two minutes
     // until this was cancelled.
+    //
+    // All of which is true only of a torrent we added. On a REUSED torrent —
+    // one another part of the app already had, matched by info hash — these
+    // calls are somebody else's download: deselecting every other file and
+    // cancelling the whole-torrent selection silently stopped a background
+    // music torrent of the same hash mid-download. The file this stream wants
+    // is still selected either way, so a reused torrent gets the select and
+    // nothing else.
     try {
-      for (let i = 0; i < files.length; i++) {
-        if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
-      }
       if (typeof file.select === 'function') file.select()
-      if (typeof torrent.deselect === 'function' && torrent.pieces) {
-        torrent.deselect(0, torrent.pieces.length - 1, false)
+      if (this._ownsTorrent) {
+        for (let i = 0; i < files.length; i++) {
+          if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
+        }
+        if (typeof torrent.deselect === 'function' && torrent.pieces) {
+          torrent.deselect(0, torrent.pieces.length - 1, false)
+        }
       }
     } catch (_) { /* selection is an optimisation, never fatal */ }
 

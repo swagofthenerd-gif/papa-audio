@@ -241,6 +241,56 @@ test('stop() on an OWNED torrent destroys it with destroyStore', async () => {
   assert.deepStrictEqual(torrent.destroyOpts, { destroyStore: true }, 'store destroyed too')
 })
 
+// The same ownership rule applies to the SELECTION, not only to destroy().
+// On a torrent we created, deselecting every other file and cancelling
+// WebTorrent's whole-torrent selection is the right thing: the pack's other
+// episodes are dead weight competing for the connection. On a REUSED torrent
+// it is somebody else's download — a background music torrent of the same
+// info hash silently stopped mid-download.
+function selectableTorrent() {
+  const t = fakeTorrent()
+  t.files = ['ep01.mkv', 'ep02.mkv', 'ep03.mkv'].map(name => ({
+    name, length: 1000, selected: null,
+    createReadStream: () => new Readable(),
+    select() { this.selected = true },
+    deselect() { this.selected = false },
+  }))
+  t.pieces = new Array(10)
+  t.deselectCalls = []
+  t.deselect = (a, b, c) => t.deselectCalls.push([a, b, c])
+  return t
+}
+
+test('a REUSED torrent keeps every other file selected', async () => {
+  const torrent = selectableTorrent()
+  torrent.ready = true
+  const client = { get: () => torrent, add() { throw new Error('must reuse, never re-add') } }
+  const streamer = new TorrentStreamer({ client })
+  await streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA', fileIndex: 0 })
+  assert.strictEqual(streamer._ownsTorrent, false, 'a reused torrent is not owned')
+  assert.strictEqual(torrent.files[0].selected, true, 'the file being watched is still selected')
+  assert.strictEqual(torrent.files[1].selected, null,
+    "another consumer's file must not be deselected under it")
+  assert.strictEqual(torrent.files[2].selected, null)
+  assert.deepStrictEqual(torrent.deselectCalls, [],
+    "cancelling the whole-torrent selection stops somebody else's download")
+  streamer.stop()
+})
+
+test('an OWNED torrent still sheds the rest of the pack', async () => {
+  const torrent = selectableTorrent()
+  const client = readyClient(torrent)
+  const streamer = new TorrentStreamer({ client })
+  await streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA', fileIndex: 0 })
+  assert.strictEqual(streamer._ownsTorrent, true)
+  assert.strictEqual(torrent.files[0].selected, true)
+  assert.strictEqual(torrent.files[1].selected, false, 'dead weight in our own pack is shed')
+  assert.strictEqual(torrent.files[2].selected, false)
+  assert.strictEqual(torrent.deselectCalls.length, 1,
+    "WebTorrent's own whole-torrent selection is still cancelled on our torrent")
+  streamer.stop()
+})
+
 // A reused torrent stopped before it ever fired 'ready' must have its pending
 // once('ready') handler removed, or the closure (and the torrent) leaks.
 test('stop() before a reused torrent is ready removes the ready handler', async () => {
