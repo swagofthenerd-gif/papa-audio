@@ -917,3 +917,21 @@ KILL) before `startSlskd`; "restarted" logged only on a pid change. H2
 first version tested the predicate only and stayed green with the call site
 deleted — wiring assertion added). L10 ledgers pruned/capped; refused
 members leave the group ledger so albums verify.
+
+### 19 Sep — bridge inbox ingester + the three missing phone routes merged
+`feat/bridge-inbox-ingest` (2 commits): `src/bridge-inbox-ingest.js` drains
+`bridge-inbox.json` through the desktop's own `sideStores.*` using the
+bridge's `applyInbox` verbatim (no drift between what the phone saw and
+what the desktop lands); watermark in a sibling `bridge-inbox.state.json`
+written BEFORE truncation (a crash re-skips, never re-applies — play counts
+are not idempotent); truncation re-reads before rename so a concurrent
+append survives; first pass deferred past `retireLegacyKeys`. Two main.js
+touch points only. Routes: `/api/loudness` serves the desktop's `gainDb`
+from `loudness-map.json` (null when unmeasured — never an invented 0);
+`/api/crash-log` appends to a bridge-owned `phone-crash-log.txt` (0600,
+1 MB rotate); `/api/app-update` serves the pair `publish-apk.sh` already
+writes (`version.json` + `latest.apk`; `$PAPA_BRIDGE_APK_DIR` →
+`<USER_DATA>/apk/` → `~/papa-audio-android/dist/`), refusing a manifest
+with no APK beside it; `/api/app-update/apk` joins the `?token=` set. My
+re-checks: watermark guard removed → 3/9 red; truncation keep-set guard
+weakened → 3/9 red. HIS ACTION: restart `papa-bridge.service`.
