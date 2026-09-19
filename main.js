@@ -7581,6 +7581,53 @@ function dlTrackGroups(items) {
   }
 }
 
+// Remove files the scheduler would not take from the group ledger.
+//
+// dlTrackGroups runs BEFORE addItems (it is the only point that knows the
+// intended track count), so it records files addItems then refuses — an
+// abandoned identity, a duplicate, a lossy copy dropped because the same title
+// arrived lossless in the batch. isGroupComplete requires EVERY file in the
+// group to have succeeded, so one refused member meant the album could never
+// verify and never auto-organize, and the group sat in the ledger being
+// re-walked every four seconds for the life of the process.
+function dlUntrackGroupFiles(filenames) {
+  const drop = new Set((filenames || []).filter(Boolean))
+  if (!drop.size) return 0
+  let removed = 0
+  for (const [key, g] of dlGroups) {
+    for (const f of Array.from(g.files)) {
+      if (!drop.has(f)) continue
+      g.files.delete(f)
+      g.expected = Math.max(0, (g.expected || 1) - 1)
+      removed++
+    }
+    // A group with nothing left in it is not an album, it is a leak.
+    if (g.files.size === 0) dlGroups.delete(key)
+  }
+  return removed
+}
+
+// Groups that never complete — an abandoned peer, a folder whose last track is
+// dead — are never retired by dlCheckCompletedGroups, because retirement is what
+// completion triggers. Nothing else evicts them, so the ledger only ever grew,
+// and every tick walked all of it. Oldest first: a Map iterates in insertion
+// order, and the oldest incomplete album is the one least likely to finish.
+const DL_GROUP_CAP = 200
+function dlCapGroups(cap) {
+  const max = cap == null ? DL_GROUP_CAP : cap
+  let evicted = 0
+  while (dlGroups.size > max) {
+    const oldest = dlGroups.keys().next()
+    if (oldest.done) break
+    const g = dlGroups.get(oldest.value)
+    if (g && g.files) for (const f of g.files) dlSucceeded.delete(f)
+    dlGroups.delete(oldest.value)
+    dlVerifiedGroups.delete(oldest.value)
+    evicted++
+  }
+  return evicted
+}
+
 function dlConfig() {
   const saved = store.get('slskSchedulerConfig', {})
   const cfg = Object.assign({}, dlSched.DEFAULTS, saved)
@@ -8359,6 +8406,10 @@ async function dlTick() {
     // no cap and no TTL, so it grew for the life of the process. Terminal entries
     // are the whole content of it, so pruning here is pruning all of it.
     pruneDlDone()
+    // peerFailures grew one entry per peer ever met and lost none. A peer whose
+    // bench has expired with no streak left is not remembered by anything.
+    dlSched.prunePeerFailures(dlState, now)
+    dlCapGroups()
 
     // After reconciliation, never before: see the comment on dlPurgeSucceeded.
     try { await dlPurgeSucceeded(now) } catch (e) {
@@ -8961,6 +9012,10 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacit
     payload.push({ filename: it.filename, size: it.size || 0, sources })
   }
   const res = dlSched.addItems(dlState, payload, { force: !!force })
+  // The ledger was filled in above, before the scheduler had its say. Take back
+  // out whatever it would not accept, or the album can never be complete.
+  dlUntrackGroupFiles(res.refused.map(r => r && r.filename).concat(res.droppedFiles || []))
+  dlCapGroups()
   added = res.added
   // A refusal used to be a silent null the caller discarded, so asking again
   // for something you had cancelled looked like a button that did nothing.

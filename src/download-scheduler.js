@@ -567,7 +567,7 @@ function _fpCompatible(orig, cand) {
 // exactly as addItem takes; opts is passed through to addItem (force, priority).
 // Returns { added, refused:[{filename,reason}], merged } for the caller to report.
 function addItems(state, items, opts) {
-  var out = { added: 0, refused: [], merged: 0, dropped: 0 }
+  var out = { added: 0, refused: [], merged: 0, dropped: 0, droppedFiles: [] }
   var list = (items || []).filter(function (it) { return it && it.filename })
   // Stable grouping by identity, preserving first-seen order so the file the user
   // actually clicked (first in the list) anchors the item.
@@ -605,6 +605,9 @@ function addItems(state, items, opts) {
       // A lossy group whose title also came in lossless this batch: drop it whole.
       for (var d = 0; d < members.length; d++) {
         out.dropped++
+        // Named, not just counted: the album-group ledger has to remove a file it
+        // was told to expect, or the group can never be complete.
+        out.droppedFiles.push(members[d].filename)
         logSubstitution(state, {
           at: Date.now(), key: itemKey(members[d].filename),
           from: null, to: members[d].filename,
@@ -944,6 +947,35 @@ function recordFailure(state, key, username, cfg, now) {
   // Nothing left to try: hold it, a later search may add a fresh source.
   state.pending.push(entry)
   return entry
+}
+
+// peerFailures gained an entry per peer and never lost one. Discovery meets a
+// new peer on every hunt, so over a long run it is a map of every Soulseek user
+// the app has ever spoken to, persisted and reloaded on every start. Nothing
+// reads a peer whose cooldown has expired and whose streak is zero, so those are
+// exactly the ones to drop. The cap is the backstop for a run that meets more
+// live peers than that at once: oldest bench first.
+var PEER_FAILURE_CAP = 500
+function prunePeerFailures(state, now, cap) {
+  now = now == null ? Date.now() : now
+  cap = cap == null ? PEER_FAILURE_CAP : cap
+  var keys = Object.keys(state.peerFailures || {})
+  var kept = []
+  for (var i = 0; i < keys.length; i++) {
+    var f = state.peerFailures[keys[i]] || {}
+    var benched = Number(f.benchedUntil) || 0
+    // Spent: not benched any more, and no streak to carry into the next failure.
+    if (benched <= now && !(Number(f.consecutive) || 0)) {
+      delete state.peerFailures[keys[i]]
+      continue
+    }
+    kept.push({ u: keys[i], until: benched })
+  }
+  if (kept.length <= cap) return keys.length - kept.length
+  kept.sort(function (a, b) { return a.until - b.until })
+  var over = kept.length - cap
+  for (var j = 0; j < over; j++) delete state.peerFailures[kept[j].u]
+  return keys.length - cap
 }
 
 function addSources(state, key, sources, cfg) {
@@ -1361,6 +1393,7 @@ var _PapaDownloadScheduler = {
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
   sameRecordingSize: sameRecordingSize,
+  prunePeerFailures: prunePeerFailures,
   dispatchOutcome: dispatchOutcome,
   inflightIdentities: inflightIdentities,
   logSubstitution: logSubstitution,
