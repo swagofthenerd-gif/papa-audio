@@ -1188,3 +1188,21 @@ D10 mute label+pressed double semantics; D11 401 logged as "reconnected"
 every 60 s; D12 SIGTERM to the process GROUP leaves `cleanShutdown` false →
 false crash prompt (investigate main pid vs group); D14 fast Next resolves
 every skipped YouTube track (43 resolves for 20 Nexts, 4.5 s title lag).
+
+### 19 Sep (morning) — final-pass findings closed, agents paused
+He asked to pause subagents and save tokens; from here small work is done
+by hand. The stopped executor's 8 committed items merged
+(`fix/final-pass-findings`: twin paths inside the twin dir, artist bio via
+main, year filter keeps untagged albums + chip sign, notices/import dialogs,
+light-theme leftovers, music-card arrows, Library Escape). Done by hand:
+D9 Manage tabs a real tablist; D10 mute = stable name + aria-pressed; D11
+was already in; D12 measured — TERM to the main pid alone shuts down clean,
+the GROUP case did not reach the flag write, so `cleanShutdown` is now the
+FIRST write in `shutdownFromSignal` (pinned by order test); D14 player-load
+settles 250 ms for YouTube paths and only the newest resolves (lifted
+handler test; mutation red). Lost my own uncommitted main.js edits once to
+`git checkout --` — commit before mutating, always. Gate green; pushed.
+Token post-mortem: ~30 agents × 100–600k tokens; ~40 % spent on agents
+re-reading the same two huge files, my re-verification, long reports and
+~25 full-suite runs. Rule now: no agents for small work, touched-file
+tests, one gate before push.
