@@ -182,6 +182,35 @@ function _normTitle(base) {
     .replace(/\s+/g, ' ')
     .trim()
 }
+// The leading disc/track number _normTitle deliberately strips, recovered so an
+// album-scoped identity can keep two same-titled tracks apart.
+//
+// Stripping it was right for cross-peer matching: "19 - ItsNot…" and
+// "21 - ItsNot…" are one song two peers numbered differently, and leaving the
+// number in stopped them collapsing. But an album can hold several tracks with
+// the SAME title — three "Untitled"s, two "Interlude"s, "Reprise" twice — and
+// with the number gone they all produced one identity, so addItems merged them
+// into one item, the rest were refused as duplicates, and dlRestore threw them
+// away again on the next start. The user asked for twelve tracks and got ten.
+//
+// The number only goes back into the ALBUM-scoped key (the 'a:' form), where
+// artist and album already pin the release and two peers of that release number
+// its tracks identically. The loose-single 't:' form is untouched — that is the
+// cross-peer case the stripping exists for.
+//
+// Returns '' when there is no number to read, so an album whose files carry no
+// track numbers keys exactly as it did before.
+function _trackNo(base) {
+  var s = String(base || '').replace(/\.[a-z0-9]+$/i, '')
+  // Disc-track first ("1-04", "1.04", "1_04"): the disc matters, "1-04" and
+  // "2-04" are different tracks.
+  var m = /^\s*(\d{1,3})\s*[-_.]\s*(\d{1,3})\b/.exec(s)
+  if (m) return String(Number(m[1])) + '-' + String(Number(m[2]))
+  m = /^\s*(\d{1,3})\s*[-_.)\s]/.exec(s)
+  if (m) return String(Number(m[1]))
+  return ''
+}
+
 // A parsed album is "usable" only when it gives us a real disambiguator: an
 // artist, or an album that is not merely the peer's junk share folder. Without
 // one we cannot trust the folder to identify the release, and fall back to the
@@ -211,7 +240,9 @@ function identityKey(filename, size) {
   // across peers). Album alone is not enough: parseAlbumFolder happily returns
   // the peer's junk folder name as "album" for a loose single, and those differ
   // per peer — the whole reason the old key failed.
-  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  // The track number goes in ONLY here, where artist and album already pin the
+  // release: it is what keeps an album's three "Untitled"s apart. See _trackNo.
+  if (artist) return 'a:' + artist + '|' + album + '|' + _trackNo(_basename(name)) + '|' + title
   // Fallback: title + size-band. Comment the tradeoff at the top of this block.
   var band = _bandSize(size)
   return band != null ? 't:' + title + '|~' + band : 't:' + title
@@ -243,8 +274,10 @@ function songKey(filename) {
     } catch (_) { artist = ''; album = '' }
   }
   // With an artist the identity is already band-independent, so it IS the song
-  // key. Only the loose-single fallback needs the band stripped.
-  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  // key. Only the loose-single fallback needs the band stripped. The track
+  // number is carried here too: without it, cancelling one "Untitled" blocked
+  // every other "Untitled" on the same album, which is H2 wearing a cancel.
+  if (artist) return 'a:' + artist + '|' + album + '|' + _trackNo(_basename(name)) + '|' + title
   return 't:' + title
 }
 
