@@ -1030,3 +1030,27 @@ snapshot; 5xx → "slskd could not fetch this library — try again";
   Gate 6,379/0, pushed. Note to self: a `&&` chain after `grep` committed
   once while a test was red; the gate caught it, but commit only after the
   test line prints `fail 0`.
+
+### 19 Sep — Soulseek UI honesty merged; gate 6,483/0; 17-page sweep clean
+`fix/slsk-ui-honesty` (13 commits): `_slskEnqueue` answers one shape and
+speaks a refusal once; every caller gates on `res.ok` (results card,
+shelves batch, folders/album buttons, Play spinner); Retry/Remove/Clear on
+Downloads read the IPC result (the Done list had the same swallow,
+unreported); `_slskBeginSearchPaint` runs before the correction await;
+`#soulseek-settings` group (account, folder, sharing) makes the copy true;
+folders label/size/download share one `audioBelow` walk with a confirm
+above 50 files / 5 GB; wishlist dedupe via `PapaWishlist`; shop focus in/
+out, album view `aria-modal`, folder rows focusable; a11y pass; `NAV_PAGES`
+allow-list in `navigate()`; jump moves focus; disabled states with reasons;
+indeterminate "Fetching X's file list from slskd…" before the first chunk;
+`set currentTime` holds a seek until mpv answers (no unhandled rejection);
+preload re-baselines the IPC sequence after a zero-listener gap so a late
+subscriber is not reported as a "miss". My re-checks: `ok:false` branch
+silenced → 2/11 red; pre-correction paint removed → 2/2 red.
+Merge combination broke five harnesses that each branch passed alone
+(`journey-nav` lifts `navigate` without `NAV_PAGES`; the Stop All row is now
+three lines; the search reset moved; the jump focuses; the pull block calls
+`shLoadingProgress`/`classList`). Fixed in 0515daa; gate 6,483/0; 17-page
+twin sweep 0 throws, `#soulseek-settings` present, unknown page id refused.
+The probe's `settings`/`queue`/`slsk` ids were never real `navigate` pages
+(0 call sites) — they only ever "worked" because navigate accepted anything.
