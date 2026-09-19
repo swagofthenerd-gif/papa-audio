@@ -315,6 +315,7 @@ class MpvEngine extends EventEmitter {
     this._socketPath = socketPath
     this._stopping = false
     this._gen++
+    const gen = this._gen
     this._eofState = 'idle'
     this._rec('spawn', {
       binary: this.binary, socketPath, generation: this._gen,
@@ -342,7 +343,18 @@ class MpvEngine extends EventEmitter {
       if (this.proc === proc) this._onExit()
     })
     this.client = new MpvIpcClient(socketPath)
-    await this.client.connect()
+    try {
+      await this.client.connect()
+    } catch (err) {
+      // mpv spawned but its socket never became ready. The bare throw left an
+      // idle mpv running with its socket file on disk and nothing holding a
+      // reference to either — alive was never set, so stop() would never be
+      // called on it. video-engine already tore down on this exact path; this
+      // is the same teardown.
+      this._rec('connect-failed', { error: String((err && err.message) || err), socketPath })
+      this._abandonStart(gen)
+      throw err
+    }
     // Same identity rule: stop() destroys the socket, but the 'disconnected'
     // that follows is delivered a tick later, by which time this.client may be
     // the replacement's.
@@ -370,6 +382,9 @@ class MpvEngine extends EventEmitter {
         const err = new Error(`could not observe ${prop}: ${(e && e.message) || e}`)
         err.code = 'OBSERVE_FAILED'
         err.property = prop
+        // Same leak as the connect failure: the throw alone left mpv running
+        // idle with its socket open, a process nothing would ever reach again.
+        this._abandonStart(gen)
         throw err
       }
     }
@@ -448,6 +463,23 @@ class MpvEngine extends EventEmitter {
     }
     this.emit('stalled', { path: this.state.path, position: this.state.position, stalledForMs: stalledFor, probe })
     this._emitDiagnostic('stalled', { stalledForMs: stalledFor, probe })
+  }
+
+  // Tear down a start() that failed part-way. Only while this start() is still
+  // the current one: a stale generation's process and client were already dealt
+  // with by the start() that replaced it, and this.proc now names that
+  // replacement's process — killing it here would take down a working engine.
+  _abandonStart(gen) {
+    if (gen !== this._gen) return
+    try { this.client?.close() } catch { /* already closed */ }
+    this.client = null
+    try { this.proc?.kill() } catch { /* already dead */ }
+    this.proc = null
+    this.alive = false
+    this._stopTicker()
+    if (this._socketPath && !this._fixedSocketPath) {
+      try { fs.unlinkSync(this._socketPath) } catch { /* mpv may have taken it already */ }
+    }
   }
 
   stop() {
