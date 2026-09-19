@@ -375,6 +375,18 @@ function createDebrid(opts = {}) {
       (typeof code === 'string' && code.startsWith('RD_'))
   }
 
+  // Drop a response body we are never going to read. Cancel if it can be
+  // cancelled, consume it otherwise; either way the socket goes back.
+  function _discard(res) {
+    if (!res) return
+    try {
+      const body = res.body
+      if (body && typeof body.cancel === 'function') { body.cancel().catch(() => {}); return }
+      if (body && typeof body.destroy === 'function') { body.destroy(); return }
+    } catch (_) { /* fall through to draining */ }
+    try { if (typeof res.text === 'function') Promise.resolve(res.text()).catch(() => {}) } catch (_) {}
+  }
+
   // Prove a link still serves bytes. RealDebrid answers 503 on a link that has
   // gone stale, and handing that to the player looks exactly like debrid not
   // working at all. One byte is enough to tell.
@@ -389,6 +401,12 @@ function createDebrid(opts = {}) {
         const res = await fetchFn(url, Object.assign(
           { method: 'GET', headers: { Range: 'bytes=0-0' } },
           ctrl ? { signal: ctrl.signal } : {}))
+        // A server that ignores the one-byte range answers 200 and starts
+        // sending the whole film. Nothing here reads that body, so the socket
+        // sat open until the shim's own deadline killed it 20 s later — one
+        // held connection per candidate probed, against servers that start
+        // refusing everything once connections pile up. Let it go now.
+        _discard(res)
         if (res && (res.status === 206 || res.status === 200)) return true
         // A 404/410 is a settled answer about the link; only retry a refusal
         // that is plausibly the server being busy.
