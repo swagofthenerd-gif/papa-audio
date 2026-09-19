@@ -15728,7 +15728,12 @@ function renderSearch(query) {
     <div class="search-tabs" id="search-tabs" role="tablist" aria-label="Search result categories">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" tabindex="${t==='All'?'0':'-1'}" data-tab="${t}">${t}</button>`).join('')}
     </div>
-    ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
+    ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button>' +
+      // The Soulseek lane sits below every local hit -- about 1,900px down on a
+      // library with matches -- and the only way to it was a scroll. The jump
+      // existed, but only in the no-local-results state, which is the one case
+      // where you could already see the lane.
+      '<button class="save-search-btn" id="search-jump-slsk" title="Go to the Soulseek results for this search">\u2193 Soulseek results</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
     <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>
     ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + op.key + ':' + op.value + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
@@ -15880,9 +15885,17 @@ function renderSearch(query) {
     state._searchTrackCap = Infinity
     renderSearch(query)
   })
-  document.getElementById('search-empty-slsk-btn')?.addEventListener('click', function() {
-    document.getElementById('slsk-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
+  // Both jumps move FOCUS as well as the viewport: scrolling alone leaves a
+  // keyboard user's next Tab back at the top of the page.
+  function _jumpToSlskLane() {
+    const sec = document.getElementById('slsk-section')
+    if (!sec) return
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (!sec.hasAttribute('tabindex')) sec.setAttribute('tabindex', '-1')
+    try { sec.focus({ preventScroll: true }) } catch (_) { try { sec.focus() } catch (_) {} }
+  }
+  document.getElementById('search-empty-slsk-btn')?.addEventListener('click', _jumpToSlskLane)
+  document.getElementById('search-jump-slsk')?.addEventListener('click', _jumpToSlskLane)
 
   document.querySelectorAll('.related-chip').forEach(function(chip) {
     chip.addEventListener('click', function() {
@@ -29561,6 +29574,18 @@ function _renderTorrentSection() {
   })
 }
 
+// An empty view caused by a filter has to offer the way out of it. Shared by
+// the tab-level empty state and the completed tab's own filter-empty.
+function _bindDlClearFilter(container) {
+  container.querySelector('#dl2-clear-filter')?.addEventListener('click', function () {
+    _dlFilter = ''
+    const input = document.getElementById('dl2-filter-input')
+    if (input) input.value = ''
+    _dlLastSig = ''
+    _renderDlTab(_dlLastFiles)
+  })
+}
+
 function _renderDlTab(files) {
   if (_dlTab === 'torrents') { _renderTorrentSection(); return }
   const subset = files.filter(f => _dlCategory(f.state) === _dlTab)
@@ -29609,10 +29634,19 @@ function _renderDlTab(files) {
           <span>slskd isn't responding, so downloads can't be listed. Check that it's running, then retry.</span>
           <button class="dl2-action-btn" id="dl2-daemon-retry" style="margin-top:12px">Retry</button>
         </div>`
-      : `<div class="dl2-empty">
-          <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
-          <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
-        </div>`
+      : (_dlFilter && _dlFilter.trim() && _dlTab === 'completed'
+        // "No completed downloads / Finished downloads will appear here" is a
+        // lie when there ARE finished downloads and a filter is hiding them.
+        ? `<div class="dl2-filter-empty">
+            <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <p>No downloads match "${esc(_dlFilter.trim())}"</p>
+            <button class="dl2-action-btn" id="dl2-clear-filter" style="margin-top:12px">Clear the filter</button>
+          </div>`
+        : `<div class="dl2-empty">
+            <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
+            <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
+          </div>`)
+    _bindDlClearFilter(container)
     container.querySelector('#dl2-daemon-retry')?.addEventListener('click', function () {
       const btn = this
       btn.disabled = true
@@ -30003,7 +30037,9 @@ function _renderCompletedTab(files, container) {
     container.innerHTML = statsHtml + `<div class="dl2-filter-empty">
       <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       <p>No albums match "${esc(filterQ)}"</p>
+      <button class="dl2-action-btn" id="dl2-clear-filter" style="margin-top:12px">Clear the filter</button>
     </div>`
+    _bindDlClearFilter(container)
     return
   }
 
@@ -30706,7 +30742,12 @@ function renderDownloads() {
   // control that exists to say it does not work. Stopping is the only batch
   // action there is, and its own confirm explains that re-queueing is the way
   // back. (Stop All is what "Pause All" has always actually done.)
-  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f9 Stop All</button></div>'
+  // Offered enabled with nothing to act on, it reads as a control that does
+  // nothing. Driven by whether there is anything running.
+  var _anyActive = (_dlLastFiles || []).some(function (f) { return _dlCategory(f.state) === 'active' })
+  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px">' +
+    '<button class="dl-action-btn" id="dl-pause-all"' + (_anyActive ? '' : ' disabled title="Nothing is downloading right now"') +
+    '>\u23f9 Stop All</button></div>'
   // Roadmap 082: each entry says what the automation does with it — download
   // on its own or only tell you — whether it is paused, and when it was last
   // checked; the header says the cadence. Nothing here is implied.
@@ -38067,6 +38108,13 @@ function _renderHubWishlist() {
   var box = document.getElementById('slsk-hub-wishlist')
   if (!box) return
   var wl = state.downloadWishlist || []
+  // "Run all now" sat enabled over an empty wishlist and answered with a
+  // snackbar saying it was empty. Say it on the control instead.
+  var runAll = document.getElementById('slsk-hub-wishlist-runall')
+  if (runAll) {
+    runAll.disabled = !wl.length
+    runAll.title = wl.length ? 'Search every wishlist entry now' : 'Your wishlist is empty'
+  }
   if (!wl.length) {
     box.innerHTML = '<div class="slsk-hub-empty">Your wishlist is empty. On any album that has no lossless source yet, choose “Add to wishlist” — the app keeps searching in the background and grabs it the moment a copy appears.</div>'
     return
