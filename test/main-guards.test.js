@@ -619,7 +619,14 @@ test('moves are journaled, a failed copy is cleaned up, and startup finishes or 
   assert.ok(mv.includes("_opBegin({ kind: 'move', from: path.resolve(from), to: dest, phase: 'rename' })"), 'journaled before it starts')
   assert.ok(mv.indexOf('_opBegin(') < mv.indexOf('fs.renameSync('))
   assert.ok(mv.includes("_opUpdate(opId, { phase: 'copy' })"), 'the copy phase is recorded')
-  assert.ok(mv.includes('if (fs.existsSync(path.resolve(from))) fs.rmSync(dest, { recursive: true, force: true })'), 'a failed copy removes its partial result')
+  // The copy is asynchronous now (it used to block the main thread for the
+  // whole of a multi-GB move), so the cleanup is too. What matters is
+  // unchanged: a failed copy removes its partial result, but only once the
+  // original is confirmed still there. Behaviour is pinned in
+  // test/library-move-async.test.js.
+  assert.ok(mv.includes('if (fs.existsSync(path.resolve(from))) {') &&
+    mv.includes('await fs.promises.rm(dest, { recursive: true, force: true })'),
+    'a failed copy removes its partial result')
   assert.ok(mv.includes('_opEnd(opId)\n  _scheduleLibraryRescan()'), 'the journal entry goes only when the move is complete')
   const rec = M.slice(M.indexOf('function recoverInterruptedOps()'), M.indexOf("ipcMain.handle('library-move-path'"))
   assert.ok(rec.includes("if (srcThere && dstThere && op.phase === 'copy')") && rec.includes('fs.rmSync(op.to, { recursive: true, force: true })'), 'mid-copy: the partial goes, the original stays')
