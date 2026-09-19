@@ -7780,6 +7780,7 @@ body.app-unfocused .vt-menu {
   border-radius: var(--radius-pill); padding: 3px 10px;
   font-size: 12px; color: var(--text2);
 }
+.filter-chip-note { font-size: 12px; color: var(--text3); }
 .filter-chip-x { cursor: pointer; color: var(--text3); font-weight: 700; line-height: 1; }
 .filter-chip-x:hover { color: var(--color-error); }
 .clear-filters-btn, .save-search-btn {

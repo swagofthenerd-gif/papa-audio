@@ -15508,6 +15508,33 @@ const GENRE_COLORS = {
   'Reggae':      'linear-gradient(135deg,#009900,#004400)',
   'Latin':       'linear-gradient(135deg,#e05000,#6a2000)',
 }
+// The year a `year:` filter should judge an album by. Tag year first; when it
+// is missing, a leading 4-digit year in the folder/album name ("2000 Kid A
+// (4.0)") is the only thing the library knows. null means genuinely unknown.
+function _albumFilterYear(a) {
+	if (!a) return null
+	var y = parseInt(a.year, 10)
+	if (y >= 1000 && y <= 9999) return y
+	var src = String(a.name || a.folder || '')
+	var m = /^\s*(\d{4})\b/.exec(src)
+	if (!m) {
+		var pathStr = String(a.path || a.folderPath || '')
+		var base = pathStr ? pathStr.split('/').pop() : ''
+		m = /^\s*(\d{4})\b/.exec(base)
+	}
+	if (!m) return null
+	var n = parseInt(m[1], 10)
+	return (n >= 1000 && n <= 9999) ? n : null
+}
+
+// A filter chip must read back as the query that produced it. It used to print
+// `key + ':' + value`, so `year:>1999` and `year:<1999` both rendered
+// "year:1999" -- and the value went in unescaped.
+function _filterChipLabel(op) {
+	var sign = (op.op === '>' || op.op === '<') ? op.op : ''
+	return op.key + ':' + sign + op.value
+}
+
 function renderSearch(query) {
   // " " is truthy but means nothing: it used to fall through to the results
   // path where the needle became '' and String.includes('') matched the entire
@@ -15657,8 +15684,22 @@ function renderSearch(query) {
     matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
     matchTracks = matchTracks.filter(function(t) { return (t.albumArtist || t.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
   }
-  if (filters.yearMin) matchAlbums = matchAlbums.filter(function(a) { return a.year >= filters.yearMin })
-  if (filters.yearMax) matchAlbums = matchAlbums.filter(function(a) { return a.year <= filters.yearMax })
+  // `radiohead year:>1999 format:flac` returned 0 albums on a library whose
+  // Radiohead folders are "2000 Kid A (4.0)" with no tag year at all: `null >=
+  // 1999` is false, so every untagged album was DROPPED. One helper now feeds
+  // both bounds -- it falls back to a leading 4-digit year in the folder/album
+  // name -- and an album whose year is STILL unknown is kept, not dropped,
+  // with the chip saying how many.
+  var unknownYearKept = 0
+  if (filters.yearMin || filters.yearMax) {
+    matchAlbums = matchAlbums.filter(function (a) {
+      var y = _albumFilterYear(a)
+      if (y == null) { unknownYearKept++; return true }
+      if (filters.yearMin && y < filters.yearMin) return false
+      if (filters.yearMax && y > filters.yearMax) return false
+      return true
+    })
+  }
   if (filters.format) {
     var fmt = filters.format.toLowerCase()
     matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.' + fmt) })
@@ -15736,7 +15777,7 @@ function renderSearch(query) {
       '<button class="save-search-btn" id="search-jump-slsk" title="Go to the Soulseek results for this search">\u2193 Soulseek results</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
     <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>
-    ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + op.key + ':' + op.value + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
+    ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + esc(_filterChipLabel(op)) + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + (unknownYearKept ? '<span class="filter-chip-note">(' + unknownYearKept + ' with unknown year kept)</span>' : '') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
 
   if (hasLocal) {
     // Top result — best matching album or artist
