@@ -12,7 +12,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 
-const { liftFns } = require('./helpers/lift-main-fn.js')
+const { liftFns, MAIN } = require('./helpers/lift-main-fn.js')
 
 // ── M4: not fetching a megabyte every four seconds for nothing ──────────────
 
@@ -55,4 +55,21 @@ test('anything actually happening fetches on every tick', () => {
     'an in-flight file needs reconciling')
   assert.ok(dlNeedsSnapshot({ pending: [], inflight: {} }, new Map([['g', {}]]), now, now),
     'a group awaiting verification needs its completions seen')
+})
+
+test('dlTick asks before fetching, and asks before the fetch', () => {
+  // The predicate can be as careful as it likes; if the tick never consults it,
+  // or consults it after the megabyte is already on the wire, none of it counts.
+  const at = MAIN.indexOf('async function dlTick() {')
+  assert.ok(at > -1)
+  const body = MAIN.slice(at, MAIN.indexOf('\n  } finally {', at))
+  const ask = body.indexOf('dlNeedsSnapshot(')
+  const fetch = body.indexOf('await dlSnapshot()')
+  assert.ok(ask > -1, 'dlTick must consult dlNeedsSnapshot')
+  assert.ok(fetch > -1, 'and still fetch when it says yes')
+  assert.ok(ask < fetch, 'the question comes before the megabyte, not after it')
+  assert.ok(/if \(!dlNeedsSnapshot\([^)]*\)\) return/.test(body),
+    'and a no must actually end the tick')
+  assert.ok(body.includes('_dlLastSnapshotAt = now'),
+    'a fetch must stamp the heartbeat, or every tick looks overdue')
 })
