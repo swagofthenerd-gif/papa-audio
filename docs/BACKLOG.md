@@ -1116,3 +1116,22 @@ looks like "nothing downloading"; M4 recently-played never sent; L1 PC art
 path stored on local albums. Left alone: L5 swipe-away stops playback
 (design), M6 MP3 transcode is unseekable (needs a transcode cache — his
 call), L2 publish script JSON escaping.
+
+### 19 Sep — the desktop is the only writer of config.json (merged, gate 6,522/0)
+`fix/bridge-two-writer-keys` (2 commits): inventory showed six bridge
+`store.set` keys — `likedAlbums`, `followedArtists` (phone-called), `volume`,
+`eqSettings`, `agentModel` (routes exist, phone never calls them),
+`bridgeTranscode` (zero desktop readers). The five desktop-owned ones are
+inbox ops (`*.set`) applied by the ingester through the desktop store (main
+hands it `store`); `bridgeTranscode` moved to a bridge-owned
+`bridge-settings.json` (0600) with the legacy config value as a read-only
+seed. Confirmed the mode risk was real: the bridge's own `new Store` had no
+`configFileMode`, so every phone POST widened config.json to 0644. Config
+reads go through `cfgGet()` with one retry — `conf` throws on a torn read
+mid-rename, which had turned the desktop's atomic write into a 500 on the
+phone. Tripwire: no `store.set(` in server.js outside an (empty) allow-list.
+My re-check: `/api/settings/liked` writing the store directly → 5/58 red.
+Routed next (`fix/bridge-phone-contract`, from the new tip): C1 nested
+transfers back + seconds for `remainingTime`; H4 `ts`/`playedAt`; H5
+liked-tracks diffs; H1 scan returns the cache; H2 health exempt / limiter;
+M5 `addresses`; L3 coalesce playbackState; L4 filter unavailable.
