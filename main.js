@@ -908,7 +908,12 @@ function _queueLog(level, args) {
     msg = args.map(a => String(a)).join(' ')   // circular structures, etc.
   }
   try { msg = _redact.redactText(msg) } catch (_) {}
-  if (_logBuf.length >= LOG_MAX_BUFFER) { _logDropped++; return }
+  // The cap said "the oldest are dropped" and dropped the NEWEST: it returned
+  // without buffering the line it had just been handed. So the moment the
+  // buffer filled, the log stopped recording anything — and a buffer fills
+  // precisely when something is going wrong, which is the one stretch worth
+  // having. Drop from the front instead; the counter still reports the loss.
+  while (_logBuf.length >= LOG_MAX_BUFFER) { _logBuf.shift(); _logDropped++ }
   _logBuf.push(`[${new Date().toISOString()}] [${SESSION_ID}] [${level}] ${msg}\n`)
   if (!_logTimer) {
     _logTimer = setTimeout(_flushLog, LOG_FLUSH_MS)
