@@ -13176,7 +13176,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // one-letter title used to list audio plugins and unrelated hentai. The
   // rest are counted, not lost — a line at the foot of the list shows them.
   const split = _splitPlausibleStreams(all)
-  const streams = split.likely
+  const streams = _demoteWrongSeason(split.likely, _videoDetail && _videoDetail.d ? _videoDetail.d.title : '')
   _videoStreams = streams
   _videoStreamsHidden = split.unlikely
   // The hero's quality picker is built from what this title actually offers,
@@ -13320,6 +13320,40 @@ async function _loadVideoSources(ticket, seasonTicket) {
 // Sources whose release name does not carry the title (V2/V4). Kept, counted
 // and shown on request; never silently dropped.
 var _videoStreamsHidden = []
+// A release for a DIFFERENT season sinks to the bottom. It is never hidden.
+//
+// Hiding was tried and reverted within the day: most anime season-two entries
+// are catalogued under a title stating no season, so every correctly-labelled
+// "2nd Season" release was marked unlikely and the list collapsed to whatever
+// stray release named none. Demotion cannot do that — nothing disappears, and
+// if EVERY candidate conflicts the order comes back untouched, so a season
+// whose releases all label themselves is unaffected.
+//
+// Measured on the app's OWN query for "That Time I Got Reincarnated as a Slime
+// 01" (15 results): one declares season 1, two season 2, one season 4, eleven
+// none. He was watching season one and being handed season four, because the
+// season-four pack contains an episode "01" like every other season does.
+// Sinking it puts the season-one pack and the unlabelled releases above it.
+//
+// With no season stated by the title — which is the usual case, since a first
+// season rarely says so — only a SECOND or later season counts as a conflict.
+function _demoteWrongSeason(list, reqTitle) {
+  const arr = Array.isArray(list) ? list : []
+  if (arr.length < 2) return arr
+  const RN = (typeof PapaReleaseName !== 'undefined' && PapaReleaseName) ||
+    (typeof window !== 'undefined' && window.PapaReleaseName) || null
+  if (!RN || typeof RN.declaredSeason !== 'function') return arr
+  const wanted = RN.declaredSeason(reqTitle || '')
+  const ok = [], wrong = []
+  for (const s of arr) {
+    const decl = (s && s.title) ? RN.declaredSeason(s.title) : null
+    const conflicts = decl != null && (wanted != null ? decl !== wanted : decl >= 2)
+    ;(conflicts ? wrong : ok).push(s)
+  }
+  if (!ok.length || !wrong.length) return arr
+  return ok.concat(wrong)
+}
+
 function _splitPlausibleStreams(streams) {
   const list = Array.isArray(streams) ? streams : []
   const RN = typeof PapaReleaseName !== 'undefined' ? PapaReleaseName : null
@@ -13456,9 +13490,26 @@ function _videoStreamRow(s, i) {
   const instantTag = _isInstantSource(s)
     ? '<span class="video-source-tag video-source-instant" title="RealDebrid is holding this — it starts almost at once">instant</span>'
     : ''
+  // The season the release NAMES, shown on the row so choosing between them is
+  // possible instead of guessed at — his own suggestion, and a better answer
+  // than the app deciding silently, which it got wrong twice. A release naming
+  // a different season is MARKED, never hidden: it may still be what he wants,
+  // and hiding wrong-season releases once collapsed the list to nothing.
+  const RNs = (window.PapaReleaseName && typeof window.PapaReleaseName.declaredSeason === 'function')
+    ? window.PapaReleaseName : null
+  const declSeason = (RNs && s.title) ? RNs.declaredSeason(s.title) : null
+  const wantSeason = (RNs && d) ? RNs.declaredSeason(d.title || '') : null
+  const seasonOff = declSeason != null && (wantSeason != null ? declSeason !== wantSeason : declSeason >= 2)
+  const seasonTag = declSeason != null
+    ? '<span class="video-source-tag video-source-season' + (seasonOff ? ' video-source-season-off' : '') +
+      '" title="' + (seasonOff
+        ? 'This release is season ' + declSeason + ' — not the season you are watching'
+        : 'This release is season ' + declSeason) +
+      '">S' + declSeason + '</span>'
+    : ''
   return '<div class="video-source-row" data-idx="' + i + '"' + (s.title ? ' title="' + esc(s.title) + '"' : '') + '>' +
     '<span class="' + b.cls + '" title="' + esc(b.title) + '">' + esc(badge) + '</span>' +
-    groupTag + instantTag + torrent + subDub + batchTag + unlikelyTag +
+    groupTag + instantTag + seasonTag + torrent + subDub + batchTag + unlikelyTag +
     seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
     '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +

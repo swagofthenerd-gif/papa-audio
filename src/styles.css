@@ -2117,6 +2117,13 @@ h2.section-title { font-size:18px; font-weight:700; }
 .vep-counts { font-size:11px; color:var(--text3); padding:2px 0 6px; }
 /* V046: an unknown language state is shown as unknown. */
 .video-source-tag-unknown { opacity:.6; font-style:italic; }
+/* The season a release names, on its own row (his request: show them and let
+   him choose). A season that is NOT the one being watched is marked rather
+   than hidden — hiding them collapsed the list to nothing once already. */
+.video-source-season { font-weight:700; letter-spacing:.02em; }
+.video-source-season-off {
+  color:#ffca3a; background:rgba(60,34,0,.72); border:1px solid rgba(255,202,58,.35);
+}
 /* V053: click a source label to see the whole release name. */
 .video-source-label { cursor:text; }
 .video-source-label-full { white-space:normal; overflow:visible; text-overflow:clip; word-break:break-all; }
