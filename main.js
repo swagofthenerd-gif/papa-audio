@@ -123,9 +123,16 @@ const IPC_TIMEOUT_OVERRIDES = {
   'verify-surround': 120000,
   'verify-surround-folder': 300000,
   'slsk-verify-file': 120000,
-  // Waits up to 180 s for the sample track to arrive, then runs ffprobe and
-  // up to eight ffmpeg passes over it. The 60 s default fired mid-check.
-  'slsk-verify-rip': 300000,
+  // Waits up to 180 s for the sample track to arrive, then runs ffprobe and up
+  // to eight ffmpeg passes over it. The handler's own worst case is 180 s wait
+  // + 2 s settle + 15 s ffprobe + 60 s astats + seven 60 s ceiling bands = 677 s
+  // before the slskd POST's own 15 s and its rate-limit backoff, so the old
+  // 300 s budget cut a legitimate check off — and cutting it off rejected the
+  // invoke with a thrown Error instead of this handler's documented
+  // {ok:false, reason}. The handler now enforces RIP_DEADLINE_MS itself and
+  // always answers in that shape; this budget sits above it as the backstop it
+  // was meant to be, never as the thing that ends a normal check.
+  'slsk-verify-rip': 1080000,
   // Anything that waits on a person. A deadline here does not protect against a
   // wedged handler, it just cancels the user: a Google sign-in with 2FA takes
   // minutes, and add-music-folder commits the folder BEFORE it returns, so a
@@ -11196,7 +11203,20 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
 // cleanup removes the file and the empty folders it left, and this path never
 // schedules a library rescan — the scanner therefore never lists the sample.
 const ripCheck = require('./src/rip-check')
+// detectSurround is the app's single source of truth for "does this text claim
+// surround". Not album.surround, which slsk-shelves sets from folded-child
+// evidence only and is false for most albums actually sitting in the Surround
+// shelf. The module guards its own module.exports, so it loads under plain node.
+const slskFilters = require('./src/slsk-filters')
 const RIP_WAIT_MS = 3 * 60 * 1000
+// The handler's own deadline, enforced between stages and used to clamp every
+// child-process timeout, so the work can never outrun it. It sits comfortably
+// above the 677 s worst case documented at IPC_TIMEOUT_OVERRIDES and comfortably
+// below that channel's budget: the point is that this deadline is the one that
+// fires, because it returns {ok:false, reason} the way every other exit does,
+// while the IPC backstop can only reject the invoke with a thrown Error.
+const RIP_DEADLINE_MS = 14 * 60 * 1000
+const RIP_OUT_OF_TIME = 'The rip check ran out of time. The peer was probably too slow. Try again.'
 
 function _run(cmd, args, timeoutMs) {
   return new Promise(resolve => {
@@ -11227,6 +11247,13 @@ async function _ripWaitForFile(username, filename, expectedSize) {
   return null
 }
 
+// A name of our own, in the same directory, for ffmpeg to echo. The peer picks
+// the real filename; we do not let it reach a log line we parse.
+function _ripSafeName(filePath) {
+  const ext = (String(filePath).split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin'
+  return path.join(path.dirname(filePath), '.papa-ripcheck-sample.' + ext)
+}
+
 function _ripCleanup(filePath) {
   if (!filePath) return
   // Never unlink outside the download directory: the path is derived from a
@@ -11251,43 +11278,115 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const refusal = _dryRunRefusal('downloading a track to verify a rip')
     return { ...refusal, reason: refusal.error }
   }
-  const track = ripCheck.pickTrack(files || [])
-  if (!track) return { ok: false, reason: 'No audio file in this folder to test.' }
+  const pick = ripCheck.pickTrackInfo(files || [])
+  if (!pick) return { ok: false, reason: 'No audio file in this folder to test.' }
+  const track = pick.file
   const filename = track.fullPath || track.filename || track.name
+  // Enforced by the handler so every exit keeps the {ok, reason} shape the
+  // renderer reads. `left` also clamps each child process, so no single stage
+  // can push the total past the deadline.
+  const expiry = Date.now() + RIP_DEADLINE_MS
+  const left = () => expiry - Date.now()
+  const budget = ms => Math.min(ms, Math.max(1000, left()))
   let local = null
+  let safe = null
   try {
     try {
       await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`, [{ filename, size: track.size || 0 }])
     } catch (e) {
-      return { ok: false, reason: 'The peer did not accept the download: ' + String(e && e.message || e) }
+      // A dead daemon, an expired token and a rate-limit are not the peer
+      // refusing, and none of them is helped by printing the endpoint path.
+      return { ok: false, reason: ripCheck.slskdFailureReason(e) }
     }
     local = await _ripWaitForFile(username, filename, track.size)
     if (!local) return { ok: false, reason: 'The track did not arrive within 3 minutes. The peer may be busy or offline.' }
-    const probe = await _run('ffprobe', ripCheck.probeArgs(local), 15000)
+    if (left() <= 0) return { ok: false, reason: RIP_OUT_OF_TIME }
+    // Analyse through a name WE chose. The anchored regexes reject peer tag
+    // text because the tag dump is indented, but ffmpeg echoes the INPUT PATH
+    // verbatim at column zero ("Input #0, flac, from '<name>':"), and the file
+    // name is the peer's. A newline inside it would put forged astats lines at
+    // column zero, past the anchor. A hardlink costs nothing and closes that
+    // channel outright; a copy is the cross-device fallback.
+    safe = _ripSafeName(local)
+    try { fs.linkSync(local, safe) } catch (_) {
+      try { fs.copyFileSync(local, safe) } catch (_) { safe = null }
+    }
+    const probeFile = safe || local
+    const probe = await _run('ffprobe', ripCheck.probeArgs(probeFile), budget(15000))
     if (probe.err) return { ok: false, reason: 'ffprobe is missing or could not read the file.' }
     const declared = ripCheck.parseProbe(probe.stdout)
-    const stats = await _run('ffmpeg', ripCheck.astatsArgs(local), 60000)
+    // Six FLACs on this machine report channels=0, sample_rate=0 and exit 0, so
+    // `if (probe.err)` above does not catch them. channels=0 with a usable rate
+    // is a different case and must NOT fail here — channelVerdict answers that
+    // one with `unknown` rather than calling the whole file damaged.
+    if (declared.channels === 0 && declared.sampleRate === 0)
+      return { ok: false, reason: "This file wouldn't open properly — it looks damaged or incomplete." }
+    if (left() <= 0) return { ok: false, reason: RIP_OUT_OF_TIME }
+    const stats = await _run('ffmpeg', ripCheck.astatsArgs(probeFile), budget(60000))
     // A nonzero exit means ffmpeg never read the whole file (truncated sample,
     // decode error). Measuring that is how a good rip gets called lossy.
     if (stats.err) return { ok: false, reason: 'Could not analyse the file.' }
     const measured = ripCheck.parseAstats(stats.stderr)
+    const chans = ripCheck.parseChannels(stats.stderr)
+    // A FLAC cut mid-transfer still decodes cleanly and still reports the full
+    // duration from its header, so a zero exit proves nothing. How long astats
+    // actually played is the only thing that does.
+    const samples = ripCheck.parseSampleCount(stats.stderr)
+    const decodedSec = samples !== null && declared.sampleRate > 0 ? samples / declared.sampleRate : null
     let bandText = ''
+    let bandsComplete = true
     for (const hz of ripCheck.BANDS) {
       if (declared.sampleRate && hz >= declared.sampleRate / 2) break
-      const r = await _run('ffmpeg', ripCheck.ceilingArgs(local, hz), 60000)
-      const m = r.stderr.match(/mean_volume: (-?[\d.]+) dB/)
-      bandText += `band=${hz} mean_volume: ${m ? m[1] : '-999'} dB\n`
+      // Out of time mid-sweep: the bands already read cannot support a
+      // ceiling, and a partial sweep reads as a LOW ceiling, which is an
+      // accusation. Say so instead of guessing.
+      if (left() <= 0) { bandsComplete = false; break }
+      const r = await _run('ffmpeg', ripCheck.ceilingArgs(probeFile, hz), budget(60000))
+      // Anchored, in rip-check.js, for the same reason every astats regex there
+      // is: volumedetect runs at info level, so the peer's own tag text reaches
+      // this stderr first and an unanchored read takes the forgery.
+      const db = ripCheck.parseBandVolume(r.stderr)
+      bandText += `band=${hz} mean_volume: ${Number.isFinite(db) ? db : '-999'} dB\n`
     }
-    const ceilingHz = ripCheck.parseCeiling(bandText)
+    // volumedetect sums every channel into one histogram, so the same content
+    // spread over 6 channels reads ~4.8 dB quieter than it does as stereo. The
+    // floor is compensated for the channel count, or a genuine 5.1 rip gets
+    // pushed into the 'transcoded' branch.
+    const ceilingHz = bandsComplete ? ripCheck.parseCeiling(bandText, ripCheck.floorFor(declared.channels)) : null
     const ext = (String(filename).split('.').pop() || '').toLowerCase()
     const verdict = ripCheck.verdict({ declaredRate: declared.sampleRate, declaredBits: declared.bitDepth,
       measuredBits: measured.measuredBits, ceilingHz, ext })
+    // The claim is read from the last path segment plus the sampled file's own
+    // basename, and nothing else. Ancestor segments are excluded because a
+    // share path like '@@user/5.1 Surround Collection/Artist - Album/' would
+    // otherwise stamp a 5.1 claim on every album beneath it. Sibling filenames
+    // are excluded because one '... (5.1 mix).flac' among eleven stereo tracks
+    // would otherwise make the whole album claim 5.1, and sampling any of the
+    // other eleven would then accuse it.
+    const seg = String(folderPath || '').split('/').filter(Boolean).pop() || ''
+    const ctext = seg + ' ' + path.basename(String(filename))
+    const claim = ripCheck.accusableClaim((slskFilters.detectSurround(ctext) || {}).label || null, ctext)
+    const chan = ripCheck.channelVerdict({
+      channels: declared.channels, channelLayout: declared.channelLayout, claim,
+      perChannel: chans.perChannel, complete: chans.complete, measuredChannels: chans.channels,
+      codec: declared.codec, atmos: declared.atmos, durationSec: declared.duration,
+      siblingHint: ripCheck.siblingSurroundHint(files || [], track),
+      sampledSmallest: pick.fallback, decodedSec })
+    // Nothing here writes back to album.surround, the purple tier dot, the
+    // Surround shelf or Gate 0 of upgradeReason. One track is not an album.
+    // No raw dB crosses this boundary either: peakDb is -Infinity for a silent
+    // channel and the renderer JSON.stringifies this straight into
+    // localStorage, where -Infinity becomes null. Only derived integers go out.
     return { ok: true, verdict, ceilingHz, measuredBits: measured.measuredBits,
       dynamicRange: measured.dynamicRange === null || measured.dynamicRange === undefined ? null : measured.dynamicRange,
-      declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now() }
+      declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now(),
+      channels: declared.channels, channelLayout: declared.channelLayout, atmos: declared.atmos,
+      durationSec: declared.duration, sampledBytes: Number(track.size) || null,
+      sampledSmallest: pick.fallback, claimLabel: claim, channelCheck: chan }
   } catch (e) {
     return { ok: false, reason: 'The rip check could not finish: ' + String(e && e.message || e) }
   } finally {
+    if (safe) { try { fs.unlinkSync(safe) } catch (_) {} }
     _ripCleanup(local)
   }
 })

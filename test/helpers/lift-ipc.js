@@ -187,6 +187,10 @@ const GATED_CHANNELS = [
   'library-move-path',
   'library-write-tags', 'tag-write-batch', 'library-set-artwork',
   'papa-import-all',
+  // Pulls a track off a peer to measure it. Its refusal carries `reason` as well
+  // as `error`, because {ok, reason} is the shape the dossier reads on every
+  // other exit this handler has.
+  'slsk-verify-rip',
 ]
 
 module.exports = { runHandler, callSource, GATED_CHANNELS, MAIN_PATH }
