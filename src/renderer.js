@@ -4671,7 +4671,14 @@ var _switchPending = null
 // worst case is the debrid budget plus a torrent start with its extensions, so
 // this sits beyond it: it exists to catch the case where no event arrives at
 // all, not to pre-empt main's own error.
-var _SWITCH_CONFIRM_MS = 90000
+// Deliberately short. Nothing is committed until the picture confirms the
+// switch, which is right — but it means a switch that fails or hangs now shows
+// NOTHING at all, where before it at least claimed falsely to have worked.
+// Ninety seconds of that reads as "it won't switch at all", which is exactly
+// how it was reported. Main's own failure paths speak sooner than this; this
+// is the backstop for a switch that produces no event whatsoever, and it has
+// to speak while the viewer is still watching for it.
+var _SWITCH_CONFIRM_MS = 25000
 
 // The new source is really playing: apply everything the switch was holding.
 function _commitSwitch(p) {
