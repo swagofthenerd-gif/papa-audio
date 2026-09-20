@@ -552,6 +552,7 @@
 
     // Background: seeds and tags for "Because you own", other peers for "Only here".
     ;(async () => {
+      const Wm = W()
       if (!Wm) return
       const lib = state.library || []
       const byArtist = new Map()

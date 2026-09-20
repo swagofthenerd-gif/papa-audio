@@ -99,3 +99,19 @@ test('the refresh path waits for the scroll to settle and leaves Folders mounted
   assert.ok(/if \(mode !== 'folders'\) paintBody\(\)/.test(roomSrc),
     'Folders is not destroyed and remounted by a background refresh')
 })
+
+test('the background enrichment IIFE declares its own Wm before using it', () => {
+  const start = roomSrc.indexOf('// Background: seeds and tags')
+  assert.ok(start !== -1, 'background enrichment comment found')
+  const iifeStart = roomSrc.indexOf(';(async () => {', start)
+  assert.ok(iifeStart !== -1, 'background IIFE found')
+  const iifeEnd = roomSrc.indexOf('})()', iifeStart)
+  assert.ok(iifeEnd !== -1, 'background IIFE close found')
+  const body = roomSrc.slice(iifeStart, iifeEnd)
+  const declIdx = body.indexOf('const Wm = W()')
+  const guardIdx = body.indexOf('if (!Wm) return')
+  const firstUseIdx = body.indexOf('Wm.', guardIdx)
+  assert.ok(declIdx !== -1, 'IIFE declares its own const Wm')
+  assert.ok(guardIdx !== -1 && declIdx < guardIdx, 'guard clause kept after declaration')
+  assert.ok(firstUseIdx !== -1 && declIdx < firstUseIdx, 'Wm is declared before first use')
+})
