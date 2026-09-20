@@ -175,3 +175,71 @@ test('an automatic switch defers while one is already under way', async () => {
   assert.strictEqual(seen.switched.length, before,
     'a stall must not race the switch the viewer just asked for')
 })
+
+// ── the viewer's choice is the viewer's ("if i select a source, the player
+// should not auto switch to anything else other than what i select") ───────
+test('a source chosen by hand is never switched away from automatically', async () => {
+  const other = S({ magnet: 'magnet:third', source: 'eztv', title: '[X] Show - 07.mkv' })
+  const { ctx, seen } = harness({ ctx: { _videoStreams: [NEXT, other] }, _nextUntried: other })
+  await ctx._playerPickSource('magnet:new')
+  assert.strictEqual(ctx._watch.manualPick, true, 'the choice is recorded as his')
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:new' })
+
+  const before = seen.switched.length
+  const out = await ctx._autoSwitchSource()
+  assert.strictEqual(out, false, 'the automatic switch must stand down')
+  assert.strictEqual(seen.switched.length, before, 'and must not request anything')
+  assert.ok(seen.toasts.some(t => /stalled/i.test(t) && /pick another/i.test(t)),
+    'but he is told, so a dead source is not silent: ' + JSON.stringify(seen.toasts))
+})
+
+test('it says so once, not on every stall', async () => {
+  const { ctx, seen } = harness({ ctx: { _videoStreams: [NEXT] }, _nextUntried: NEXT })
+  await ctx._playerPickSource('magnet:new')
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:new' })
+  await ctx._autoSwitchSource()
+  await ctx._autoSwitchSource()
+  await ctx._autoSwitchSource()
+  const said = seen.toasts.filter(t => /stalled/i.test(t) && /pick another/i.test(t))
+  assert.strictEqual(said.length, 1, 'a stall storm must not become a toast storm')
+})
+
+test('a source picked from the list counts as chosen by hand too', () => {
+  const R = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = R.indexOf('// What is actually playing, so the auto-switch can avoid re-picking it.')
+  assert.ok(at > 0)
+  assert.match(R.slice(at, at + 400), /manualPick: opts\.manual === true/)
+})
+
+// ── the switch must ask for the episode that is PLAYING ────────────────────
+test('browsing another episode does not make the switch fetch that one', async () => {
+  // _playCtx().state is a LIVE reference to _videoState, and clicking a row in
+  // the episode list mutates it without playing anything. Watching episode 3
+  // while episode 9 is highlighted made a switch come back with episode 9.
+  const { ctx, seen } = harness({
+    ctx: {
+      _videoStreams: [NEXT],
+      _videoState: { season: null, episode: 9 },
+      _watch: {
+        pick: { magnet: 'magnet:old' }, tried: {}, key: 'anime:21::3', autoSwitches: 0,
+        meta: { type: 'anime', id: 21, season: null, episode: 3 },
+      },
+    },
+  })
+  await ctx._playerPickSource('magnet:new')
+  assert.strictEqual(seen.switched.length, 1)
+  assert.strictEqual(seen.switched[0].result.episode, 3,
+    'the switch must ask for what is playing, not for what the list is showing')
+})
+
+test('with nothing pinned it still falls back to the page, rather than asking for nothing', async () => {
+  const { ctx, seen } = harness({
+    ctx: {
+      _videoStreams: [NEXT],
+      _videoState: { season: null, episode: 7 },
+      _watch: { pick: { magnet: 'magnet:old' }, tried: {}, key: 'k', autoSwitches: 0, meta: null },
+    },
+  })
+  await ctx._playerPickSource('magnet:new')
+  assert.strictEqual(seen.switched[0].result.episode, 7)
+})

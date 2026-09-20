@@ -33,9 +33,21 @@ const CONTROLS = ['_playPrevEpisode', '_playNextEpisode', '_playerPickSource', '
 // the viewer happens to be browsing.
 const HARNESS_FALLBACK = /\(typeof _playCtx === 'function' \? _playCtx\(\) : \{ detail: _videoDetail, state: _videoState, streams: Array\.isArray\(_videoStreams\) \? _videoStreams : \[\] \}\)/g
 
+// Comment lines are stripped before the check, the way video-ipc does it for
+// the same reason: the rule is about what the CODE reads, and a comment that
+// names the hazard in order to explain it is not a violation. Without this the
+// guard punishes documenting the very bug it exists to prevent — which it did,
+// the moment the switch was fixed to stop reading _videoState for the episode.
+function codeOf(name) {
+  return bodyOf(name)
+    .split('\n')
+    .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n')
+}
+
 test('no deck control reads the page-scoped globals as its source of truth', () => {
   for (const name of CONTROLS) {
-    const body = bodyOf(name).replace(HARNESS_FALLBACK, '«ctx»')
+    const body = codeOf(name).replace(HARNESS_FALLBACK, '«ctx»')
     for (const global of ['_videoDetail', '_videoState', '_videoStreams']) {
       assert.ok(!new RegExp('\\b' + global + '\\b').test(body),
         `${name} still reads ${global} outside the harness fallback — that is the page being browsed, not the film playing`)
