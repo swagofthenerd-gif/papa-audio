@@ -4756,6 +4756,11 @@ async function _playerPickSource(key) {
   const detailTicket = _videoDetailTicket
   const seasonTicket = _videoSeasonTicket
   _autoSwitchInFlight = true
+  // A source chosen by hand is the viewer's decision and the app does not get
+  // to overrule it: "if i select a source, the player should not auto switch
+  // to anything else other than what i select". A stall on a chosen source is
+  // reported instead; choosing again is his to do.
+  if (_watch) _watch.manualPick = true
   // Remembered as tried, so a later stall does not swing back to a source the
   // viewer has just moved away from.
   //
@@ -4769,14 +4774,26 @@ async function _playerPickSource(key) {
   }
   let result = next
   if (pctx.detail && pctx.detail.type !== 'movie') {
+    // The episode that is PLAYING — not the one the list happens to be showing.
+    //
+    // _playCtx().state is a LIVE reference to _videoState, and clicking a row
+    // in the episode list mutates that WITHOUT playing anything. So browsing
+    // episode 9 while watching episode 3 made a switch fetch episode 9, and
+    // the switch came back with the wrong episode. _watch.meta is the snapshot
+    // taken when this play started, which is what the switch has to honour.
+    const pin = (_watch && _watch.meta && _watch.meta.episode != null) ? _watch.meta : null
+    const pinSeason = pin ? pin.season : (pctx.detail.type === 'tv' ? pctx.state.season : null)
+    const pinEpisode = pin ? pin.episode : pctx.state.episode
     result = Object.assign({}, next, {
-      season: pctx.detail.type === 'tv' ? pctx.state.season : null,
-      episode: pctx.state.episode,
+      season: pctx.detail.type === 'tv' ? pinSeason : null,
+      episode: pinEpisode,
       // The number the indexers matched the batch on has to travel with the
       // request, or the picker inside the pack looks for "09" and hands back
       // season one's ninth episode. Null for film and television, and for a
       // first season, where the seasonal number already IS the absolute.
-      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function'
+        ? _absoluteEpisodeFor(pctx.detail, { season: pinSeason, episode: pinEpisode })
+        : null,
     })
   }
   // Whether RealDebrid has already been asked about this source and said no.
@@ -4823,6 +4840,16 @@ async function _autoSwitchSource() {
   // video tests use, which evaluate one function with the globals in scope.
   const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
   if (!window.api.videoSwitchStream) return
+  // He picked this source himself. Recovering by silently moving him onto a
+  // different release is the thing he asked the app to stop doing — and an
+  // automatically chosen release is where the wrong-episode reports came from.
+  if (_watch && _watch.manualPick) {
+    if (!_watch.manualStallSaid) {
+      _watch.manualStallSaid = true
+      showToast('This source has stalled — pick another from the list whenever you want')
+    }
+    return false
+  }
   // One switch at a time. A stall storm (several 'stalled' events while the
   // torrent is dying) used to fire concurrent switches that raced each other.
   if (_autoSwitchInFlight) return
@@ -4839,14 +4866,26 @@ async function _autoSwitchSource() {
   // The request needs the same episode context _videoPlayResult attaches.
   let result = next
   if (pctx.detail && pctx.detail.type !== 'movie') {
+    // The episode that is PLAYING — not the one the list happens to be showing.
+    //
+    // _playCtx().state is a LIVE reference to _videoState, and clicking a row
+    // in the episode list mutates that WITHOUT playing anything. So browsing
+    // episode 9 while watching episode 3 made a switch fetch episode 9, and
+    // the switch came back with the wrong episode. _watch.meta is the snapshot
+    // taken when this play started, which is what the switch has to honour.
+    const pin = (_watch && _watch.meta && _watch.meta.episode != null) ? _watch.meta : null
+    const pinSeason = pin ? pin.season : (pctx.detail.type === 'tv' ? pctx.state.season : null)
+    const pinEpisode = pin ? pin.episode : pctx.state.episode
     result = Object.assign({}, next, {
-      season: pctx.detail.type === 'tv' ? pctx.state.season : null,
-      episode: pctx.state.episode,
+      season: pctx.detail.type === 'tv' ? pinSeason : null,
+      episode: pinEpisode,
       // The number the indexers matched the batch on has to travel with the
       // request, or the picker inside the pack looks for "09" and hands back
       // season one's ninth episode. Null for film and television, and for a
       // first season, where the seasonal number already IS the absolute.
-      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function'
+        ? _absoluteEpisodeFor(pctx.detail, { season: pinSeason, episode: pinEpisode })
+        : null,
     })
   }
   result = Object.assign({}, result, {
@@ -6421,6 +6460,9 @@ function _videoPlayResult(result, opts) {
       autoAdvanced: opts.fromAdvance === true,
       // What is actually playing, so the auto-switch can avoid re-picking it.
       pick: result,
+      // Chosen from the sources list by hand: the same rule applies as for a
+      // pick made inside the player — nothing switches away from it on its own.
+      manualPick: opts.manual === true,
       // A manual, non-first pick that has not yet earned its keep (App #43).
       // Set here, promoted to a stored preference once it has played past the
       // threshold (in _onVideoStateTick); null once saved or never eligible.
