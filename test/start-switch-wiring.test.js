@@ -50,6 +50,13 @@ test('the switch takes the next untried source and remembers it; a start failure
 test("main drops the old stream's end-of-file while a switch is in flight", () => {
   assert.match(M, /if \(_videoSession\.switching\) \{ console\.log\('\[papa-video\] end of the old stream during a switch, ignored'\); return \}/)
   assert.match(M, /_videoSession\.switching = true\n\s+const fail = e => \{ _videoSession\.switching = false;/)
-  assert.match(M, /videoEngine\(\)\.load\(url\)\.then\(async \(\) => \{\n\s+_videoSession\.switching = false/)
+  // The switch now resolves debrid before the swarm, so the load is shared by
+  // both paths in one async helper instead of being written inline in the
+  // torrent callback. What must not change is WHEN the flag clears: the moment
+  // the new source is loaded, so a late end-of-file from the old stream is
+  // still ignored and the flag can never stay stuck.
+  assert.match(M, /await videoEngine\(\)\.load\(url\)\n\s+_videoSession\.switching = false/)
+  assert.match(M, /const loadInto = async \(url, streamer\) => \{/,
+    'one load path, used by the debrid link and by the torrent alike')
   assert.match(M, /_videoSession\.token\+\+\n\s+_videoSession\.switching = false/)
 })

@@ -4665,7 +4665,13 @@ async function _playerPickSource(key) {
     _rememberPreferredSource({ source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null })
     _syncSourcesHighlight()
     if (_player && _player.syncSources) _player.syncSources()
-    showToast('Switched to ' + (next.source || 'another source'))
+    // No "Switched to …" here. ok means the switch STARTED: main has torn the
+    // old streamer down and begun resolving, which now includes asking
+    // RealDebrid first and can take seconds. Claiming it had switched while
+    // the old frozen frame was still on screen is precisely what made a
+    // working switch read as a hang. "Switching to …" was already said above,
+    // mpv's OSD narrates the stages over the picture, and the picture
+    // changing is the only honest confirmation.
   } else {
     showToast(_videoErrorText((res && res.error) || 'Could not switch source'))
   }
@@ -4728,7 +4734,7 @@ async function _autoSwitchSource() {
     const changed = []
     if (before.quality && next.quality && before.quality !== next.quality) changed.push(before.quality + ' → ' + next.quality)
     if (before.dub != null && next.dub != null && Boolean(before.dub) !== Boolean(next.dub)) changed.push(next.dub ? 'now dubbed' : 'now subtitled')
-    showToast('Switched to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
+    showToast('Switching to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
   }
 }
 

@@ -15641,30 +15641,79 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     _videoSession.switching = true
     const fail = e => { _videoSession.switching = false; if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
 
-    _startTorrentStream(result, {
-      current, fail,
-      onReady: (url, streamer) => {
-        // mpv is already running; point it at the new file and seek back.
-        videoEngine().load(url).then(async () => {
-          _videoSession.switching = false
-          if (!current()) return
-          // Absolute seek to the saved position. A source with a shorter file
-          // (a different cut) would reject the seek; that must not fail the
-          // swap, so it is caught.
-          if (resumeAt > 0) {
-            try { await videoEngine().seek(resumeAt, 'absolute') } catch (_) {}
-          }
-          // Tell the new swarm where the viewer actually is, so it fetches the
-          // bytes around the playhead first instead of the file head.
-          _prioritiseStreamAtPlayhead()
-          safeSend('video-event', { kind: 'playing' })
-          try {
-            const files = streamer.files()
-            if (files.length > 1) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) })
-          } catch (_) { /* the pack list is a convenience, never required */ }
-        }).catch(fail)
-      },
-    })
+    // The HTML stage renders UNDER mpv's surface, so while a switch is in
+    // flight the viewer is looking at the old frozen frame with nothing at all
+    // to say the app is working. mpv's own OSD is the only thing visible over
+    // the picture — which is why video-osd exists — so the switch narrates
+    // there. Silence is most of what "it just sits there" actually was.
+    const say = text => { try { videoEngine().osdMessage(String(text), 4000) } catch (_) {} }
+
+    // Point mpv at whatever was resolved, and put the viewer back where they
+    // were. `streamer` is null on the debrid path: there is no swarm to
+    // prioritise and no pack list to read from a torrent that was never made.
+    const loadInto = async (url, streamer) => {
+      await videoEngine().load(url)
+      _videoSession.switching = false
+      if (!current()) return
+      // Absolute seek to the saved position. A source with a shorter file
+      // (a different cut) would reject the seek; that must not fail the
+      // swap, so it is caught.
+      if (resumeAt > 0) {
+        try { await videoEngine().seek(resumeAt, 'absolute') } catch (_) {}
+      }
+      if (streamer) {
+        // Tell the new swarm where the viewer actually is, so it fetches the
+        // bytes around the playhead first instead of the file head.
+        _prioritiseStreamAtPlayhead()
+      }
+      safeSend('video-event', { kind: 'playing' })
+      if (streamer) {
+        try {
+          const files = streamer.files()
+          if (files.length > 1) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) })
+        } catch (_) { /* the pack list is a convenience, never required */ }
+      }
+    }
+
+    const startTorrent = () => {
+      say('Connecting to peers…')
+      _startTorrentStream(result, {
+        current, fail,
+        onReady: (url, streamer) => { loadInto(url, streamer).catch(fail) },
+      })
+    }
+
+    // Debrid FIRST, the same order video-play uses.
+    //
+    // This handler went straight to the swarm. The source list marks a row
+    // INSTANT precisely because RealDebrid is holding it — and choosing that
+    // row then started a cold peer download instead, so the one source
+    // advertised as instant was the one that made the viewer wait. Behind a
+    // download cap it never arrived at all: "I select the instant source and
+    // it just sits there" (2026-09-20). A badge the app then ignores is worse
+    // than no badge, because it sends people at the slowest path on purpose.
+    if (_debridAnyWorthTrying(result)) {
+      say('Checking RealDebrid…')
+      const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
+      Promise.race([_debridPlayableAny(result), budget])
+        .catch(e => { _sendDebridMiss(current, e); throw e })
+        .then(directUrl => {
+          if (!current() || !directUrl) throw new Error('debrid unusable')
+          return loadInto(directUrl, null).then(() => {
+            safeSend('video-event', { kind: 'debrid', ok: true })
+            _sendDebridPack(current)
+            _startPackChainTick()
+          })
+        })
+        .catch(() => { if (current()) startTorrent() })
+    } else {
+      // Configured but nothing worth asking about: say so rather than falling
+      // to peers in silence, which is what made a paid account look ignored.
+      if (_debridConfigured()) {
+        _sendDebridMiss(current, new Error(_debridRateLimited() ? 'too_many_requests' : 'already refused'))
+      }
+      startTorrent()
+    }
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }

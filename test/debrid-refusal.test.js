@@ -73,7 +73,14 @@ test('only settled answers are remembered, never a transient failure', () => {
 
 test('both play paths skip the wait entirely for a refused source', () => {
   assert.ok(/if \(_debridAnyWorthTrying\(result\)\) \{/.test(MAIN), 'both play paths guard on it')
-  assert.strictEqual((MAIN.match(/if \(_debridAnyWorthTrying\(result\)\) \{/g) || []).length, 2)
+  // Three paths start a source now, not two: video-play's smooth and purist
+  // halves, and video-switch-stream. The switch used to go straight to the
+  // swarm, so choosing a row the list had marked INSTANT started a cold peer
+  // download — the slowest path, entered on purpose (2026-09-20). Every path
+  // that starts a source has to consult this, so the count IS the rule.
+  assert.strictEqual((MAIN.match(/if \(_debridAnyWorthTrying\(result\)\) \{/g) || []).length, 3)
+  assert.ok(/ipcMain\.handle\('video-switch-stream'[\s\S]*?_debridAnyWorthTrying\(result\)/.test(MAIN),
+    'the switch is one of them')
   // And the candidate search never re-offers one already refused.
   const pick = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-debrid-pick'"), MAIN.indexOf("ipcMain.handle('video-warm-cancel'"))
   assert.ok(/!_debridRefusedHas\(m\)/.test(pick))
@@ -93,7 +100,9 @@ test('a debrid miss is explained to the viewer, with the reason', () => {
     assert.ok(new RegExp("'" + r + "'").test(fn), 'classifies ' + r)
   }
   // Both play paths report the miss before the swarm takes over.
-  assert.strictEqual((MAINSRC.match(/_sendDebridMiss\(current, e\)/g) || []).length, 2)
+  // Three, since video-switch-stream started asking RealDebrid too: a switch
+  // that falls back to peers in silence is the same unexplained wait.
+  assert.strictEqual((MAINSRC.match(/_sendDebridMiss\(current, e\)/g) || []).length, 3)
   // And the renderer turns each reason into words a person can act on.
   const handler = R.slice(R.indexOf("if (payload.kind === 'debrid')"), R.indexOf("if (payload.kind === 'pack')"))
   assert.ok(/does not carry this title/.test(handler), 'blocked reads as coverage, not breakage')
