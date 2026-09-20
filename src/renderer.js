@@ -13318,7 +13318,12 @@ function _splitPlausibleStreams(streams) {
   const RN = typeof PapaReleaseName !== 'undefined' ? PapaReleaseName : null
   if (!RN || !_videoDetail || !_videoDetail.d) return { likely: list, unlikely: [] }
   const d = _videoDetail.d
-  const req = { type: _videoDetail.type, title: d.title, year: d.year != null ? d.year : null, originalName: d.originalName || null, titles: d.titles || null }
+  // The season asked for, so a release declaring a DIFFERENT one is refused.
+  // Television keeps its seasons under one title, so the numbers must agree;
+  // anime is catalogued one entry per season and carries none, where a release
+  // announcing a second or later season is simply a different entry.
+  const req = { type: _videoDetail.type, title: d.title, year: d.year != null ? d.year : null, originalName: d.originalName || null, titles: d.titles || null,
+    season: _videoDetail.type === 'tv' && _videoState && _videoState.season != null ? _videoState.season : null }
   const likely = [], unlikely = []
   for (const s of list) (RN.plausible(req, s && s.title) ? likely : unlikely).push(s)
   return { likely: likely, unlikely: unlikely }
@@ -13433,7 +13438,7 @@ function _videoStreamRow(s, i) {
   // full name on hover, and a "batch" tag when it is a whole-season file.
   const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
   const d = _videoDetail && _videoDetail.d
-  const unlikely = !!(window.PapaReleaseName && d && s.title && !window.PapaReleaseName.plausible({ type: _videoDetail.type, title: d.title, year: d.year != null ? d.year : null, originalName: d.originalName || null, titles: d.titles || null }, s.title))
+  const unlikely = !!(window.PapaReleaseName && d && s.title && !window.PapaReleaseName.plausible({ type: _videoDetail.type, title: d.title, year: d.year != null ? d.year : null, originalName: d.originalName || null, titles: d.titles || null, season: _videoDetail.type === 'tv' && _videoState && _videoState.season != null ? _videoState.season : null }, s.title))
   const unlikelyTag = unlikely ? '<span class="video-source-tag video-source-unlikely" title="The release name does not carry this title">unlikely</span>' : ''
   const groupTag = rel && rel.group ? '<span class="video-source-group" title="Release group">' + esc(rel.group) + '</span>' : ''
   const batchTag = rel && rel.batch && !s.isPack ? '<span class="video-source-tag">batch</span>' : ''
