@@ -11196,6 +11196,11 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
 // cleanup removes the file and the empty folders it left, and this path never
 // schedules a library rescan — the scanner therefore never lists the sample.
 const ripCheck = require('./src/rip-check')
+// detectSurround is the app's single source of truth for "does this text claim
+// surround". Not album.surround, which slsk-shelves sets from folded-child
+// evidence only and is false for most albums actually sitting in the Surround
+// shelf. The module guards its own module.exports, so it loads under plain node.
+const slskFilters = require('./src/slsk-filters')
 const RIP_WAIT_MS = 3 * 60 * 1000
 
 function _run(cmd, args, timeoutMs) {
@@ -11251,8 +11256,9 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const refusal = _dryRunRefusal('downloading a track to verify a rip')
     return { ...refusal, reason: refusal.error }
   }
-  const track = ripCheck.pickTrack(files || [])
-  if (!track) return { ok: false, reason: 'No audio file in this folder to test.' }
+  const pick = ripCheck.pickTrackInfo(files || [])
+  if (!pick) return { ok: false, reason: 'No audio file in this folder to test.' }
+  const track = pick.file
   const filename = track.fullPath || track.filename || track.name
   let local = null
   try {
@@ -11266,11 +11272,18 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const probe = await _run('ffprobe', ripCheck.probeArgs(local), 15000)
     if (probe.err) return { ok: false, reason: 'ffprobe is missing or could not read the file.' }
     const declared = ripCheck.parseProbe(probe.stdout)
+    // Six FLACs on this machine report channels=0, sample_rate=0 and exit 0, so
+    // `if (probe.err)` above does not catch them. channels=0 with a usable rate
+    // is a different case and must NOT fail here — channelVerdict answers that
+    // one with `unknown` rather than calling the whole file damaged.
+    if (declared.channels === 0 && declared.sampleRate === 0)
+      return { ok: false, reason: "This file wouldn't open properly — it looks damaged or incomplete." }
     const stats = await _run('ffmpeg', ripCheck.astatsArgs(local), 60000)
     // A nonzero exit means ffmpeg never read the whole file (truncated sample,
     // decode error). Measuring that is how a good rip gets called lossy.
     if (stats.err) return { ok: false, reason: 'Could not analyse the file.' }
     const measured = ripCheck.parseAstats(stats.stderr)
+    const chans = ripCheck.parseChannels(stats.stderr)
     let bandText = ''
     for (const hz of ripCheck.BANDS) {
       if (declared.sampleRate && hz >= declared.sampleRate / 2) break
@@ -11278,13 +11291,41 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
       const m = r.stderr.match(/mean_volume: (-?[\d.]+) dB/)
       bandText += `band=${hz} mean_volume: ${m ? m[1] : '-999'} dB\n`
     }
-    const ceilingHz = ripCheck.parseCeiling(bandText)
+    // volumedetect sums every channel into one histogram, so the same content
+    // spread over 6 channels reads ~4.8 dB quieter than it does as stereo. The
+    // floor is compensated for the channel count, or a genuine 5.1 rip gets
+    // pushed into the 'transcoded' branch.
+    const ceilingHz = ripCheck.parseCeiling(bandText, ripCheck.floorFor(declared.channels))
     const ext = (String(filename).split('.').pop() || '').toLowerCase()
     const verdict = ripCheck.verdict({ declaredRate: declared.sampleRate, declaredBits: declared.bitDepth,
       measuredBits: measured.measuredBits, ceilingHz, ext })
+    // The claim is read from the last path segment plus the sampled file's own
+    // basename, and nothing else. Ancestor segments are excluded because a
+    // share path like '@@user/5.1 Surround Collection/Artist - Album/' would
+    // otherwise stamp a 5.1 claim on every album beneath it. Sibling filenames
+    // are excluded because one '... (5.1 mix).flac' among eleven stereo tracks
+    // would otherwise make the whole album claim 5.1, and sampling any of the
+    // other eleven would then accuse it.
+    const seg = String(folderPath || '').split('/').filter(Boolean).pop() || ''
+    const ctext = seg + ' ' + path.basename(String(filename))
+    const claim = ripCheck.accusableClaim((slskFilters.detectSurround(ctext) || {}).label || null, ctext)
+    const chan = ripCheck.channelVerdict({
+      channels: declared.channels, channelLayout: declared.channelLayout, claim,
+      perChannel: chans.perChannel, complete: chans.complete, measuredChannels: chans.channels,
+      codec: declared.codec, atmos: declared.atmos, durationSec: declared.duration,
+      siblingHint: ripCheck.siblingSurroundHint(files || [], track),
+      sampledSmallest: pick.fallback })
+    // Nothing here writes back to album.surround, the purple tier dot, the
+    // Surround shelf or Gate 0 of upgradeReason. One track is not an album.
+    // No raw dB crosses this boundary either: peakDb is -Infinity for a silent
+    // channel and the renderer JSON.stringifies this straight into
+    // localStorage, where -Infinity becomes null. Only derived integers go out.
     return { ok: true, verdict, ceilingHz, measuredBits: measured.measuredBits,
       dynamicRange: measured.dynamicRange === null || measured.dynamicRange === undefined ? null : measured.dynamicRange,
-      declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now() }
+      declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now(),
+      channels: declared.channels, channelLayout: declared.channelLayout, atmos: declared.atmos,
+      durationSec: declared.duration, sampledBytes: Number(track.size) || null,
+      sampledSmallest: pick.fallback, claimLabel: claim, channelCheck: chan }
   } catch (e) {
     return { ok: false, reason: 'The rip check could not finish: ' + String(e && e.message || e) }
   } finally {
