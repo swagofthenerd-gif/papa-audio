@@ -1,0 +1,235 @@
+{
+  "created": "2026-09-20T15:51:20.520Z",
+  "count": 106,
+  "offset": 0,
+  "artists": [
+    {
+      "id": "bbd05acc-33f0-4db6-bc01-41c8b4bfe2df",
+      "type": "Group",
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "score": 100,
+      "name": "No Te Va Gustar",
+      "sort-name": "No Te Va Gustar",
+      "country": "UY",
+      "area": {
+        "id": "ea88d395-87c9-3c47-b49a-114cad41fd39",
+        "type": "Country",
+        "type-id": "06dd0ae4-8c74-30bb-b43d-95dcedf961de",
+        "name": "Uruguay",
+        "sort-name": "Uruguay",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "begin-area": {
+        "id": "bdf7509d-e81a-4286-a55b-c159be4267d7",
+        "type": "City",
+        "type-id": "6fd8f29a-3d0a-32fc-980d-ea697b69da78",
+        "name": "Montevideo",
+        "sort-name": "Montevideo",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "life-span": {
+        "begin": "1994",
+        "ended": null
+      },
+      "aliases": [
+        {
+          "sort-name": "No Te Va Gustar",
+          "name": "No Te Va Gustar",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        },
+        {
+          "sort-name": "No te va gustar",
+          "name": "No te va gustar",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        },
+        {
+          "sort-name": "Notevagustar",
+          "name": "Notevagustar",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        },
+        {
+          "sort-name": "No Te Va a Gustar",
+          "name": "No Te Va a Gustar",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        },
+        {
+          "sort-name": "NTVG",
+          "name": "NTVG",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        }
+      ]
+    },
+    {
+      "id": "98e95b88-de3d-4eef-bb52-f5977640c48d",
+      "type": "Group",
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "score": 94,
+      "name": "Know V.A.",
+      "sort-name": "Know V.A.",
+      "area": {
+        "id": "e8e317a1-268c-4e46-9db1-f10af959ffca",
+        "type": "City",
+        "type-id": "6fd8f29a-3d0a-32fc-980d-ea697b69da78",
+        "name": "Amsterdam",
+        "sort-name": "Amsterdam",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "begin-area": {
+        "id": "e8e317a1-268c-4e46-9db1-f10af959ffca",
+        "type": "City",
+        "type-id": "6fd8f29a-3d0a-32fc-980d-ea697b69da78",
+        "name": "Amsterdam",
+        "sort-name": "Amsterdam",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "disambiguation": "Ma Rijn and Feico, Electronic duo from Amsterdam",
+      "life-span": {
+        "begin": "2013",
+        "ended": null
+      },
+      "tags": [
+        {
+          "count": 1,
+          "name": "electronic"
+        },
+        {
+          "count": 1,
+          "name": "dutch"
+        },
+        {
+          "count": 1,
+          "name": "club"
+        },
+        {
+          "count": 1,
+          "name": "amsterdam"
+        },
+        {
+          "count": 1,
+          "name": "experimental electronic"
+        },
+        {
+          "count": 1,
+          "name": "weightless"
+        },
+        {
+          "count": 1,
+          "name": "deconstructed club"
+        }
+      ]
+    },
+    {
+      "id": "c5a05cda-2f00-4566-9e1d-7b366fcdbfff",
+      "type": "Group",
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "score": 94,
+      "name": "Oi Va Voi",
+      "sort-name": "Oi Va Voi",
+      "country": "GB",
+      "area": {
+        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+        "type": "Country",
+        "type-id": "06dd0ae4-8c74-30bb-b43d-95dcedf961de",
+        "name": "United Kingdom",
+        "sort-name": "United Kingdom",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "begin-area": {
+        "id": "f03d09b3-39dc-4083-afd6-159e3f0d462f",
+        "type": "City",
+        "type-id": "6fd8f29a-3d0a-32fc-980d-ea697b69da78",
+        "name": "London",
+        "sort-name": "London",
+        "life-span": {
+          "ended": null
+        }
+      },
+      "disambiguation": "British band",
+      "isnis": [
+        "0000000121626414"
+      ],
+      "life-span": {
+        "begin": "1999",
+        "ended": null
+      },
+      "aliases": [
+        {
+          "sort-name": "Oi Va Oi",
+          "name": "Oi Va Oi",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        },
+        {
+          "sort-name": "Oi-Va-Voi",
+          "name": "Oi-Va-Voi",
+          "locale": null,
+          "type": null,
+          "primary": null,
+          "begin-date": null,
+          "end-date": null
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "world"
+        }
+      ]
+    },
+    {
+      "id": "5d545351-7391-4ee0-8fe2-494bbfd8c7ec",
+      "score": 93,
+      "name": "VA",
+      "sort-name": "VA",
+      "disambiguation": "french rap ?",
+      "life-span": {
+        "ended": null
+      }
+    },
+    {
+      "id": "19d9dd7f-a30b-4274-bd58-15477025c1be",
+      "type": "Group",
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "score": 93,
+      "name": "V.A.",
+      "sort-name": "V.A.",
+      "disambiguation": "rap duo",
+      "life-span": {
+        "ended": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,1348 @@
+{
+  "created": "2026-09-20T15:50:43.324Z",
+  "count": 5,
+  "offset": 0,
+  "release-groups": [
+    {
+      "id": "3841f4e6-06ba-4a6e-9111-0f0eb539f68d",
+      "type-id": "6d0c5bf6-7a33-3420-a519-44fc63eedebf",
+      "score": 100,
+      "primary-type-id": "6d0c5bf6-7a33-3420-a519-44fc63eedebf",
+      "artist-credit-id": "e7dda8c5-d5b6-3497-a606-d85a6ed195b3",
+      "count": 1,
+      "title": "Made in Japan",
+      "first-release-date": "2014",
+      "primary-type": "EP",
+      "artist-credit": [
+        {
+          "name": "Deep Purple",
+          "artist": {
+            "id": "79491354-3d83-40e3-9d8e-7592d58d790a",
+            "name": "Deep Purple",
+            "sort-name": "Deep Purple",
+            "aliases": [
+              {
+                "sort-name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dick Pimple",
+                "name": "Dick Pimple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープパープル",
+                "name": "ジープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "深い紫",
+                "name": "深い紫",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dee Purple",
+                "name": "Dee Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープパープル",
+                "name": "ディープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープ・パープル",
+                "name": "ディープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple",
+                "name": "Depp Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purpel",
+                "name": "Deep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープ・パープル",
+                "name": "ジープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purple",
+                "name": "Dep Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "DP",
+                "name": "DP",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purpel",
+                "name": "Dep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Purple",
+                "type-id": "1937e404-b981-3cb7-8151-4c86ebfc8d8e",
+                "name": "Purple",
+                "locale": null,
+                "type": "Search hint",
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "5dd86e7d-375b-4211-bd2c-d9d4477fc3f4",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "hard rock"
+        },
+        {
+          "count": 1,
+          "name": "classic rock"
+        }
+      ]
+    },
+    {
+      "id": "afab893b-4284-37c3-bf74-0139773c8c6d",
+      "type-id": "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0",
+      "score": 100,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "e7dda8c5-d5b6-3497-a606-d85a6ed195b3",
+      "count": 65,
+      "title": "Made in Japan",
+      "first-release-date": "1972-12",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "secondary-type-ids": [
+        "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0"
+      ],
+      "artist-credit": [
+        {
+          "name": "Deep Purple",
+          "artist": {
+            "id": "79491354-3d83-40e3-9d8e-7592d58d790a",
+            "name": "Deep Purple",
+            "sort-name": "Deep Purple",
+            "aliases": [
+              {
+                "sort-name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dick Pimple",
+                "name": "Dick Pimple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープパープル",
+                "name": "ジープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "深い紫",
+                "name": "深い紫",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dee Purple",
+                "name": "Dee Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープパープル",
+                "name": "ディープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープ・パープル",
+                "name": "ディープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple",
+                "name": "Depp Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purpel",
+                "name": "Deep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープ・パープル",
+                "name": "ジープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purple",
+                "name": "Dep Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "DP",
+                "name": "DP",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purpel",
+                "name": "Dep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Purple",
+                "type-id": "1937e404-b981-3cb7-8151-4c86ebfc8d8e",
+                "name": "Purple",
+                "locale": null,
+                "type": "Search hint",
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "a5a51031-4bdf-4ede-bfe7-e8d896f15c8e",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "31637c98-02f4-42d8-a543-05dae3650050",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "83d5b92d-4517-499a-9ff2-20e0c87013f2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "15914fbc-c3ae-388e-978f-7dd221bf44c7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "ad96c7d2-8c1b-42f5-89e1-05218efd08ad",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "6e4e0f58-7d1a-4303-aeb6-a54886ef17e7",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Made in Japan",
+          "status": "Promotion"
+        },
+        {
+          "id": "cec38d3c-482b-4df9-9c21-042057ccf77f",
+          "title": "Made in Japan"
+        },
+        {
+          "id": "4500c8e8-0148-44cc-b4b8-f3feee7269f7",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Made in Japan",
+          "status": "Bootleg"
+        },
+        {
+          "id": "649942e5-49d6-4d46-af73-e2c2573253bb",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "d27239fa-3bdc-4d4d-a23a-5affef360ff9",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan (Steven Wilson remix)",
+          "status": "Official"
+        },
+        {
+          "id": "7f91e2a4-c276-4d70-9b7b-3ecef35489cc",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "09422f34-43f5-4d41-a6fd-d17c3e611758",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Made in Japan",
+          "status": "Bootleg"
+        },
+        {
+          "id": "64a51ad5-cd70-48d4-9ee1-3d6c2556f123",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "997e9038-e228-4541-8d73-e66982ab4339",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "c939687f-bf5c-45b9-b839-00c155efc58c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "7b331b00-315d-439f-8af8-82c8364dfa6d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "924d1bdc-555b-4144-9fc5-56c70012e7fd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "d40e431f-3717-497d-8a8f-bccb9ba88b2f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "0ba072b2-86ed-42ab-a895-2975161abebd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "01f9e669-881c-410d-91cd-924608e6c985",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "0213bda8-c730-4a37-a90d-b51358bb7f64",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "da9b02b2-831b-4b33-9cbc-55ea6821c57c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan (deluxe edition)",
+          "status": "Official"
+        },
+        {
+          "id": "2ec0b962-39d1-4182-a9d5-9b381cd670a3",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "1a515c27-de7c-4e7c-9e55-615858c9ace2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "63f08a92-8cc2-43c7-b6d9-d6dda5118566",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "80e9b67c-89cd-45b5-b661-a272bfbc135d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "1008f0d0-0a00-49b3-82a7-b673aac326e0",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "fb49386f-541a-4928-a606-1f6c9aacaec5",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "cffb670c-c581-4a35-ac14-5c873c66e69f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "8ce5d96c-5e98-4aaa-922d-b492c99c52e8",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "090ebc86-840c-4f4f-a9ac-9e7b55c85ee2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "90606001-114f-3c3e-ad7a-1faf48dc1e65",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "d1951233-61d6-3b4b-8f30-63b1ba53bcd1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "eb456f0f-1869-39e4-8be1-753d135e992d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "34d9588f-5c7e-3913-bcca-75f79145065b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "cef6d746-a24d-4cf6-adfa-cc0716d705c6",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "653cf1d6-b051-4e3c-9e59-aedeed9fb89b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "7545b510-b545-4703-8aae-b8705cac7443",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "d4696c10-3a8a-4ba4-832b-109f9c51d9de",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "76cf7411-bb55-425b-a8b2-477340c832d3",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "9ca42395-8121-4c5a-85d0-a74ddacd60ee",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "84e8f4fa-895d-45c5-b905-94b3ce2898b7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "7ce2dc65-d18e-44e6-987f-5703ec21afbc",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "3c420e6c-6d88-4828-a5f6-b55ba0da46a1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "5fee7a58-02f6-4d9c-a69c-841321736c36",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "84a5afdd-38f3-3246-8b30-cc5547e74ea9",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "0209bdf3-b68e-43ed-821e-6656ba0b6494",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "ef00b8da-ddf9-4c97-96c3-9e3c8c9146c9",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "41d03419-2a49-4467-a58d-d466debe34f1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "2d2f5556-6822-3161-af3d-8f72f0f3e96d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "3f5af1b9-adf9-3338-8884-065a76563931",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "3381c5e9-5b46-3a89-a4a5-62fe839c69a2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "f8d97148-5091-3f41-940c-d3341ef98261",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "1c561aba-af70-3270-9787-bf904befeadb",
+          "status-id": "41121bb9-3413-3818-8a9a-9742318349aa",
+          "title": "ライブ・イン・ジャパン",
+          "status": "Pseudo-Release"
+        },
+        {
+          "id": "b26c16a4-8df4-3bf2-9fd7-92d8d644561d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "ec585169-02f1-3109-b00b-4eff296554b0",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "94c054d4-dc88-4477-8e01-9125d6340906",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "8fc467e3-1265-3d96-bbb2-384eae21c944",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "981136ab-b764-37df-b6d1-0463ea7fe3a5",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "ab2a559d-4eb3-3134-a68a-720a12d49754",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "190c5374-5efb-3ab3-94ca-042b10a9eb81",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "373f1c80-5ea2-48c9-9a85-a36a246cbe90",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "9c87647a-db4f-3bb8-9ebe-76434ba9fc23",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Live in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "dbf6a3db-8f7c-3576-9482-0f607b050b83",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan",
+          "status": "Official"
+        },
+        {
+          "id": "79d1c195-c494-4a95-88fb-f484b12539b3",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Made in Japan",
+          "status": "Bootleg"
+        }
+      ],
+      "tags": [
+        {
+          "count": 5,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "heavy metal"
+        },
+        {
+          "count": 9,
+          "name": "hard rock"
+        },
+        {
+          "count": 1,
+          "name": "classic rock"
+        },
+        {
+          "count": 5,
+          "name": "arena rock"
+        },
+        {
+          "count": 0,
+          "name": "british invasion"
+        },
+        {
+          "count": 1,
+          "name": "english"
+        },
+        {
+          "count": 1,
+          "name": "live"
+        },
+        {
+          "count": 0,
+          "name": "british metal"
+        },
+        {
+          "count": 0,
+          "name": "classic hard rock"
+        },
+        {
+          "count": 0,
+          "name": "should be public domain"
+        },
+        {
+          "count": 0,
+          "name": "rock & roll"
+        },
+        {
+          "count": 0,
+          "name": "pop/rock"
+        },
+        {
+          "count": 0,
+          "name": "hard rock / heavy metal / blues rock"
+        },
+        {
+          "count": 1,
+          "name": "offizielle charts"
+        },
+        {
+          "count": 1,
+          "name": "5+ wochen"
+        },
+        {
+          "count": 1,
+          "name": "rs 26–01"
+        }
+      ]
+    },
+    {
+      "id": "cc022308-38a7-4f0c-95b8-6b3512bf6b4d",
+      "type-id": "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0",
+      "score": 94,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "e7dda8c5-d5b6-3497-a606-d85a6ed195b3",
+      "count": 1,
+      "title": "Made in Japan 2000",
+      "first-release-date": "2000",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "secondary-type-ids": [
+        "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0"
+      ],
+      "artist-credit": [
+        {
+          "name": "Deep Purple",
+          "artist": {
+            "id": "79491354-3d83-40e3-9d8e-7592d58d790a",
+            "name": "Deep Purple",
+            "sort-name": "Deep Purple",
+            "aliases": [
+              {
+                "sort-name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dick Pimple",
+                "name": "Dick Pimple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープパープル",
+                "name": "ジープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "深い紫",
+                "name": "深い紫",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dee Purple",
+                "name": "Dee Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープパープル",
+                "name": "ディープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープ・パープル",
+                "name": "ディープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple",
+                "name": "Depp Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purpel",
+                "name": "Deep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープ・パープル",
+                "name": "ジープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purple",
+                "name": "Dep Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "DP",
+                "name": "DP",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purpel",
+                "name": "Dep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Purple",
+                "type-id": "1937e404-b981-3cb7-8151-4c86ebfc8d8e",
+                "name": "Purple",
+                "locale": null,
+                "type": "Search hint",
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "32426c75-0e4a-4001-bb97-eb19858bbd56",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Made in Japan 2000",
+          "status": "Bootleg"
+        }
+      ]
+    },
+    {
+      "id": "3f9a1ab1-6983-4934-a933-53c5b4649972",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 82,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "e7dda8c5-d5b6-3497-a606-d85a6ed195b3",
+      "count": 1,
+      "title": "Made in Europe / Made in Japan",
+      "first-release-date": "2003",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Deep Purple",
+          "artist": {
+            "id": "79491354-3d83-40e3-9d8e-7592d58d790a",
+            "name": "Deep Purple",
+            "sort-name": "Deep Purple",
+            "aliases": [
+              {
+                "sort-name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dick Pimple",
+                "name": "Dick Pimple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープパープル",
+                "name": "ジープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "深い紫",
+                "name": "深い紫",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dee Purple",
+                "name": "Dee Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープパープル",
+                "name": "ディープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープ・パープル",
+                "name": "ディープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple",
+                "name": "Depp Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purpel",
+                "name": "Deep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープ・パープル",
+                "name": "ジープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purple",
+                "name": "Dep Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "DP",
+                "name": "DP",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purpel",
+                "name": "Dep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Purple",
+                "type-id": "1937e404-b981-3cb7-8151-4c86ebfc8d8e",
+                "name": "Purple",
+                "locale": null,
+                "type": "Search hint",
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "e4cb47f8-f16e-402b-801e-da2914313c4c",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Made in Europe / Made in Japan",
+          "status": "Bootleg"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        }
+      ]
+    },
+    {
+      "id": "94356d67-adef-4637-b68d-34feba27bbfa",
+      "type-id": "d6038452-8ee0-3f68-affc-2de9a1ede0b9",
+      "score": 75,
+      "primary-type-id": "d6038452-8ee0-3f68-affc-2de9a1ede0b9",
+      "artist-credit-id": "e7dda8c5-d5b6-3497-a606-d85a6ed195b3",
+      "count": 2,
+      "title": "Made in Japan: Smoke on the Water / Highway Star",
+      "first-release-date": "1973-07",
+      "primary-type": "Single",
+      "artist-credit": [
+        {
+          "name": "Deep Purple",
+          "artist": {
+            "id": "79491354-3d83-40e3-9d8e-7592d58d790a",
+            "name": "Deep Purple",
+            "sort-name": "Deep Purple",
+            "aliases": [
+              {
+                "sort-name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "name": "Paice, Blackmore, Gillan, Glover, Lord",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dick Pimple",
+                "name": "Dick Pimple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "name": "Deep Purple and The Royal Philharmonic Orchestra",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープパープル",
+                "name": "ジープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "深い紫",
+                "name": "深い紫",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dee Purple",
+                "name": "Dee Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープパープル",
+                "name": "ディープパープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ディープ・パープル",
+                "name": "ディープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purple",
+                "name": "Depp Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Deep Purpel",
+                "name": "Deep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ジープ・パープル",
+                "name": "ジープ・パープル",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purple",
+                "name": "Dep Purple",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "DP",
+                "name": "DP",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Dep Purpel",
+                "name": "Dep Purpel",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Purple",
+                "type-id": "1937e404-b981-3cb7-8151-4c86ebfc8d8e",
+                "name": "Purple",
+                "locale": null,
+                "type": "Search hint",
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "fac056e8-99f7-46f1-90c1-b02022aa9452",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Made in Japan: Smoke on the Water / Highway Star",
+          "status": "Official"
+        },
+        {
+          "id": "36556b20-3825-400f-9848-afa113f94b98",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Highway Star / Smoke on the Water",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "hard rock"
+        }
+      ]
+    }
+  ]
+}

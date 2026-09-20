@@ -1,0 +1,1469 @@
+{
+  "created": "2026-09-20T15:51:35.837Z",
+  "count": 16,
+  "offset": 0,
+  "release-groups": [
+    {
+      "id": "fdd6c833-3c96-33cb-9917-72e15bcd34bc",
+      "type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "score": 100,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 23,
+      "title": "Blur",
+      "first-release-date": "1997-01-29",
+      "primary-type": "Album",
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "5b75693a-f19e-401c-a320-bdedd45b6a2e",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur (Rough Trade 50th Anniversary Edition)",
+          "status": "Official"
+        },
+        {
+          "id": "44af0b81-b64a-4446-a36a-0f8d22f4a530",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "fcc7dcc5-b75a-4f63-8489-824a38bde130",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "cccd58c6-33d4-4ede-a9be-4bd2c1c902cb",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "00007f96-14a8-43e8-955d-0b00323a53bd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "4dedd302-49b7-4653-a471-5f606e6d8e65",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Blur",
+          "status": "Promotion"
+        },
+        {
+          "id": "89963388-999b-408b-b84a-d3cce473bd2b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "1f2704d9-59d4-4007-bbb7-4d569981aad1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "51e73c1a-6e6c-4a09-acae-1e4b5d61d1b7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "a8cb49db-0b80-477a-83bb-c23fd04b963c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "0e8fed74-06aa-4f08-8fe6-1bc96a46e433",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "1b268e94-6188-454f-996e-6d01c9baa2d3",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "80c9b3c0-b9b7-40d8-b393-275f2b84cdf2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "e4350aac-d96b-49c6-a353-f9818ea4179b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "f629e473-1339-4713-8b91-bc1656cf9fba",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "ce238e7e-c56b-341a-9a2a-1c686658ce9d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "c0147b2d-c1a0-34d5-8dc3-fba970b684d8",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "36d46cf0-f4bc-3c36-9e29-bb419cabbe1b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "1758b4c1-0def-3336-b235-cfcd5b2cfc0b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "c3789a0c-dccc-4d64-b692-943f305708e1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "a27a94c6-e67f-417e-93ce-8c686615e08c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "613b0997-866e-3bc0-b013-1802b90b77ef",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        },
+        {
+          "id": "c5555d72-2713-434d-a26e-584c465a5f99",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 7,
+          "name": "rock"
+        },
+        {
+          "count": 0,
+          "name": "post-rock"
+        },
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 9,
+          "name": "alternative rock"
+        },
+        {
+          "count": 0,
+          "name": "noise"
+        },
+        {
+          "count": 0,
+          "name": "punk"
+        },
+        {
+          "count": 1,
+          "name": "experimental"
+        },
+        {
+          "count": 4,
+          "name": "indie rock"
+        },
+        {
+          "count": 0,
+          "name": "indie"
+        },
+        {
+          "count": 0,
+          "name": "alternative"
+        },
+        {
+          "count": 1,
+          "name": "melodic"
+        },
+        {
+          "count": 1,
+          "name": "lo-fi"
+        },
+        {
+          "count": 1,
+          "name": "psychedelic"
+        },
+        {
+          "count": 5,
+          "name": "britpop"
+        },
+        {
+          "count": 1,
+          "name": "art rock"
+        },
+        {
+          "count": 1,
+          "name": "post-grunge"
+        },
+        {
+          "count": 0,
+          "name": "poetry"
+        },
+        {
+          "count": -1,
+          "name": "indie pop"
+        },
+        {
+          "count": 1,
+          "name": "neo-psychedelia"
+        },
+        {
+          "count": 1,
+          "name": "brit pop"
+        },
+        {
+          "count": -1,
+          "name": "rock pop"
+        },
+        {
+          "count": 0,
+          "name": "rock and indie"
+        },
+        {
+          "count": 0,
+          "name": "newvalue"
+        },
+        {
+          "count": 1,
+          "name": "eclectic"
+        },
+        {
+          "count": 1,
+          "name": "dense"
+        },
+        {
+          "count": 0,
+          "name": "drugs"
+        },
+        {
+          "count": 1,
+          "name": "energetic"
+        },
+        {
+          "count": 1,
+          "name": "quirky"
+        },
+        {
+          "count": 1,
+          "name": "alternative pop/rock"
+        },
+        {
+          "count": -1,
+          "name": "british indie rock/pop"
+        },
+        {
+          "count": 0,
+          "name": "lo-fi indie"
+        },
+        {
+          "count": 2,
+          "name": "slacker rock"
+        }
+      ]
+    },
+    {
+      "id": "85f35749-2363-326a-9423-bb7d6c955ed7",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 92,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Essential Blur",
+      "first-release-date": "1997-11",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "6ffe7ffe-9bf3-48ba-9c2a-bfff8dcfb4d3",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Essential Blur",
+          "status": "Promotion"
+        }
+      ]
+    },
+    {
+      "id": "c41b9c76-ccf8-336c-b78e-66a4d9a12add",
+      "type-id": "6d0c5bf6-7a33-3420-a519-44fc63eedebf",
+      "score": 87,
+      "primary-type-id": "6d0c5bf6-7a33-3420-a519-44fc63eedebf",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Blur-ti-go",
+      "first-release-date": "1992",
+      "primary-type": "EP",
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "cf75f5f2-c327-4cbd-a92c-62016f017436",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Blur-ti-go",
+          "status": "Promotion"
+        }
+      ],
+      "tags": [
+        {
+          "count": 2,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "electronic"
+        },
+        {
+          "count": 1,
+          "name": "alternative rock"
+        },
+        {
+          "count": 1,
+          "name": "house"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        }
+      ]
+    },
+    {
+      "id": "eedacc61-ee96-41c8-964e-e3621e4ea17c",
+      "type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "score": 83,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "c0815de0-03e1-3536-95ee-a4cfe245276b",
+      "count": 1,
+      "title": "Blur Licker",
+      "first-release-date": "2007-01-31",
+      "primary-type": "Album",
+      "artist-credit": [
+        {
+          "name": "Flex Blur",
+          "artist": {
+            "id": "78535671-1046-4695-9639-0fcd4b39e2e5",
+            "name": "Flex Blur",
+            "sort-name": "Flex Blur",
+            "disambiguation": "french electronic music producer"
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "dbf996ad-0b32-47b4-8736-d3e81844edfd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur Licker",
+          "status": "Official"
+        }
+      ]
+    },
+    {
+      "id": "76709123-4395-4630-80ea-d9b84291b64b",
+      "type-id": "4fc3be2b-de1e-396b-a933-beb8f1607a22",
+      "score": 83,
+      "primary-type-id": "4fc3be2b-de1e-396b-a933-beb8f1607a22",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Focusing in With Blur",
+      "first-release-date": "1991",
+      "primary-type": "Other",
+      "secondary-types": [
+        "Interview"
+      ],
+      "secondary-type-ids": [
+        "12af3f5e-ce2a-3941-8b93-d482884031e5"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "1065ec7d-e21e-441e-96f6-187ae6ebb920",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Focusing in With Blur",
+          "status": "Promotion"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "alternative rock"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        },
+        {
+          "count": 1,
+          "name": "non-music"
+        }
+      ]
+    },
+    {
+      "id": "be3ed22c-e840-4999-905e-9fdb0fe3c180",
+      "type-id": "d6038452-8ee0-3f68-affc-2de9a1ede0b9",
+      "score": 83,
+      "primary-type-id": "d6038452-8ee0-3f68-affc-2de9a1ede0b9",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Blur (25th Anniversary Sampler)",
+      "first-release-date": "2022-02-10",
+      "primary-type": "Single",
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "6d6a8dd8-6b9c-4c71-ab57-1af4c6f3ba0a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur (25th Anniversary Sampler)",
+          "status": "Official"
+        }
+      ]
+    },
+    {
+      "id": "ca07ecb3-2fb6-4d25-a7f1-782ee24e0acd",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 83,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 3,
+      "title": "Blur 21: The Box",
+      "first-release-date": "2012-07-27",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "fa61ec9d-b1db-41bf-bed7-b157fa43cfd0",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "blur 21 box",
+          "status": "Official"
+        },
+        {
+          "id": "3ba938a7-74df-45fb-990e-1e854ed8b0a1",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur 21: The Box",
+          "status": "Official"
+        },
+        {
+          "id": "ea71d0d3-4a60-4bd3-9cfe-9c0eec380ea4",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur 21: The Box",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "electronic"
+        },
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 1,
+          "name": "punk"
+        },
+        {
+          "count": 1,
+          "name": "synth-pop"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    },
+    {
+      "id": "dfcd3696-5f2d-317f-aa61-baf5094ad6e4",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 83,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 17,
+      "title": "Blur: The Best Of",
+      "first-release-date": "2000-10-23",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "96ebff3c-b90f-4598-bb55-5fc4a7d9fd1b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "70f1390f-0285-4e61-9d59-23fe2083d4ed",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "0c852fd0-e329-31a1-afbf-7856bc1ea8f8",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "086ee046-31ba-4b68-9a8a-2433971fd94f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "a22162d8-d871-3800-bb22-8c64bb21c497",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "b5be3d62-2d2a-4b49-bff1-20dd81b109ef",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "0a6b3a40-6b0a-40d6-aec3-0c7d40ff44b5",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "9f3ad3b2-3721-4587-8678-f8bcbe4f575b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "276f59cd-45e5-4d87-8ea0-fe4d5043a02a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "95cb7189-d71b-3b4e-9490-8ef0ec83f41d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "e352cbb9-689a-4af8-ae42-2b7a0d54c0d7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "502c94ee-547b-4ffc-81ff-b715c6fd553d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "70b6a5f9-aef0-4ff0-813c-2a6806ddd42a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "74286052-ba85-4b70-950c-d9ab013ad329",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "22a85ab2-592c-40c7-8658-e145a211f851",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "6d5273a8-5541-4778-9557-26636b09450c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        },
+        {
+          "id": "e640ff45-e487-46f7-97b7-3a49523fe258",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur: The Best Of",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 2,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 5,
+          "name": "alternative rock"
+        },
+        {
+          "count": 2,
+          "name": "indie rock"
+        },
+        {
+          "count": 5,
+          "name": "britpop"
+        },
+        {
+          "count": 1,
+          "name": "art rock"
+        },
+        {
+          "count": 0,
+          "name": "brit pop"
+        },
+        {
+          "count": 0,
+          "name": "chamber pop"
+        },
+        {
+          "count": 0,
+          "name": "alternative and punk"
+        },
+        {
+          "count": 0,
+          "name": "rock_brit pop_alternative rock"
+        },
+        {
+          "count": 1,
+          "name": "baggy / madchester"
+        },
+        {
+          "count": 0,
+          "name": "alternative rock; britpop; electronic; indie rock; jazz; pop; pop rock; trance"
+        }
+      ]
+    },
+    {
+      "id": "323b01f0-577c-3233-9f2f-96dd791152a9",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 79,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "A Further Side of Blur",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "956c1b59-423b-41ac-ba8b-840a25cd1b95",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "A Further Side of Blur",
+          "status": "Bootleg"
+        }
+      ]
+    },
+    {
+      "id": "c10e5dc1-15a1-336d-ac7d-24efe472c8cb",
+      "score": 79,
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Blur: Exclusive 5 Track CD",
+      "first-release-date": "2003-09-21",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "be8afe9c-4ee6-48bf-ab40-cdc2bd47ee03",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Blur: Exclusive 5 Track CD",
+          "status": "Promotion"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        }
+      ]
+    },
+    {
+      "id": "bb2d8a81-acb8-3939-af8b-fa5d43b0f977",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 77,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Blur CD Exclusive To The Observer",
+      "first-release-date": "1999-09-05",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "6ae0905a-d9e4-4229-9022-5d384b95cdcb",
+          "status-id": "518ffc83-5cde-34df-8627-81bff5093d92",
+          "title": "Blur CD Exclusive To The Observer",
+          "status": "Promotion"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "alternative rock"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    },
+    {
+      "id": "3f4f3916-29e0-4837-b948-1b118ca288a6",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 77,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 6,
+      "title": "Midlife: A Beginner’s Guide to Blur",
+      "first-release-date": "2009-06-09",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "a35d4ab1-edc9-41bc-96aa-ed0edb78c4eb",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        },
+        {
+          "id": "0531dd24-8c02-4fc1-92d9-1d8eca8f3946",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        },
+        {
+          "id": "a6392549-f730-4e60-96fa-a41b1761af71",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        },
+        {
+          "id": "1a4555c0-c9e0-479e-aa3b-1b1adc7cf6c3",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        },
+        {
+          "id": "e340afbf-5bdf-4a8c-8780-d4184e48bcb2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        },
+        {
+          "id": "dcbe3a73-4ad8-41d0-82aa-7b24f4c56008",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Midlife: A Beginner’s Guide to Blur",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    },
+    {
+      "id": "ea1c1538-4ac9-4040-a19d-5dd95bb46828",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 77,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 1,
+      "title": "Blur: The Best Singles Collection ’99",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "4ad0901d-4486-4c76-be2a-30bb90111694",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Blur: The Best Singles Collection ’99",
+          "status": "Bootleg"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    },
+    {
+      "id": "eb84ca35-21f6-4fdb-9296-6834c2243ffa",
+      "type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "score": 72,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "06dc8299-8a98-3525-bdea-44916cb5ea5a",
+      "count": 1,
+      "title": "Blur Beside You",
+      "first-release-date": "2022-04-01",
+      "primary-type": "Album",
+      "artist-credit": [
+        {
+          "name": "Blur Beside You",
+          "artist": {
+            "id": "f609d2c8-0b6a-4d3b-9653-dc6c450e93e6",
+            "name": "Blur Beside You",
+            "sort-name": "Blur Beside You"
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "fdcc7549-beea-4877-9312-c32478306af2",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Blur Beside You",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "shoegaze"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        }
+      ]
+    },
+    {
+      "id": "d8ec1673-9df2-48cf-b24e-dc8f113558d2",
+      "type-id": "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0",
+      "score": 68,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 3,
+      "title": "All the People: Blur Live at Hyde Park 03 July 2009",
+      "first-release-date": "2009-11-23",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "secondary-type-ids": [
+        "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "72ae4666-21c7-45c3-b1a6-a782af0e0a07",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People… Blur Live at Hyde Park 03/07/2009",
+          "status": "Official"
+        },
+        {
+          "id": "f673822e-e633-4d0b-96a9-2d690c9ae9f4",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People… Blur Live at Hyde Park 03/07/2009",
+          "status": "Official"
+        },
+        {
+          "id": "6dfaaf03-c494-4246-948b-41571d677d8c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People: Blur Live at Hyde Park 03 July 2009",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "electronic"
+        },
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    },
+    {
+      "id": "1be3e47e-1f28-4e62-a475-a01cbc14ea76",
+      "type-id": "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0",
+      "score": 68,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "2ea4328a-0407-3937-8f91-0eb81c9bddf1",
+      "count": 3,
+      "title": "All the People: Blur Live at Hyde Park 02 July 2009",
+      "first-release-date": "2009-11-23",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "secondary-type-ids": [
+        "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0"
+      ],
+      "artist-credit": [
+        {
+          "name": "Blur",
+          "artist": {
+            "id": "ba853904-ae25-4ebb-89d6-c44cfbd71bd2",
+            "name": "Blur",
+            "sort-name": "Blur",
+            "disambiguation": "UK alternative rock band",
+            "aliases": [
+              {
+                "sort-name": "Damon Albarn",
+                "name": "Dan Abnormal",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Albarn James Coxon Rowntree",
+                "name": "Albarn James Coxon Rowntree",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "5a8bf98a-783d-4d48-a090-d1668ec2e999",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People… Blur Live at Hyde Park 02/07/2009",
+          "status": "Official"
+        },
+        {
+          "id": "0c36af51-e6ea-4c8d-a1b2-f9a1dd29f059",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People… Blur Live at Hyde Park 02/07/2009",
+          "status": "Official"
+        },
+        {
+          "id": "eeced30d-be4c-4bac-9afc-55276622c7a7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "All the People: Blur Live at Hyde Park 02 July 2009",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "pop"
+        },
+        {
+          "count": 1,
+          "name": "alternative rock"
+        },
+        {
+          "count": 1,
+          "name": "indie rock"
+        },
+        {
+          "count": 1,
+          "name": "britpop"
+        }
+      ]
+    }
+  ]
+}

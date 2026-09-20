@@ -81,8 +81,13 @@ test('About this record says it is still asking, then that it is still asking sl
     'Still asking MusicBrainz — it only answers one question a second.')
 })
 
+// Discogs' own "no entry for this album" is an ANSWER, and says so in the
+// reply: `found: false` beside the reason. Every other ok:false shape is the
+// lookup falling over.
+const DISCOGS_MISS = { ok: false, found: false, reason: 'Discogs has no entry for this album.' }
+
 test('About this record names the folder as the likely problem on a miss', () => {
-  const b = bodyOf(html(base({ albumInfo: { ok: true, found: false }, reception: { ok: false, reason: 'Discogs has no entry for this album.' } })), 'About this record')
+  const b = bodyOf(html(base({ albumInfo: { ok: true, found: false }, reception: DISCOGS_MISS })), 'About this record')
   assert.ok(b.includes("I couldn't find this record on MusicBrainz. The folder name may not match what it's filed under."))
   assert.ok(b.includes('No genre tags on this record.'))
 })
@@ -177,6 +182,26 @@ test('the genre fallback waits for both sources before it speaks', () => {
   // statement about a lookup that is still running.
   const b = bodyOf(html(base({ albumInfo: { ok: true, found: false } })), 'About this record')
   assert.ok(!b.includes('No genre tags on this record.'))
+})
+
+test('a lookup that FAILED never earns the panel a fact about the record', () => {
+  // The old gate was `!= null`, which every failure shape satisfies — so the
+  // panel stated "No genre tags on this record." two sentences under a line
+  // saying it had not managed to find out.
+  const failed = { ok: false, reason: "The lookup didn't answer. Close and reopen the panel to try again." }
+  const both = bodyOf(html(base({ albumInfo: failed, reception: { ok: false, reason: 'Discogs did not answer: socket hang up' } })), 'About this record')
+  assert.ok(both.startsWith("The lookup didn't answer."))
+  assert.ok(!both.includes('No genre tags on this record.'), 'nobody looked, so nobody knows')
+
+  // One side down is still one side down.
+  const halfA = bodyOf(html(base({ albumInfo: failed, reception: DISCOGS_MISS })), 'About this record')
+  assert.ok(!halfA.includes('No genre tags on this record.'))
+  const halfB = bodyOf(html(base({ albumInfo: { ok: true, found: false }, reception: { ok: false, reason: 'Discogs is busy right now. Try again in a minute.' } })), 'About this record')
+  assert.ok(!halfB.includes('No genre tags on this record.'))
+
+  // And when both really did answer, the sentence is earned.
+  const answered = bodyOf(html(base({ albumInfo: { ok: true, found: true, title: 'Wish You Were Here', date: '', primaryType: 'Album', secondaryTypes: [], genres: [], confidence: 'firm' }, reception: DISCOGS_MISS })), 'About this record')
+  assert.ok(answered.includes('No genre tags on this record.'))
 })
 
 // ── notes and the link ───────────────────────────────────────────────────────
@@ -277,6 +302,31 @@ test('the tags section names the artist when MusicBrainz has no tags for them', 
   const m = base({ peerAlbums: [peerAlbum('Hawkwind', 'Space Ritual')], tagsByArtist: {}, artistTags: { ok: true, tags: [] } })
   assert.equal(bodyOf(html(m), 'Artists here with the same tags'),
     "MusicBrainz has no genre tags for Pink Floyd, so I can't match this one up.")
+})
+
+test('the tags section will not blame MusicBrainz for a lookup that failed', () => {
+  // Same empty seed, two different reasons for it, and only one of them is a
+  // finding. The failure shape was being read as "MusicBrainz has no genre tags
+  // for Pink Floyd" — a definitive claim about an answer nobody ever got.
+  const m = base({
+    peerAlbums: [peerAlbum('Hawkwind', 'Space Ritual')],
+    tagsByArtist: {},
+    artistTags: { ok: false, reason: 'MusicBrainz did not answer: socket hang up' },
+  })
+  const b = bodyOf(html(m), 'Artists here with the same tags')
+  assert.equal(b, 'MusicBrainz did not answer: socket hang up')
+  assert.ok(!b.includes('has no genre tags'), 'a failure is not a finding')
+})
+
+test('the tags section is still reading while its own lookup is in flight', () => {
+  // The room swept this artist and came back empty, so `mine` is an array and
+  // the first guard lets it through — but our own request is still out.
+  const m = base({
+    peerAlbums: [peerAlbum('Hawkwind', 'Space Ritual')],
+    tagsByArtist: { 'pink floyd': [] },
+    artistTags: null,
+  })
+  assert.equal(bodyOf(html(m), 'Artists here with the same tags'), 'Reading genre tags for Pink Floyd…')
 })
 
 test('the tags section names the generic tags when nothing is specific enough', () => {
@@ -431,6 +481,26 @@ test('More by counts what each of them has, attributed to MusicBrainz', () => {
   assert.ok(out.includes('data-act="wish" data-wish="Pink Floyd Meddle"'), 'and the missing one is wishlistable')
 })
 
+test('More by states no total when the list could not be read to the end', () => {
+  // Paul McCartney's browse reports 181 release groups; one page of 50 held 24
+  // studio albums where all 181 hold 42. A count off a truncated list is a
+  // wrong number stated as a fact, so when the paging gives up, the sentence
+  // says what it read instead of what MusicBrainz has.
+  const rows = [
+    { id: '1', title: 'Ram', year: '1971', owned: true, folderPath: '' },
+    { id: '2', title: 'Band on the Run', year: '1973', owned: false, folderPath: 'p/botr' },
+  ]
+  const partial = base({ artistReleases: { ok: true, artistMbid: 'a', releases: rows, complete: false }, releaseRows: rows })
+  const b = bodyOf(html(partial), 'More by Pink Floyd')
+  assert.ok(!b.includes('MusicBrainz lists'), 'no total off a list that was cut short')
+  assert.ok(b.includes('This artist has more records than I could read in one go. Of the 2 studio albums I did read, vinylhoarder has 1 and you have 1.'))
+
+  // And a browse that finished still counts out loud.
+  const whole = base({ artistReleases: { ok: true, artistMbid: 'a', releases: rows, complete: true }, releaseRows: rows })
+  assert.ok(bodyOf(html(whole), 'More by Pink Floyd')
+    .includes('MusicBrainz lists 2 studio albums for Pink Floyd. vinylhoarder has 1. You have 1.'))
+})
+
 test('More by caps the list at ten and says how many it held back', () => {
   const rows = Array.from({ length: 14 }, (_, i) => ({ id: String(i), title: 'Album ' + i, year: '19' + (70 + i), owned: false, folderPath: '' }))
   const m = base({ artistReleases: { ok: true, artistMbid: 'a', releases: rows }, releaseRows: rows })
@@ -469,4 +539,96 @@ test('markReleases will not credit another artist\'s album of the same name', ()
     peerAlbums: [],
   })
   assert.equal(rows[0].owned, false)
+})
+
+// ── the lookups open() actually fires ────────────────────────────────────────
+// Everything above is model-to-string. This last block runs the real open()
+// against a DOM just big enough to hold the panel, because the defect it covers
+// is in the WIRING and not in any string: the Discogs lookup had a bare
+// .catch(() => {}) and no else for a missing bridge, so its slot stayed at null
+// — which this module reads as STILL ASKING — for the life of the panel.
+
+function makeDom() {
+  const docListeners = {}
+  function El(tag) {
+    const kids = new Map()
+    return {
+      tagName: tag, className: '', innerHTML: '', isConnected: false,
+      style: {}, dataset: {},
+      classList: { add() {}, remove() {}, toggle() {} },
+      setAttribute() {}, getAttribute: () => null,
+      addEventListener() {}, removeEventListener() {},
+      // One stub per selector, so repaintBody's '.slr-dossier-body' is the same
+      // element every time and the test can read what was last written to it.
+      querySelector(sel) {
+        if (!kids.has(sel)) kids.set(sel, El('div'))
+        return kids.get(sel)
+      },
+      querySelectorAll: () => [],
+      remove() { this.isConnected = false },
+    }
+  }
+  const doc = {
+    mounted: [],
+    body: { appendChild(el) { el.isConnected = true; doc.mounted.push(el); return el } },
+    createElement: tag => El(tag),
+    addEventListener(t, fn) { (docListeners[t] = docListeners[t] || []).push(fn) },
+    removeEventListener() {},
+  }
+  return doc
+}
+
+// Run open() with the given bridge, let every promise settle, and hand back the
+// panel body as it stands.
+async function openPanel(api) {
+  const prev = { window: globalThis.window, document: globalThis.document, raf: globalThis.requestAnimationFrame, ls: globalThis.localStorage }
+  const doc = makeDom()
+  globalThis.document = doc
+  globalThis.window = {
+    api,
+    PapaSlskAlbumView: { findMyCopy: () => null },
+    PapaSlskShelves: require('../src/slsk-shelves'),
+    PapaSlskCompare: {},
+    PapaSlskWander: { norm: s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() },
+  }
+  globalThis.requestAnimationFrame = () => {}
+  globalThis.localStorage = { getItem: () => null, setItem() {} }
+  try {
+    const panel = D.open({ album, username: 'vinylhoarder', deps: {}, siblings: [] })
+    assert.ok(panel && panel.close, 'open() returns a handle')
+    // Several turns: each lookup's .then/.catch, and the repaint behind it.
+    for (let i = 0; i < 8; i++) await Promise.resolve()
+    assert.equal(doc.mounted.length, 1, 'the panel mounted')
+    return doc.mounted[0].querySelector('.slr-dossier-body').innerHTML
+  } finally {
+    globalThis.window = prev.window
+    globalThis.document = prev.document
+    globalThis.requestAnimationFrame = prev.raf
+    globalThis.localStorage = prev.ls
+  }
+}
+
+test('a Discogs lookup that rejects fills its slot instead of leaving it null', async () => {
+  // null means STILL ASKING in this module, so a rejection that writes nothing
+  // leaves the panel waiting on a promise that is already dead.
+  const api = {
+    discogsAlbum: () => Promise.reject(new Error('socket hang up')),
+    albumInfo: () => Promise.resolve({ ok: true, found: false }),
+    artistReleases: () => Promise.resolve({ ok: true, artistMbid: null, releases: [] }),
+    musicbrainzArtistTags: () => Promise.resolve({ ok: true, tags: [] }),
+    artistInfo: () => Promise.resolve({ ok: true, bio: '' }),
+  }
+  const body = await openPanel(api)
+  assert.ok(body.includes("The lookup didn't answer."), 'the Discogs slot resolved')
+})
+
+test('a missing Discogs bridge fills its slot too', async () => {
+  const api = {
+    albumInfo: () => Promise.resolve({ ok: true, found: false }),
+    artistReleases: () => Promise.resolve({ ok: true, artistMbid: null, releases: [] }),
+    musicbrainzArtistTags: () => Promise.resolve({ ok: true, tags: [] }),
+    artistInfo: () => Promise.resolve({ ok: true, bio: '' }),
+  }
+  const body = await openPanel(api)
+  assert.ok(body.includes("The lookup didn't answer."))
 })

@@ -1,0 +1,848 @@
+{
+  "created": "2026-09-20T15:50:49.184Z",
+  "count": 5,
+  "offset": 0,
+  "release-groups": [
+    {
+      "id": "4a4213d0-f224-3d51-bcca-476f61162681",
+      "type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "score": 100,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "df296871-15ee-38e4-a1da-421cc5801c7e",
+      "count": 51,
+      "title": "Sticky Fingers",
+      "first-release-date": "1971-04-23",
+      "primary-type": "Album",
+      "artist-credit": [
+        {
+          "name": "The Rolling Stones",
+          "artist": {
+            "id": "b071f9fa-14b0-4217-8e97-eb41da73f598",
+            "name": "The Rolling Stones",
+            "sort-name": "Rolling Stones, The",
+            "aliases": [
+              {
+                "sort-name": "Stones",
+                "name": "Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Stones, The",
+                "name": "The Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ローリング・ストーンズ",
+                "type-id": "894afba6-2816-3c24-8072-eadb66bd04bc",
+                "name": "ローリング・ストーンズ",
+                "locale": "ja",
+                "type": "Artist name",
+                "primary": true,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Rolling Stones",
+                "name": "Rolling Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "5eaebbf3-f376-456e-923f-74e27c65e0ee",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "d8dc6664-bdc8-4662-a6b8-e8c2db1892cd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "39bef642-107b-4330-ba5c-652ea4c02fff",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "d8bff61b-9ab2-4b5e-8e30-66e51e526fbd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "eb8a98fa-b2f8-4aee-95db-6d1254827e85",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "254de5d2-0daa-4678-88a3-af56da776333",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "2c16e619-61ee-4c8d-bb1a-9bca96a88917",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "7d7f45ff-d244-49a1-a5ca-9ae1eccc390f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "1654fee7-bbb2-44af-8fdd-a21ffeae7d61",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "3fbddf1c-5209-45c7-8a40-862bd54d7d2a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "c7f857b1-43cb-41ad-8480-d6070d07d248",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "347b332c-b256-3264-ab53-cf7d7be98273",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "5c230a38-999b-4331-a5ad-7d4c406bb0a6",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "d68796bd-ca33-408c-8765-e7fea6242886",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "61463bba-e9e1-46ba-a791-3eab720ba8b8",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "11fca3b1-514a-45d2-ae42-76ea11440be6",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "3680831a-cee3-48df-8ba5-3e26943ceda3",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "7f251594-0ece-3867-9f6f-f7e972a00fe7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "a315dca4-517b-31cd-9acb-41800edbb6c4",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "126fb7bb-95e5-4f0a-955a-a9d8e2f38327",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "34c3c63b-d426-488f-85de-0683e8886d65",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "b20ebc7b-7e7c-4d4b-9fc1-448f04c46e86",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "8d234d4a-45fb-4a95-aae0-33279a952105",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "c6494d6e-5db1-4fd1-a628-95d81bc8b1ae",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "e7cd2472-4c98-4817-bc46-7c5a73a15a5b",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "4a9b28ff-4f31-4f2b-aa9c-7048b988e28d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "0937f9d5-08cd-3444-a1b0-b4281417e048",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "bc6da042-bcdc-4f2d-8fad-f1b516271575",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "f329c252-07b9-47cb-9ab9-5c9c4256a42d",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "d505a8b4-89b2-4e4e-93c3-3d3f0830c85c",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "fb0e7242-d076-46de-b3b6-da2d7b6a2875",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Sticky Fingers",
+          "status": "Bootleg"
+        },
+        {
+          "id": "8db8e53f-d949-4487-8c89-11149d0bb977",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "19497421-341d-3b79-b3c1-3f09df947e76",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "9081951b-8fa8-4e71-8b50-6dfe059c9b25",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "d883e644-5ec0-4928-9ccd-fc78bc306a46",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "badc45c8-609d-3199-90d2-7084ba6cb820",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "355d957f-cdd6-4902-aa80-f7bf2c4fff38",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "e53e3918-ad57-3bc2-a74c-9de11e20c1a9",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "33a6719b-7872-4786-9b26-d7e1c29414d1",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Sticky Fingers (The Alternate Album)",
+          "status": "Bootleg"
+        },
+        {
+          "id": "79c87f23-1c49-3f63-828e-ff63844d8dcd",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "3dd10df7-7963-3b1f-872e-c18801632704",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "0289cc7c-31b8-4711-90a9-ca17f4d06f86",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "3cc7361c-c7d8-42f3-bd84-d7263ae8bb91",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "646a6b74-4bb5-4b12-9cf3-060caccc3879",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "106af89f-8c9f-416c-a964-a83deae973b7",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "fc4e918e-fece-455e-aa3d-3f7df4b7d7d4",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "2f6f7c51-5a77-498f-91c5-f567c7654ac5",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "e714b0f8-0242-4595-bdea-efea2b41753a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "5fa114d1-7633-4dd3-a09b-3a0ef204828f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "a89e1900-4e15-4ed6-ade8-298aa1eaa957",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        },
+        {
+          "id": "0f4b6532-ac38-46a9-9626-1f08c879e21a",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 14,
+          "name": "rock"
+        },
+        {
+          "count": 3,
+          "name": "blues"
+        },
+        {
+          "count": 7,
+          "name": "hard rock"
+        },
+        {
+          "count": 0,
+          "name": "melodic"
+        },
+        {
+          "count": 12,
+          "name": "blues rock"
+        },
+        {
+          "count": 5,
+          "name": "country rock"
+        },
+        {
+          "count": 0,
+          "name": "classic rock"
+        },
+        {
+          "count": 3,
+          "name": "album rock"
+        },
+        {
+          "count": 3,
+          "name": "rock and roll"
+        },
+        {
+          "count": 2,
+          "name": "roots rock"
+        },
+        {
+          "count": -1,
+          "name": "blues-rock"
+        },
+        {
+          "count": 0,
+          "name": "melancholic"
+        },
+        {
+          "count": 2,
+          "name": "sexual"
+        },
+        {
+          "count": -1,
+          "name": "rock pop"
+        },
+        {
+          "count": -1,
+          "name": "classic pop and rock"
+        },
+        {
+          "count": 2,
+          "name": "drugs"
+        },
+        {
+          "count": 1,
+          "name": "summer"
+        },
+        {
+          "count": -1,
+          "name": "1971"
+        },
+        {
+          "count": 2,
+          "name": "energetic"
+        },
+        {
+          "count": 1,
+          "name": "male vocalist"
+        },
+        {
+          "count": 0,
+          "name": "rock ballad"
+        },
+        {
+          "count": 0,
+          "name": "playful"
+        },
+        {
+          "count": 2,
+          "name": "hedonistic"
+        },
+        {
+          "count": 2,
+          "name": "passionate"
+        },
+        {
+          "count": 2,
+          "name": "raw"
+        },
+        {
+          "count": 0,
+          "name": "r&b"
+        },
+        {
+          "count": 3,
+          "name": "rock & roll"
+        },
+        {
+          "count": -1,
+          "name": "pop/rock"
+        },
+        {
+          "count": 0,
+          "name": "contemporary pop/rock"
+        },
+        {
+          "count": 0,
+          "name": "rhythm & blues"
+        },
+        {
+          "count": 0,
+          "name": "rhythmic"
+        },
+        {
+          "count": 1,
+          "name": "longing"
+        },
+        {
+          "count": 2,
+          "name": "rebellious"
+        }
+      ]
+    },
+    {
+      "id": "8d326cf2-ab3d-4231-b506-58fc69e1e9fa",
+      "score": 92,
+      "artist-credit-id": "df296871-15ee-38e4-a1da-421cc5801c7e",
+      "count": 1,
+      "title": "Sticky Fingers Revisited",
+      "first-release-date": "2012",
+      "artist-credit": [
+        {
+          "name": "The Rolling Stones",
+          "artist": {
+            "id": "b071f9fa-14b0-4217-8e97-eb41da73f598",
+            "name": "The Rolling Stones",
+            "sort-name": "Rolling Stones, The",
+            "aliases": [
+              {
+                "sort-name": "Stones",
+                "name": "Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Stones, The",
+                "name": "The Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ローリング・ストーンズ",
+                "type-id": "894afba6-2816-3c24-8072-eadb66bd04bc",
+                "name": "ローリング・ストーンズ",
+                "locale": "ja",
+                "type": "Artist name",
+                "primary": true,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Rolling Stones",
+                "name": "Rolling Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "0ba3f2ec-d7bf-4987-aee2-e4c9e4bb3d2d",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Sticky Fingers Revisited",
+          "status": "Bootleg"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        }
+      ]
+    },
+    {
+      "id": "6369faa5-cbb7-45c7-a9ce-a5c690f4160e",
+      "type-id": "66b8a13e-43ff-3ac0-ac6c-73659d3817c6",
+      "score": 82,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "df296871-15ee-38e4-a1da-421cc5801c7e",
+      "count": 1,
+      "title": "Sticky Fingers (Spotify Landmark edition)",
+      "first-release-date": "2015",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Spokenword"
+      ],
+      "secondary-type-ids": [
+        "66b8a13e-43ff-3ac0-ac6c-73659d3817c6"
+      ],
+      "artist-credit": [
+        {
+          "name": "The Rolling Stones",
+          "artist": {
+            "id": "b071f9fa-14b0-4217-8e97-eb41da73f598",
+            "name": "The Rolling Stones",
+            "sort-name": "Rolling Stones, The",
+            "aliases": [
+              {
+                "sort-name": "Stones",
+                "name": "Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Stones, The",
+                "name": "The Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ローリング・ストーンズ",
+                "type-id": "894afba6-2816-3c24-8072-eadb66bd04bc",
+                "name": "ローリング・ストーンズ",
+                "locale": "ja",
+                "type": "Artist name",
+                "primary": true,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Rolling Stones",
+                "name": "Rolling Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "72e9fea5-def7-419d-9744-9518a5522132",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers (Spotify Landmark edition)",
+          "status": "Official"
+        }
+      ]
+    },
+    {
+      "id": "2beb05b7-e789-427c-98ce-99b9a62f9499",
+      "type-id": "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1",
+      "score": 76,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "df296871-15ee-38e4-a1da-421cc5801c7e",
+      "count": 1,
+      "title": "Sticky Fingers / Exile on Main Street",
+      "first-release-date": "2001",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Compilation"
+      ],
+      "secondary-type-ids": [
+        "dd2a21e1-0c00-3729-a7a0-de60b84eb5d1"
+      ],
+      "artist-credit": [
+        {
+          "name": "The Rolling Stones",
+          "artist": {
+            "id": "b071f9fa-14b0-4217-8e97-eb41da73f598",
+            "name": "The Rolling Stones",
+            "sort-name": "Rolling Stones, The",
+            "aliases": [
+              {
+                "sort-name": "Stones",
+                "name": "Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Stones, The",
+                "name": "The Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ローリング・ストーンズ",
+                "type-id": "894afba6-2816-3c24-8072-eadb66bd04bc",
+                "name": "ローリング・ストーンズ",
+                "locale": "ja",
+                "type": "Artist name",
+                "primary": true,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Rolling Stones",
+                "name": "Rolling Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "d5cd4c5c-b410-4f3f-899a-c8ea9ed9ee11",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers / Exile on Main Street",
+          "status": "Official"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "classic rock"
+        }
+      ]
+    },
+    {
+      "id": "d0a415d4-0d68-40d2-ae04-bfdfcc2b6623",
+      "type-id": "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0",
+      "score": 73,
+      "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+      "artist-credit-id": "df296871-15ee-38e4-a1da-421cc5801c7e",
+      "count": 4,
+      "title": "Sticky Fingers: Live at the Fonda Theatre 2015",
+      "first-release-date": "2015",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "secondary-type-ids": [
+        "6fd474e2-6b58-3102-9d17-d6f7eb7da0a0"
+      ],
+      "artist-credit": [
+        {
+          "name": "The Rolling Stones",
+          "artist": {
+            "id": "b071f9fa-14b0-4217-8e97-eb41da73f598",
+            "name": "The Rolling Stones",
+            "sort-name": "Rolling Stones, The",
+            "aliases": [
+              {
+                "sort-name": "Stones",
+                "name": "Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Stones, The",
+                "name": "The Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "ローリング・ストーンズ",
+                "type-id": "894afba6-2816-3c24-8072-eadb66bd04bc",
+                "name": "ローリング・ストーンズ",
+                "locale": "ja",
+                "type": "Artist name",
+                "primary": true,
+                "begin-date": null,
+                "end-date": null
+              },
+              {
+                "sort-name": "Rolling Stones",
+                "name": "Rolling Stones",
+                "locale": null,
+                "type": null,
+                "primary": null,
+                "begin-date": null,
+                "end-date": null
+              }
+            ]
+          }
+        }
+      ],
+      "releases": [
+        {
+          "id": "be92d891-0eda-4de2-90fb-daf977ccc45f",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers: Live at the Fonda Theatre 2015",
+          "status": "Official"
+        },
+        {
+          "id": "119cd82c-22dc-453c-a078-ea644b9375c8",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers: Live at the Fonda Theater 2015",
+          "status": "Official"
+        },
+        {
+          "id": "339eb469-e4d9-4f31-8df4-16c84e8f01ce",
+          "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+          "title": "Sticky Fingers: Live at the Fonda Theatre 2015",
+          "status": "Official"
+        },
+        {
+          "id": "78d89e25-c362-4cd8-905f-73b76d912c19",
+          "status-id": "1156806e-d06a-38bd-83f0-cf2284a808b9",
+          "title": "Sticky Fingers Live",
+          "status": "Bootleg"
+        }
+      ],
+      "tags": [
+        {
+          "count": 1,
+          "name": "rock"
+        },
+        {
+          "count": 1,
+          "name": "blues rock"
+        },
+        {
+          "count": 1,
+          "name": "country rock"
+        },
+        {
+          "count": 1,
+          "name": "rock and roll"
+        }
+      ]
+    }
+  ]
+}

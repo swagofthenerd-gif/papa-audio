@@ -8057,7 +8057,19 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
 // UA is fixed, and _mbThrottle serialises calls behind a 1.1 s spacing so a burst
 // of album checks cannot trip the rate limit and get us blocked.
 const MB_BASE = 'https://musicbrainz.org/ws/2'
-const MB_UA = `PapaAudio/${(() => { try { return require('./package.json').version || '1.0' } catch (_) { return '1.0' } })()} ( https://github.com/aaddrick/claude-desktop-debian )`
+// MusicBrainz asks every client to identify itself and to give them somewhere
+// to reach the author. It pointed at a Claude Desktop packaging repo — a
+// different project entirely, which would have sent any complaint about this
+// app's traffic to someone with no idea what it was.
+const MB_UA = (() => {
+  let version = '1.0', home = 'https://github.com/swagofthenerd-gif/papa-audio'
+  try {
+    const pkg = require('./package.json')
+    version = pkg.version || version
+    home = pkg.homepage || home
+  } catch (_) {}
+  return `PapaAudio/${version} ( ${home} )`
+})()
 const MB_MIN_INTERVAL_MS = 1100
 let _mbLastAt = 0
 let _mbChain = Promise.resolve()
@@ -8203,14 +8215,26 @@ ipcMain.handle('album-info', async (_, { artist, album, year, editionNote } = {}
   // The cache read is the FIRST thing, before any _mbThrottle call — the way
   // discogs-album already works. An album he has opened before must paint in
   // milliseconds even while the room's warm sweep owns the throttle chain.
-  const key = 'albuminfo:v1:' + (ar + '::' + al).toLowerCase()
+  //
+  // The year and the edition are IN the key. Without them all seven of
+  // MusicBrainz's self-titled Weezer albums shared one entry
+  // ('albuminfo:v1:weezer::weezer'), so the first answer — right or wrong —
+  // was pinned on every folder of that album for the full thirty days.
+  const key = 'albuminfo:v2:' +
+    [ar, al, Number(year) > 0 ? Number(year) : '', String(editionNote || '')]
+      .join('::').toLowerCase()
   const hit = _enrichGet(key)
   if (hit) return { ok: true, ...hit, fromCache: true }
   try {
     const q = `releasegroup:"${al.replace(/"/g, '\\"')}" AND artist:"${ar.replace(/"/g, '\\"')}"`
+    // 25, not 5. The window is cut BEFORE the ranking, so a record missing from
+    // it can never be picked: the live search for Weezer's self-titled album
+    // reports 18 hits, seven of them self-titled studio albums all scoring 100,
+    // and a five-wide window cannot even see two of them. Still one request,
+    // still behind the 1 req/s throttle.
     const search = await _mbThrottle(() =>
-      _mbGetJson(`/release-group/?limit=5&query=${encodeURIComponent(q)}`))
-    const pick = peerEnrich.pickReleaseGroup(search, { title: al, year, editionNote })
+      _mbGetJson(`/release-group/?limit=25&query=${encodeURIComponent(q)}`))
+    const pick = peerEnrich.pickReleaseGroup(search, { title: al, artist: ar, year, editionNote })
     if (!pick) {
       // A clean miss is a stable fact and IS cached for the 30 days: MusicBrainz
       // genuinely not having the record will still be true tomorrow. A THROWN
@@ -8285,25 +8309,48 @@ ipcMain.handle('artist-releases', async (_, { artistMbid, artist } = {}) => {
     if (cached) mbid = String(cached)
     else {
       try {
+        // limit=5 and a name comparison, not artists[0]. The blind first hit is
+        // how a folder whose artist parsed as "VA" resolved to "No Te Va
+        // Gustar" — MusicBrainz scores it 100 — and then printed that band's
+        // catalogue under a heading reading "More by VA".
         const j = await _mbThrottle(() => _mbGetJson(
-          `/artist?query=${encodeURIComponent('artist:"' + name.replace(/"/g, '\\"') + '"')}&limit=1`))
-        const first = j && Array.isArray(j.artists) ? j.artists[0] : null
-        if (first && first.id) { mbid = String(first.id); _enrichSet(nameKey, mbid) }
+          `/artist?query=${encodeURIComponent('artist:"' + name.replace(/"/g, '\\"') + '"')}&limit=5`))
+        const found = peerEnrich.pickArtist(j, name)
+        if (found) { mbid = found.id; _enrichSet(nameKey, mbid) }
       } catch (e) {
         return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
       }
       if (!mbid) return { ok: true, artistMbid: null, releases: [] }
     }
   }
-  const key = 'artistrgs:v1:' + mbid
+  // v2: the cached value is { releases, complete } now, because a count built
+  // from a truncated list is a number the panel must not print.
+  const key = 'artistrgs:v2:' + mbid
   const hit = _enrichGet(key)
-  if (hit) return { ok: true, artistMbid: mbid, releases: hit, fromCache: true }
+  if (hit) return { ok: true, artistMbid: mbid, releases: hit.releases || [], complete: hit.complete !== false, fromCache: true }
   try {
-    const j = await _mbThrottle(() => _mbGetJson(
-      `/release-group?artist=${encodeURIComponent(mbid)}&type=album&limit=50`))
-    const releases = peerEnrich.studioAlbums(j)
-    _enrichSet(key, releases)
-    return { ok: true, artistMbid: mbid, releases }
+    // PAGED. One page of 50 was being printed as the whole discography:
+    // Paul McCartney's browse reports release-group-count 181 for type=album,
+    // and the first 50 of them hold 24 studio albums where the full 181 hold
+    // 42. The panel said 24 and meant it. MusicBrainz caps a page at 100, so
+    // 181 costs two throttled requests instead of one.
+    const PAGE = 100, MAX_PAGES = 5
+    let groups = [], offset = 0, complete = false
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const j = await _mbThrottle(() => _mbGetJson(
+        `/release-group?artist=${encodeURIComponent(mbid)}&type=album&limit=${PAGE}&offset=${offset}`))
+      const list = Array.isArray(j && j['release-groups']) ? j['release-groups'] : []
+      groups = groups.concat(list)
+      offset += list.length
+      const total = Number(j && j['release-group-count'])
+      // No count in the reply, a short page, or everything read: done. Only
+      // running out of pages with more still to come leaves complete false,
+      // and the panel then declines to state a total.
+      if (!list.length || !(total > offset)) { complete = true; break }
+    }
+    const releases = peerEnrich.studioAlbums({ 'release-groups': groups })
+    _enrichSet(key, { releases, complete })
+    return { ok: true, artistMbid: mbid, releases, complete }
   } catch (e) {
     return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
   }
@@ -8313,7 +8360,14 @@ ipcMain.handle('discogs-token-get', () => ({ token: store.get('discogsToken', ''
 ipcMain.handle('discogs-token-set', (_, { token } = {}) => { store.set('discogsToken', String(token || '').trim()); return { ok: true } })
 
 // httpsGet already sends the User-Agent Discogs insists on (PapaAudio/1.0), so
-// it is reused here; the spacing below is Discogs' one-request-a-second limit.
+// it is reused here; the spacing below is Discogs' published rate ceiling.
+//
+// Sixty a minute is the AUTHENTICATED ceiling, and this call is tokenless now —
+// the live x-discogs-ratelimit header reads 25 without a token against 60 with
+// one. One a second was therefore pacing straight through a limit that is 2.4
+// seconds wide, and the 429 is charged to the app's User-Agent.
+const DISCOGS_GAP_TOKEN_MS = 1000
+const DISCOGS_GAP_ANON_MS = 2400
 let _discogsLastAt = 0
 // Anything derived from a Discogs URL goes through here before it is shown or
 // logged: drop the query string, and belt-and-braces redact a bare token=.
@@ -8321,7 +8375,8 @@ function _discogsRedact(text) {
   return String(text || '').replace(/\?[^\s]*/g, '').replace(/token=[^&\s]+/g, 'token=__redacted__')
 }
 async function _discogsGetJson(pathAndQuery, token) {
-  const wait = 1000 - (Date.now() - _discogsLastAt)
+  const gap = token ? DISCOGS_GAP_TOKEN_MS : DISCOGS_GAP_ANON_MS
+  const wait = gap - (Date.now() - _discogsLastAt)
   if (wait > 0) await new Promise(r => setTimeout(r, wait))
   _discogsLastAt = Date.now()
   const sep = pathAndQuery.includes('?') ? '&' : '?'
@@ -8364,7 +8419,10 @@ ipcMain.handle('discogs-album', async (_, { artist, album } = {}) => {
   try {
     const search = await _discogsGetJson(`/database/search?type=master&artist=${encodeURIComponent(a)}&release_title=${encodeURIComponent(b)}&per_page=5`, token)
     const master = peerEnrich.pickDiscogsMaster(search, { title: b })
-    if (!master) return { ok: false, reason: 'Discogs has no entry for this album.' }
+    // `found: false` is the difference between "Discogs answered, and it has
+    // nothing" and "Discogs never answered". The panel reads it before it is
+    // willing to state anything about the record's genres.
+    if (!master) return { ok: false, found: false, reason: 'Discogs has no entry for this album.' }
     const detail = await _discogsGetJson(`/masters/${master.id}`, token)
     const value = { ...peerEnrich.discogsSummary(detail), url: master.url, tokenless: !token }
     _enrichSet(key, value)

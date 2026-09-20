@@ -400,6 +400,16 @@
 
   function muted(text, esc) { return `<div class="slr-muted">${esc(text)}</div>` }
 
+  // Did this lookup come back with a FINDING? Three shapes reach a slot: null
+  // (a promise is still out), a reply, and a failure. Only the first two are
+  // allowed to support a sentence about the record — and Discogs' own "no entry
+  // for this album" is a finding, which is why it carries `found: false`
+  // alongside its reason rather than being read off the reason text.
+  function answered(slot) {
+    if (slot == null) return false
+    return slot.ok !== false || slot.found === false
+  }
+
   // An expander that survives repaintBody: the flag is on the model and the
   // control is delegated, never an id with a listener bound to it.
   function expandable(raw, open, act, limit, esc) {
@@ -504,9 +514,10 @@
     if (chips.names.length) {
       out.push(`<div class="slr-chips">${chips.names.map(n => `<span class="slr-chip">${esc(n)}</span>`).join('')}</div>`)
       out.push(muted('Genres from ' + chips.sources.join(' and ') + '.', esc))
-    } else if (ai != null && m.reception != null) {
-      // Only once BOTH sources have answered — otherwise this says "no genre
-      // tags" about a lookup that is still running.
+    } else if (answered(ai) && answered(m.reception)) {
+      // Only once BOTH sources have ANSWERED. `!= null` was the old gate, and
+      // every failure shape satisfies it — so the panel stated a fact about the
+      // record two sentences under a line saying it could not find out.
       out.push(muted('No genre tags on this record.', esc))
     }
     // The pressing notes: submitter text the Discogs master carries and the
@@ -549,7 +560,17 @@
     const r = rankSameTagArtists({
       artist: m.artist, peerAlbums: m.peerAlbums, tagsByArtist: tags, owns: m.ownsPeerAlbum,
     })
-    if (!r.seedTagCount) return muted(`MusicBrainz has no genre tags for ${m.artist}, so I can't match this one up.`, esc)
+    if (!r.seedTagCount) {
+      // A FAILED lookup is not a finding. This branch was reached with
+      // m.artistTags holding { ok: false, reason } and printed "MusicBrainz has
+      // no genre tags for X" — a definitive claim about an answer nobody ever
+      // got. The reply is only allowed to speak for MusicBrainz when it came
+      // back; the room's own swept tags count too, and if they had any, the
+      // seed count would not be zero.
+      if (m.artistTags == null) return muted(`Reading genre tags for ${m.artist}…`, esc)
+      if (!answered(m.artistTags)) return muted(m.artistTags.reason || NO_ANSWER, esc)
+      return muted(`MusicBrainz has no genre tags for ${m.artist}, so I can't match this one up.`, esc)
+    }
     if (!r.matches.length) {
       const two = r.generic.length ? r.generic.join(' and ') : 'the generic ones'
       return muted(`Nothing else here shares anything specific with ${m.artist} — the tags they have in common are just ${two}.`, esc)
@@ -591,9 +612,17 @@
     }
     // Attributed to its source on purpose: this is not a discography, it is
     // what MusicBrainz has filed.
+    //
+    // And the total is only stated when the whole list was actually read. The
+    // browse used to stop at one page of 50: Paul McCartney's type=album browse
+    // reports 181 release groups, whose first 50 hold 24 studio albums where
+    // all 181 hold 42 — so the panel printed "42 studio albums" as "24" and
+    // meant it. `complete` comes from the handler that does the paging.
     const here = rows.filter(r => r.folderPath).length
     const yours = rows.filter(r => r.owned).length
-    out.push(muted(`MusicBrainz lists ${rows.length} studio albums for ${m.artist}. ${m.username} has ${here}. You have ${yours}.`, esc))
+    out.push(muted(ar.complete === false
+      ? `This artist has more records than I could read in one go. Of the ${rows.length} studio albums I did read, ${m.username} has ${here} and you have ${yours}.`
+      : `MusicBrainz lists ${rows.length} studio albums for ${m.artist}. ${m.username} has ${here}. You have ${yours}.`, esc))
     for (const r of rows.slice(0, 10)) {
       const label = r.title + (r.year ? ' · ' + r.year : '')
       const cell = r.folderPath
@@ -842,7 +871,18 @@
     paint()
     // Async sections: cached rip verdict, reception, about. Each paints when it lands.
     try { const c = localStorage.getItem('slr_rip:' + username + ':' + album.folderPath); if (c) { const r = JSON.parse(c); if (r && r.at && Date.now() - r.at < 30 * 86400e3) { m.rip = r; repaintBody() } } } catch (_) {}
-    if (window.api && window.api.discogsAlbum) window.api.discogsAlbum({ artist: m.artist, album: m.title }).then(r => { m.reception = r; if (root.isConnected) repaintBody() }).catch(() => {})
+    // Same rule as every other lookup in this file, which this one used to
+    // break: a bare .catch(() => {}) and no else left m.reception at null for
+    // good on a rejection or a missing bridge, and null means STILL ASKING —
+    // so the genre line and the pressing notes never resolved.
+    if (window.api && window.api.discogsAlbum) {
+      window.api.discogsAlbum({ artist: m.artist, album: m.title })
+        .then(r => { m.reception = r || { ok: false, reason: NO_ANSWER }; if (root.isConnected) repaintBody() })
+        .catch(() => { m.reception = { ok: false, reason: NO_ANSWER }; if (root.isConnected) repaintBody() })
+    } else {
+      m.reception = { ok: false, reason: NO_ANSWER }
+      repaintBody()
+    }
     // m.about stays null only while this promise is out. A rejection, a reply
     // that never came back, or a missing bridge each write the failure shape —
     // a bare .catch(() => {}) would leave "Looking up…" on screen for good.

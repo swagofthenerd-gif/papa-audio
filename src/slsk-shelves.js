@@ -253,15 +253,27 @@ function parseAlbumFolder(pathSegments) {
   album = stripYearToken(album)
   artist = stripYearToken(artist)
 
-  return {
-    artist: artist.trim(),
-    album: album.trim(),
-    year: year || null,
-  }
+  album = album.trim()
+  artist = artist.trim()
+
+  // A folder whose album name IS a year has no release year in it: extractYear
+  // read the TITLE. "Taylor Swift\1989" gave year 1989 and sent it to the album
+  // lookup as the release year, where MusicBrainz has 1989 as a 2014 record —
+  // so the lookup found the right album and then distrusted itself. The digits
+  // are the name of the record, not a date.
+  let out = year || null
+  if (out != null && String(out) === album) out = null
+
+  return { artist, album, year: out }
 }
 
 function stripYearToken(s) {
-  return String(s || '')
+  const raw = String(s || '').trim()
+  // An album whose whole title is a year survives intact — "1989", "1999",
+  // "2112". Stripping the token here left Taylor Swift's 1989 as an empty album
+  // name, and an empty album name is a record that cannot be looked up at all.
+  if (/^[\[\(（]?(19|20)\d{2}[\]\)）]?$/.test(raw)) return raw.replace(/[[\](（）)]/g, '')
+  return raw
     .replace(/\s*[\[\(（]?(19|20)\d{2}[\]\)）]?\s*$/, '')
     .replace(/^\s*[\[\(（]?(19|20)\d{2}[\]\)）]?\s*[-–—]?\s*/, '')
     .trim()

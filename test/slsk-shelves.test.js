@@ -40,6 +40,39 @@ test('parses "Artist/Year - Album" leaf', () => {
   assert.equal(p.year, 1996)
 })
 
+// An album can be NAMED after a year, and several famous ones are: 1989, 1999,
+// 2112. The year stripper ate the title outright and left nothing to look up,
+// and the year reader then passed the title's own digits on as a release date —
+// MusicBrainz dates "1989" to 2014, so the album lookup found the right record
+// and then told him it might be the wrong one.
+test('an album whose title is a year keeps its title', () => {
+  const p = S.parseAlbumFolder(['Taylor Swift - 1989 (2014)'])
+  assert.equal(p.artist, 'Taylor Swift')
+  assert.equal(p.album, '1989')
+  assert.equal(p.year, 2014, 'the year in the brackets is still the year')
+})
+
+test('an album whose title is a year has no year of its own', () => {
+  const p = S.parseAlbumFolder(['Taylor Swift', '1989'])
+  assert.equal(p.artist, 'Taylor Swift')
+  assert.equal(p.album, '1989')
+  assert.equal(p.year, null, 'the digits are the name of the record, not a date')
+
+  const prince = S.parseAlbumFolder(['Prince - 1999'])
+  assert.equal(prince.album, '1999')
+  assert.equal(prince.year, null)
+})
+
+test('a year beside a real title is still stripped off it', () => {
+  // The guard is only for a title that is NOTHING but a year, so everything the
+  // stripper was written for still happens.
+  assert.equal(S.parseAlbumFolder(['Rush - 2112 (1976)']).album, '2112')
+  assert.equal(S.parseAlbumFolder(['Rush - 2112 (1976)']).year, 1976)
+  assert.equal(S.parseAlbumFolder(['Radiohead - In Rainbows 2007']).album, 'In Rainbows')
+  assert.equal(S.parseAlbumFolder(['Aphex Twin', '1996 - Richard D. James Album']).album,
+    'Richard D. James Album')
+})
+
 test('strips [FLAC] [24-96] and other quality tags', () => {
   const p = S.parseAlbumFolder(['Opeth - Blackwater Park [FLAC] [24-96]'])
   assert.equal(p.artist, 'Opeth')
