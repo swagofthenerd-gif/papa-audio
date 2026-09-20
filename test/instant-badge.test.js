@@ -32,10 +32,12 @@ test('the memory is written only where the app really learned something', () => 
   // And when a source is proved servable by trying candidates in turn.
   assert.ok(/if \(titleKey\) _instantMark\(titleKey, 'debrid'\)/.test(MAIN))
   // The warm call carries the title so there is something to key on.
-  assert.ok(/ipcMain\.handle\('video-warm', async \(_, \{ magnet, titleKey \} = \{\}\) =>/.test(MAIN))
+  // The payload also carries the episode now, so the head start is for the
+  // file Play will actually ask for; titleKey is still what the badge keys on.
+  assert.ok(/ipcMain\.handle\('video-warm', async \(_, \{ magnet, titleKey[^}]*\} = \{\}\) =>/.test(MAIN))
   // Warming follows the source Play would actually start, not merely the
   // first listed one.
-  assert.ok(/videoWarm\(\{ magnet: warmPick\.magnet, titleKey:/.test(RENDERER))
+  assert.ok(/videoWarm\(\{\s*\n?\s*magnet: warmPick\.magnet,\s*\n?\s*titleKey:/.test(RENDERER))
 })
 
 test('a deleted file stops claiming to be instant, and a debrid claim expires', () => {

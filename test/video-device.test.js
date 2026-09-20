@@ -115,7 +115,10 @@ test('the page warms its top source after the list lands, skips titles already s
   // The source WARMED must be the source PLAYED: warming a different one
   // leaves the relay useless at the moment it is needed.
   assert.ok(/const warmPick = streams\.length \? _pickForPlay\(streams\) : null/.test(RENDERER))
-  assert.ok(/window\.api\.videoWarm\(\{ magnet: warmPick\.magnet, titleKey:/.test(RENDERER))
+  assert.ok(/window\.api\.videoWarm\(\{\s*\n?\s*magnet: warmPick\.magnet,\s*\n?\s*titleKey:/.test(RENDERER))
+  // And the episode: warming the pack's largest file warmed some OTHER
+  // episode entirely, which is the normal case for a season pack.
+  assert.ok(/videoWarm\(\{[\s\S]{0,400}episode:/.test(RENDERER))
   const hook = RENDERER.slice(RENDERER.indexOf('// Warm the top source'), RENDERER.indexOf('if (_autoPlayTicket === _videoDetailTicket'))
   assert.ok(/videoCacheGet/.test(hook) && /if \(res && res\.ok && res\.hit\) return/.test(hook))
   assert.ok(/state\.currentPage === 'video-detail' && page !== 'video-detail'[\s\S]{0,200}videoWarmCancel/.test(RENDERER))

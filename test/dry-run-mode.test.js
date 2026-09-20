@@ -111,6 +111,22 @@ function mainConstant(name) {
 
 const GLOBALS = {
   'slsk-verify-rip': { RIP_DEADLINE_MS: mainConstant('RIP_DEADLINE_MS') },
+  // video-warm asks whether a debrid stream is playing right now, because a
+  // background head start must not build a relay while one is serving the
+  // picture on screen (building a relay stops the previous one). Every
+  // undeclared name in this sandbox is a truthy stub, which would read as
+  // "something is playing" and send the handler down the link-only branch —
+  // so the ordinary case, nothing playing, is stated explicitly here rather
+  // than the effect assertion being loosened to accept either branch.
+  'video-warm': {
+    _videoSession: { debrid: null, streamer: null },
+    // ...and the account is in working order. The head start is now gated on
+    // not being inside a 429 back-off and on the magnet not having been
+    // refused already — both of which read as TRUE from a truthy stub, which
+    // would skip the whole block and make this look like a regression.
+    _debridRateLimited: () => false,
+    _debridRefusedHas: () => false,
+  },
 }
 
 function isRefusal(r) {

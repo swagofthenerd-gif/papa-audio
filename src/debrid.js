@@ -596,9 +596,14 @@ function createDebrid(opts = {}) {
   // The already-resolved direct link for a magnet, or null. Lets a caller
   // spend no budget at all on a magnet it resolved earlier — the whole point
   // of resolving while the viewer is still reading the page.
-  function cachedLink(magnet) {
+  function cachedLink(magnet, want) {
     const hash = infoHashOf(magnet)
-    const held = hash ? linkCache.get(hash) : null
+    // Keyed by hash AND wanted episode, like every other link lookup: a pack
+    // holds one link per episode, so asking without the episode answers about
+    // a different file. keyFor(hash, undefined) is the bare hash, so callers
+    // that do not care are unaffected.
+    const key = hash ? keyFor(hash, want) : null
+    const held = key ? linkCache.get(key) : null
     // Only a young link counts: an expired one is a promise the play path
     // would have to re-mint anyway.
     return held && held.url && held.ok === true && (now() - held.at) < LINK_TTL_MS ? held.url : null
@@ -607,16 +612,23 @@ function createDebrid(opts = {}) {
   // Resolve in the background and keep the answer. Never throws and never
   // reports: it is a head start, and a failure just means the play path does
   // the work itself. Concurrent calls for the same magnet share one attempt.
+  //
+  // `want` is which episode the head start is FOR. Without it this minted a
+  // link for whatever file the pack resolves to by default and cached it under
+  // a key no play would ever ask for — so the round trips were spent, a
+  // torrent was added to the user's account, and the play then did the whole
+  // flow again for the episode actually wanted.
   const inflight = new Map()
-  function prewarm(magnet) {
+  function prewarm(magnet, want) {
     const hash = infoHashOf(magnet)
-    const ready = cachedLink(magnet)
+    const ready = cachedLink(magnet, want)
     if (!hash || ready) return Promise.resolve(ready)
-    if (inflight.has(hash)) return inflight.get(hash)
-    const p = linkFor(magnet)
+    const key = keyFor(hash, want)
+    if (inflight.has(key)) return inflight.get(key)
+    const p = linkFor(magnet, want)
       .catch(() => null)
-      .finally(() => { inflight.delete(hash) })
-    inflight.set(hash, p)
+      .finally(() => { inflight.delete(key) })
+    inflight.set(key, p)
     return p
   }
 

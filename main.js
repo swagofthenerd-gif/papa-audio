@@ -248,7 +248,7 @@ const { createApibayProvider } = require('./providers/apibay')
 const { createKnabenProvider } = require('./providers/knaben')
 const { createSolidTorrentsProvider } = require('./providers/solidtorrents')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
-const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot } = require('./torrent-stream')
+const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot, matchesWantedEpisode } = require('./torrent-stream')
 const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
 const { createThumbnailer } = require('./src/thumbnailer')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
@@ -15971,7 +15971,7 @@ function _warmSweep() {
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) {}
   }
 }
-ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
+ipcMain.handle('video-warm', async (_, { magnet, titleKey, season, episode, absoluteEpisode } = {}) => {
   if (DRY_RUN) return _dryRunRefusal('warming this title up')
   try {
     if (!magnet || typeof magnet !== 'string') return { ok: false }
@@ -15983,17 +15983,47 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
     // hand before Play is pressed and the play path spends no budget at all.
     // Fire and forget: it never blocks the swarm warm below, and a failure is
     // simply a play that resolves for itself.
-    if (_debridConfigured()) {
-      // The whole path — proved link AND a running relay — so that pressing
-      // Play costs nothing. Fire and forget; a failure just means the play
-      // path does the work itself, or the swarm does.
+    // Which episode this head start is FOR. Without it the prepare minted a
+    // link for whatever file the pack resolves to by default, cached it under
+    // a key no play would ever ask for, and left the play to run the whole
+    // flow again — RealDebrid traffic spent to help nobody.
+    const warmWant = _wantOf({ season, episode, absoluteEpisode })
+
+    // Three gates the prepare never had. _debridConfigured only checks that a
+    // provider and token exist, so this fired during a two-minute 429
+    // back-off, and for magnets already answered 451/404 — adding to the
+    // very rate-limiting that then blocked the play it exists to make
+    // instant.
+    if (_debridConfigured() && !_debridRateLimited() && !_debridRefusedHas(magnet)) {
       try {
-        _debridPlayable(magnet).then(url => {
+        // The WHOLE path — proved link and a running relay — so that pressing
+        // Play costs nothing. This is load-bearing and measured: building the
+        // relay at play time lost the race to the swarm every time (the budget
+        // expired at 5,166 ms), which is why it is here and why it runs before
+        // the "already playing" early return below.
+        //
+        // EXCEPT while a debrid stream is actually playing. Building a relay
+        // stops the previous one (_debridProxyStop), and that one is serving
+        // the episode on screen — a background head start must never be able
+        // to cut off the foreground video. In that case the link alone is
+        // prepared: the expensive RealDebrid round trips are still paid here,
+        // and the relay is built locally, in milliseconds, when Play asks.
+        // prewarm also shares one attempt between concurrent callers, so
+        // clicking along an episode list cannot stack duplicate resolves.
+        const servingNow = !!_videoSession.debrid
+        const prepare = servingNow
+          ? debrid().prewarm(magnet, warmWant)
+          : _debridPlayable(magnet, warmWant)
+        Promise.resolve(prepare).then(url => {
           if (url) _instantMark(titleKey, 'debrid')
         }).catch(e => {
           // Silently swallowing this is how a broken debrid path went
           // unnoticed for days. It is not fatal — the swarm still plays —
-          // but it must be visible.
+          // but it must be visible, and a 429 has to be recorded or the next
+          // warm walks straight back into it.
+          const code = (e && e.code) || ''
+          if (/HTTP_429/.test(code)) _debridBackOff()
+          if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
           try { console.warn('[papa][debrid] could not prepare the direct stream:', (e && e.message) || e) } catch (_) {}
         })
       } catch (_) {}
@@ -16012,7 +16042,17 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
         // warmed the swarm, which is most of the win.
         if (typeof t.deselect === 'function') t.deselect(0, t.pieces.length - 1, false)
         const vids = t.files.filter(f => /\.(mkv|mp4|avi|webm|m4v|ts)$/i.test(f.name))
-        const file = (vids.length ? vids : t.files).sort((a, b) => b.length - a.length)[0]
+        const pool = vids.length ? vids : t.files
+        // The episode the viewer is looking at — not the biggest file. On a
+        // season pack or an anime batch, which is the normal case here, the
+        // largest file is some other episode entirely, so the 8 MB fetched
+        // while the synopsis is read warmed the wrong part of the swarm and
+        // Play still started cold. Same matcher the streamer itself uses, so
+        // the warm and the play agree about which file is "episode 9".
+        const wanted = warmWant
+          ? pool.filter(f => matchesWantedEpisode(f.name, warmWant))
+          : []
+        const file = (wanted.length ? wanted : pool).sort((a, b) => b.length - a.length)[0]
         if (file && typeof t.select === 'function' && typeof file._startPiece === 'number') {
           const pieces = Math.max(1, Math.ceil(WARM_HEAD_BYTES / (t.pieceLength || 1)))
           t.select(file._startPiece, Math.min(file._endPiece, file._startPiece + pieces - 1), 1)

@@ -5480,6 +5480,10 @@ function _resetDetailPageChoices() {
   _videoStreams = []
   _debridPick = null
   _debridHeld = []
+  // The in-flight pick belongs to the page being left. It was cleared only
+  // when its own IPC settled — up to 25 s — so a Play on the NEW page could
+  // sit waiting on a lookup being done for the old one.
+  _debridPickPending = null
   _playSourceKey = ''
   _playQuality = ''
   // Whose numbering the last source list was fetched with — a new page's
@@ -12960,7 +12964,19 @@ async function _loadVideoSources(ticket, seasonTicket) {
     probe.then(function (res) {
       if (res && res.ok && res.hit) return   // local copy: nothing to warm
       const titleKey = _videoDetail && _videoDetail.d ? _videoDetail.type + ':' + _videoDetail.d.id : null
-      window.api.videoWarm({ magnet: warmPick.magnet, titleKey: titleKey })
+      // WHICH EPISODE the head start is for. Without it the warm pulled the
+      // opening of the pack's largest file — some other episode entirely on a
+      // season pack or an anime batch, which is the normal case here — and
+      // asked RealDebrid for a link to that same wrong file. Spelled exactly
+      // as the debrid pick below spells it, so the two cannot disagree about
+      // which episode the page is on.
+      window.api.videoWarm({
+        magnet: warmPick.magnet,
+        titleKey: titleKey,
+        season: _videoDetail && _videoDetail.type === 'tv' ? _videoState.season : null,
+        episode: _videoDetail && _videoDetail.type !== 'movie' ? _videoState.episode : null,
+        absoluteEpisode: _lastNumbering ? _lastNumbering.absoluteEpisode : null,
+      })
         .then(function () { _refreshInstantKeys(true) })
         .catch(function () {})
       // And find out which source debrid will actually serve. The candidates

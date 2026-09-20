@@ -80,9 +80,23 @@ test('opening a title builds the whole playable path, before and regardless of t
   const warm = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-warm'"), MAIN.indexOf("ipcMain.handle('video-warm-cancel'"))
   // Not just the link: the relay too. Building it during a play lost the race
   // to the swarm every time (the 5 s budget expired at 5,166 ms, measured).
-  assert.ok(/_debridConfigured\(\)\) \{[\s\S]{0,300}_debridPlayable\(magnet\)/.test(warm))
+  // The link now carries the episode it is for: a pack holds one link per
+  // episode, so a want-less prepare cached an answer under a key no play ever
+  // asked for and the play re-ran the whole flow (2026-09-20 audit).
+  assert.ok(/_debridPlayable\(magnet, warmWant\)/.test(warm), 'the whole path, for the right episode')
   // Before the "already playing" early return, so a warm still helps then.
-  assert.ok(warm.indexOf('_debridPlayable(magnet)') < warm.indexOf("skipped: 'playing'"))
+  assert.ok(warm.indexOf('_debridPlayable(magnet, warmWant)') < warm.indexOf("skipped: 'playing'"))
+  // ...but NOT while a debrid stream is actually playing. Building a relay
+  // stops the previous one, and that one is serving the episode on screen: a
+  // background head start must never cut off the foreground video. Then the
+  // link alone is prepared and Play builds its relay locally in milliseconds.
+  assert.ok(/const servingNow = !!_videoSession\.debrid/.test(warm))
+  assert.ok(/servingNow\n\s+\? debrid\(\)\.prewarm\(magnet, warmWant\)\n\s+: _debridPlayable\(magnet, warmWant\)/.test(warm),
+    'relay only when nothing is playing; link-only when something is')
+  // And it is gated. _debridConfigured only checks provider+token, so this
+  // fired during a 429 back-off and for magnets already refused 451/404 —
+  // feeding the rate limit that then blocked the play it exists to speed up.
+  assert.ok(/_debridConfigured\(\) && !_debridRateLimited\(\) && !_debridRefusedHas\(magnet\)/.test(warm))
 })
 
 test('play waits only briefly on debrid, and the link is proved before use', () => {
