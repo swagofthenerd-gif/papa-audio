@@ -288,3 +288,31 @@ test('the channel block is added without disturbing any field the dossier alread
   assert.ok(!/album\.surround|upgradeReason|tierOf|slskShelves|store\.set/.test(code),
     'nothing here writes back to album surround or shelf membership')
 })
+
+// ── The peer does not get to name the file ffmpeg echoes ────────────────────
+// The anchored astats regexes reject peer TAG text because the tag dump is
+// indented. ffmpeg echoes the INPUT PATH verbatim at column zero, though
+// ("Input #0, flac, from '<name>':"), and the file name is the peer's. A
+// newline inside it puts forged astats lines at column zero, past the anchor.
+// Demonstrated with a real file named "evil\n[Parsed_astats_0 @ 0x1] Peak
+// level dB: -1.0.flac": the forged line appears once in ffmpeg's stderr under
+// the peer's name and zero times under a name we chose.
+test('every ffmpeg pass reads a file named by us, not by the peer', () => {
+  const RIP = callSource(MAIN, 'slsk-verify-rip')
+  assert.match(RIP, /safe = _ripSafeName\(local\)/, 'a name of our own is made')
+  assert.match(RIP, /const probeFile = safe \|\| local/, 'and used when it exists')
+  for (const call of ['probeArgs(probeFile)', 'astatsArgs(probeFile)', 'ceilingArgs(probeFile,']) {
+    assert.ok(RIP.includes(call), call + ' must read the safe name')
+  }
+  assert.ok(!/probeArgs\(local\)|astatsArgs\(local\)|ceilingArgs\(local,/.test(RIP),
+    'no ffmpeg pass may read the peer-named path')
+  assert.match(MAIN, /function _ripSafeName\(/, 'the helper exists')
+})
+
+// A sweep cut short by the deadline cannot support a ceiling: the bands that
+// did run read as a LOW ceiling, which is an accusation.
+test('an unfinished band sweep yields no ceiling rather than a low one', () => {
+  const RIP = callSource(MAIN, 'slsk-verify-rip')
+  assert.match(RIP, /bandsComplete = false; break/, 'the loop records that it stopped early')
+  assert.match(RIP, /bandsComplete \? ripCheck\.parseCeiling\(/, 'and a partial sweep yields null')
+})

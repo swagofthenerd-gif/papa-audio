@@ -812,3 +812,19 @@ test('a real surround name still claims, however the year is written', () => {
     assert.equal(R.accusableClaim('5.1', name), '5.1', name)
   }
 })
+
+// ── A silent file is unmeasured, not padded ─────────────────────────────────
+// astats prints 'Bit depth: 0/0/0/0' for digital silence. Read as a measurement
+// it turns into "padded 16-bit, labelled 24-bit" — an accusation built on the
+// absence of any signal. Measured on a real all-silent 24-bit FLAC.
+test('digital silence reports an unmeasured bit depth, not a padded one', () => {
+  const silent = [
+    '[Parsed_astats_0 @ 0x1] Overall',
+    '[Parsed_astats_0 @ 0x1] Peak level dB: -inf',
+    '[Parsed_astats_0 @ 0x1] Bit depth: 0/0/0/0',
+    '[Parsed_astats_0 @ 0x1] Number of samples: 480000',
+  ].join('\n')
+  assert.equal(R.parseAstats(silent).measuredBits, null)
+  const v = R.verdict({ declaredRate: 44100, declaredBits: 24, measuredBits: null, ceilingHz: 20000, ext: 'flac' })
+  assert.notEqual(v.kind, 'padded')
+})

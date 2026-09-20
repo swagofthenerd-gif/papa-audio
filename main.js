@@ -11247,6 +11247,13 @@ async function _ripWaitForFile(username, filename, expectedSize) {
   return null
 }
 
+// A name of our own, in the same directory, for ffmpeg to echo. The peer picks
+// the real filename; we do not let it reach a log line we parse.
+function _ripSafeName(filePath) {
+  const ext = (String(filePath).split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin'
+  return path.join(path.dirname(filePath), '.papa-ripcheck-sample.' + ext)
+}
+
 function _ripCleanup(filePath) {
   if (!filePath) return
   // Never unlink outside the download directory: the path is derived from a
@@ -11282,6 +11289,7 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
   const left = () => expiry - Date.now()
   const budget = ms => Math.min(ms, Math.max(1000, left()))
   let local = null
+  let safe = null
   try {
     try {
       await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`, [{ filename, size: track.size || 0 }])
@@ -11293,7 +11301,18 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     local = await _ripWaitForFile(username, filename, track.size)
     if (!local) return { ok: false, reason: 'The track did not arrive within 3 minutes. The peer may be busy or offline.' }
     if (left() <= 0) return { ok: false, reason: RIP_OUT_OF_TIME }
-    const probe = await _run('ffprobe', ripCheck.probeArgs(local), budget(15000))
+    // Analyse through a name WE chose. The anchored regexes reject peer tag
+    // text because the tag dump is indented, but ffmpeg echoes the INPUT PATH
+    // verbatim at column zero ("Input #0, flac, from '<name>':"), and the file
+    // name is the peer's. A newline inside it would put forged astats lines at
+    // column zero, past the anchor. A hardlink costs nothing and closes that
+    // channel outright; a copy is the cross-device fallback.
+    safe = _ripSafeName(local)
+    try { fs.linkSync(local, safe) } catch (_) {
+      try { fs.copyFileSync(local, safe) } catch (_) { safe = null }
+    }
+    const probeFile = safe || local
+    const probe = await _run('ffprobe', ripCheck.probeArgs(probeFile), budget(15000))
     if (probe.err) return { ok: false, reason: 'ffprobe is missing or could not read the file.' }
     const declared = ripCheck.parseProbe(probe.stdout)
     // Six FLACs on this machine report channels=0, sample_rate=0 and exit 0, so
@@ -11303,7 +11322,7 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     if (declared.channels === 0 && declared.sampleRate === 0)
       return { ok: false, reason: "This file wouldn't open properly — it looks damaged or incomplete." }
     if (left() <= 0) return { ok: false, reason: RIP_OUT_OF_TIME }
-    const stats = await _run('ffmpeg', ripCheck.astatsArgs(local), budget(60000))
+    const stats = await _run('ffmpeg', ripCheck.astatsArgs(probeFile), budget(60000))
     // A nonzero exit means ffmpeg never read the whole file (truncated sample,
     // decode error). Measuring that is how a good rip gets called lossy.
     if (stats.err) return { ok: false, reason: 'Could not analyse the file.' }
@@ -11315,10 +11334,14 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const samples = ripCheck.parseSampleCount(stats.stderr)
     const decodedSec = samples !== null && declared.sampleRate > 0 ? samples / declared.sampleRate : null
     let bandText = ''
+    let bandsComplete = true
     for (const hz of ripCheck.BANDS) {
       if (declared.sampleRate && hz >= declared.sampleRate / 2) break
-      if (left() <= 0) break
-      const r = await _run('ffmpeg', ripCheck.ceilingArgs(local, hz), budget(60000))
+      // Out of time mid-sweep: the bands already read cannot support a
+      // ceiling, and a partial sweep reads as a LOW ceiling, which is an
+      // accusation. Say so instead of guessing.
+      if (left() <= 0) { bandsComplete = false; break }
+      const r = await _run('ffmpeg', ripCheck.ceilingArgs(probeFile, hz), budget(60000))
       // Anchored, in rip-check.js, for the same reason every astats regex there
       // is: volumedetect runs at info level, so the peer's own tag text reaches
       // this stderr first and an unanchored read takes the forgery.
@@ -11329,7 +11352,7 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     // spread over 6 channels reads ~4.8 dB quieter than it does as stereo. The
     // floor is compensated for the channel count, or a genuine 5.1 rip gets
     // pushed into the 'transcoded' branch.
-    const ceilingHz = ripCheck.parseCeiling(bandText, ripCheck.floorFor(declared.channels))
+    const ceilingHz = bandsComplete ? ripCheck.parseCeiling(bandText, ripCheck.floorFor(declared.channels)) : null
     const ext = (String(filename).split('.').pop() || '').toLowerCase()
     const verdict = ripCheck.verdict({ declaredRate: declared.sampleRate, declaredBits: declared.bitDepth,
       measuredBits: measured.measuredBits, ceilingHz, ext })
@@ -11363,6 +11386,7 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
   } catch (e) {
     return { ok: false, reason: 'The rip check could not finish: ' + String(e && e.message || e) }
   } finally {
+    if (safe) { try { fs.unlinkSync(safe) } catch (_) {} }
     _ripCleanup(local)
   }
 })

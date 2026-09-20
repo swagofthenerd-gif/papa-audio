@@ -113,7 +113,12 @@ function parseAstats(text) {
   // Absent is not zero: ffmpeg builds that print no "Dynamic range:" line must
   // read as unmeasured (null), never as a measured 0 dB. On ffmpeg 8.1.2 the
   // Overall block never carries that line, so this stays null in practice.
-  return { measuredBits: num(bits), dynamicRange: dr === undefined ? null : num(dr) }
+  // 'Bit depth: 0/0/0/0' is what astats prints for DIGITAL SILENCE, not for a
+  // 0-bit file. Measured: a real all-silent 24-bit FLAC read measuredBits 0 and
+  // verdict() then called it 'padded 16-bit, labelled 24-bit' — an accusation
+  // built on the absence of any signal to measure. Zero means unmeasured.
+  const mb = num(bits)
+  return { measuredBits: mb === 0 ? null : mb, dynamicRange: dr === undefined ? null : num(dr) }
 }
 
 // One band's mean_volume, out of a raw `highpass+volumedetect` stderr capture.
