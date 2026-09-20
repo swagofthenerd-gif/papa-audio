@@ -254,12 +254,25 @@ test('the shares block matches the one on this machine right now', () => {
   if (!fs.existsSync(live)) return
   const onDisk = fs.readFileSync(live, 'utf8')
   if (!onDisk.includes('\nshares:')) return
-  const w = writer({
-    slskShareMode: 'downloads',
-    musicFolders: MUSIC,
-    slskConfig: { downloadDir: DOWNLOADS },
-  })
-  assert.strictEqual(sharesBlock(w.write({ downloadDir: DOWNLOADS })), sharesBlock(onDisk))
+  // Read HIS settings rather than assuming them. The first version of this test
+  // hard-coded the folder he happened to be sharing that morning; he changed it
+  // that afternoon and the test failed on a change that was entirely his to
+  // make. A test that breaks when the user legitimately edits a setting is
+  // testing the setting, not the code.
+  const cfgPath = nodePath.join(os.homedir(), '.config', 'papa-audio', 'config.json')
+  if (!fs.existsSync(cfgPath)) return
+  let livecfg = null
+  try { livecfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) } catch (_) { return }
+  const dlDir = (livecfg.slskConfig || {}).downloadDir || DOWNLOADS
+  const seed = {
+    musicFolders: Array.isArray(livecfg.musicFolders) ? livecfg.musicFolders : MUSIC,
+    slskConfig: { downloadDir: dlDir },
+  }
+  if (Array.isArray(livecfg.slskShareFolders)) seed.slskShareFolders = livecfg.slskShareFolders
+  else seed.slskShareMode = livecfg.slskShareMode || 'downloads'
+  const everything = new Set([...(seed.musicFolders || []), dlDir, ...(seed.slskShareFolders || [])])
+  const w = writer(seed, { existing: everything })
+  assert.strictEqual(sharesBlock(w.write({ downloadDir: dlDir })), sharesBlock(onDisk))
 })
 
 // ── The one place the text is allowed to differ ─────────────────────────────

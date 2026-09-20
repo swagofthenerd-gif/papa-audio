@@ -190,6 +190,11 @@ function refreshWithChecklist(stats) {
 	}
 	vm.createContext(ctx)
 	vm.runInContext(
+		// The rate sampler the painter now runs the rows through, and the sample
+		// it keeps between polls. Lifted rather than stubbed: a stub that mirrors
+		// the production call cannot catch a change to it.
+		'var _sharingSample = null\n' +
+		liftFn('function _sharingApplySpeeds(') + '\n' +
 		liftFn('function _sharingRowHtml(') + '\n' +
 		liftFn('function _renderSharingPanel(') + '\n_renderSharingPanel()', ctx)
 	return { shareList, sharingList, today, touched }

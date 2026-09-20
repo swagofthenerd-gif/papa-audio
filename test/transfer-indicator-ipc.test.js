@@ -27,18 +27,32 @@ test('the upload poll remembers the current rows in a module-level cache', () =>
     'the poll slims the snapshot it already fetched')
 })
 
-test('the slimmer keeps only the five fields the panel needs', () => {
+test('the slimmer keeps the eight fields the panel needs, and nothing else', () => {
   const start = MAIN.indexOf('function slimUploadRows')
   assert.ok(start > 0, 'slimUploadRows exists')
   const body = MAIN.slice(start, start + 1600)
-  for (const field of ['filename', 'username', 'state', 'percentComplete', 'averageSpeed']) {
+  // `id` joined the list when turning Soulseek off had to END the transfers
+  // already running: slskd cancels by username + id, and without it bytes kept
+  // leaving the machine after he asked them to stop.
+  for (const field of ['filename', 'username', 'state', 'percentComplete',
+    'averageSpeed', 'bytesTransferred', 'size', 'id']) {
     assert.match(body, new RegExp('\\b' + field + ':'), field + ' is kept')
   }
   // Nothing else rides along: a peer-controlled row must not carry unknown keys
   // across the bridge.
   const kept = body.match(/^\s{6}\w+:/gm) || []
-  assert.equal(kept.length, 5, 'exactly five fields, got: ' + kept.join(' '))
-  assert.ok(!/bytesTransferred:/.test(body), 'the byte counter stays in upload-stats')
+  assert.equal(kept.length, 8, 'exactly eight fields, got: ' + kept.join(' '))
+})
+
+// averageSpeed is slskd's running average over the whole transfer; it settles
+// and then barely moves. Without the byte counter and the size the renderer has
+// nothing to derive a current rate from, and no way to draw an exact bar.
+test('the slimmer carries the byte counter the live rate is computed from', () => {
+  const start = MAIN.indexOf('function slimUploadRows')
+  const body = MAIN.slice(start, start + 1600)
+  assert.match(body, /bytesTransferred: Number\(f\.bytesTransferred\) \|\| 0/,
+    'a non-numeric byte count becomes 0, never NaN')
+  assert.match(body, /size: Number\(f\.size\) \|\| 0/)
 })
 
 test('the slimmer walks the same three shapes slskd answers with', () => {
@@ -381,9 +395,10 @@ test('a peer name opens their library', () => {
     'the peer button routes to the explorer')
 })
 
-test('the open-panel refresh is one 10 s timer, cleared on close', () => {
+test('the open panel has exactly one timer, and it is cleared on close', () => {
   assert.match(RENDERER, /const SHARING_PANEL_REFRESH_MS = 10000/)
-  const timers = RENDERER.match(/, SHARING_PANEL_REFRESH_MS\)/g) || []
+  assert.match(RENDERER, /const SHARING_PANEL_LIVE_MS = 2000/)
+  const timers = RENDERER.match(/_sharingPanelTimer = setInterval/g) || []
   assert.equal(timers.length, 1, 'exactly one panel timer, got ' + timers.length)
   const close = RENDERER.slice(RENDERER.indexOf('function _closeSharingPanel'),
     RENDERER.indexOf('function _openSharingPanel'))
@@ -391,6 +406,178 @@ test('the open-panel refresh is one 10 s timer, cleared on close', () => {
     'closing stops it')
   assert.match(close, /removeEventListener\('keydown', _onSharingPanelKey\)/,
     'and takes its key handler with it')
+  assert.match(close, /_sharingSample = null/,
+    'and drops the rate sample, so a reopened panel does not divide by a gap '
+    + 'nobody was watching')
+})
+
+// ── The live cadence ─────────────────────────────────────────────────────────
+
+test('the open panel ticks fast only while something is actually moving', () => {
+  const want = RENDERER.slice(RENDERER.indexOf('function _sharingPanelWantMs'),
+    RENDERER.indexOf('function _retuneSharingPanelTimer'))
+  assert.ok(want.length > 0, '_sharingPanelWantMs exists')
+  assert.match(want, /TI\.isMoving\(r\.state\)/,
+    'the state flags decide it, not a name and not a percentage')
+  assert.match(want, /return SHARING_PANEL_LIVE_MS/, 'moving earns the fast tick')
+  assert.match(want, /return SHARING_PANEL_REFRESH_MS/, 'otherwise the slow one')
+  assert.match(want, /daemon === false.*SHARING_PANEL_REFRESH_MS/,
+    'and an unreachable daemon is never hammered at the fast rate')
+})
+
+test('retuning the panel timer is a no-op at the same cadence', () => {
+  // Restarting the interval on every refresh would keep pushing the next tick
+  // one full period into the future, and the panel would never poll again.
+  const fn = RENDERER.slice(RENDERER.indexOf('function _retuneSharingPanelTimer'),
+    RENDERER.indexOf('function _onSharingPanelKey'))
+  assert.match(fn, /if \(!_sharingPanelOpen\) return/,
+    'a closed panel gets no timer at all')
+  assert.match(fn, /if \(_sharingPanelTimer && _sharingPanelTimerMs === want\) return/,
+    'already at the wanted cadence: leave the running timer alone')
+  assert.match(fn, /clearInterval\(_sharingPanelTimer\)/,
+    'a cadence change swaps the timer rather than adding a second one')
+})
+
+test('the refresh retunes the panel cadence from the snapshot it just applied', () => {
+  const body = RENDERER.slice(RENDERER.indexOf('async function _refreshSharingStats'),
+    RENDERER.indexOf('function retuneSharingPoll'))
+  assert.match(body, /if \(!_appVisible\) return/,
+    'the hidden-window guard still comes first, for every caller')
+  assert.match(body, /_retuneSharingPanelTimer\(\)/)
+  assert.ok(body.indexOf('_sharingStats = s') < body.indexOf('_retuneSharingPanelTimer'),
+    'after the snapshot lands, so it retunes on the new state and not the old')
+})
+
+// ── The stale-snapshot race ──────────────────────────────────────────────────
+// Two callers write the one _sharingStats: the sidebar's 60 s tick, answered
+// from main's cache at any age, and the open panel's fast tick, which forces a
+// real poll. The cached one can be issued first and resolve last, stamping an
+// older picture over the one being watched.
+
+test('an older snapshot cannot overwrite a newer one', () => {
+  const body = RENDERER.slice(RENDERER.indexOf('async function _refreshSharingStats'),
+    RENDERER.indexOf('function retuneSharingPoll'))
+  assert.match(body, /const at = Number\(s\.cachedAt\) \|\| 0/,
+    'the answer carries the date of the poll behind it')
+  assert.match(body, /if \(at && at < _sharingStatsAt\) return/,
+    'an older one is dropped instead of applied')
+  assert.ok(body.indexOf('at < _sharingStatsAt') < body.indexOf('_sharingStats = s'),
+    'the check comes before the write it protects')
+  assert.match(RENDERER, /let _sharingStatsAt = 0/, 'the watermark is declared once')
+})
+
+test('main dates every answer, not just the cached one', () => {
+  const body = handlerBody()
+  const cached = body.slice(0, body.indexOf('await slskUploadPollOnce'))
+  const live = body.slice(body.indexOf('await slskUploadPollOnce'))
+  assert.match(cached, /cachedAt: _lastUploadPollAt/, 'the cached path')
+  assert.match(live.slice(0, live.indexOf('rolled')), /cachedAt: _lastUploadPollAt/,
+    'the live path, or the renderer cannot tell which of two answers is older')
+  assert.match(live.slice(live.indexOf('rolled')), /cachedAt: Date\.now\(\)/,
+    'and the unreachable path, whose "the daemon is down" is a fact about now')
+})
+
+// ── The live rate in the panel ───────────────────────────────────────────────
+
+test('the panel derives the rate from the byte delta, not slskd\'s average', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _sharingApplySpeeds'),
+    RENDERER.indexOf('function _sharingRowHtml'))
+  assert.ok(fn.length > 0, '_sharingApplySpeeds exists')
+  assert.match(fn, /TI\.currentSpeed\(prev \? prev\.bytes\[r\.key\] : null, r, gap\)/,
+    'the pure helper does the arithmetic')
+  assert.match(fn, /const gap = prev \? \(atMs - prev\.at\) : 0/,
+    'over the real interval between the two samples')
+  // The sample must be taken from slskd's own numbers, before r.speed is
+  // replaced by the derived one — otherwise the next poll compares a rate
+  // against a rate.
+  assert.ok(fn.indexOf('bytes[r.key] = { bytes: r.bytes, speed: r.speed }')
+    < fn.indexOf('r.speed = speeds[r.key]'),
+    'the sample is taken before the row is rewritten')
+  assert.match(fn, /if \(prev && prev\.at === atMs\)/,
+    'the same snapshot painted twice reuses its speeds rather than reading a '
+    + 'zero delta as a stall')
+})
+
+test('the panel rows are the filtered, speed-stamped ones', () => {
+  const body = RENDERER.slice(RENDERER.indexOf('function _renderSharingPanel'),
+    RENDERER.indexOf('function _sharingPanelWantMs'))
+  assert.match(body, /_sharingApplySpeeds\(\s*\n?\s*window\.PapaTransferIndicator\.sharingRows\(s\.rows \|\| \[\]\)/,
+    'sharingRows first, then the speeds')
+  assert.match(body, /Number\(s\.cachedAt\) \|\| Date\.now\(\)/,
+    'sampled against the snapshot\'s own date, so a repaint is not a new sample')
+})
+
+// The real functions, run against a stubbed page, so a regression that leaves
+// the source looking right but the arithmetic wrong is still caught.
+function speedCtx() {
+  const ctx = {
+    window: { PapaTransferIndicator: TI },
+    esc: (s) => String(s == null ? '' : s),
+  }
+  vm.createContext(ctx)
+  vm.runInContext(
+    'var _sharingSample = null\n' +
+    extractFn('_fmtSpeed') + '\n' +
+    extractFn('_sharingApplySpeeds') + '\n' +
+    extractFn('_sharingRowHtml'),
+    ctx)
+  return ctx
+}
+
+// One peer, one file, two polls two seconds apart, one megabyte further along.
+function snapshot(bytes) {
+  return [{
+    username: 'ann',
+    files: [{
+      filename: 'C:\\Music\\Ann\\01 So What.flac', state: 'InProgress',
+      percentComplete: 3, averageSpeed: 30000, bytesTransferred: bytes, size: 10485760,
+    }],
+  }]
+}
+
+test('two samples two seconds apart produce the rate between them', () => {
+  const ctx = speedCtx()
+  const first = ctx._sharingApplySpeeds(TI.sharingRows(snapshot(1048576)), 1000)
+  // Nothing to compare against yet: slskd's average is all there is.
+  assert.equal(first[0].speed, 30000)
+  const second = ctx._sharingApplySpeeds(TI.sharingRows(snapshot(3145728)), 3000)
+  assert.equal(second[0].speed, 1048576, '2 MB over 2 s is 1 MB/s')
+  assert.match(ctx._sharingRowHtml(second[0]), /1\.0 MB\/s/,
+    'and that is the figure the row shows, not the 30 KB/s average')
+})
+
+test('repainting the same snapshot does not read as a stall', () => {
+  const ctx = speedCtx()
+  ctx._sharingApplySpeeds(TI.sharingRows(snapshot(1048576)), 1000)
+  const rows = TI.sharingRows(snapshot(3145728))
+  assert.equal(ctx._sharingApplySpeeds(rows, 3000)[0].speed, 1048576)
+  // A sidebar tick lands and repaints the very same snapshot. The bytes have
+  // not changed because no time has passed, and a second sample of them would
+  // wipe the rate to zero.
+  const again = ctx._sharingApplySpeeds(TI.sharingRows(snapshot(3145728)), 3000)
+  assert.equal(again[0].speed, 1048576, 'the rate survives the repaint')
+})
+
+test('a restarted transfer shows its progress rather than a bogus rate', () => {
+  const ctx = speedCtx()
+  ctx._sharingApplySpeeds(TI.sharingRows(snapshot(3145728)), 1000)
+  const rows = ctx._sharingApplySpeeds(TI.sharingRows(snapshot(0)), 3000)
+  assert.equal(rows[0].speed, null, 'no number at all rather than a wrong one')
+  assert.match(ctx._sharingRowHtml(rows[0]), />0%</, 'the row falls back to the bar figure')
+})
+
+test('the bar is the real fraction of the file, not slskd\'s rounded percent', () => {
+  const ctx = speedCtx()
+  const rows = ctx._sharingApplySpeeds(TI.sharingRows(snapshot(5242880)), 1000)
+  assert.match(ctx._sharingRowHtml(rows[0]), /width:50%/,
+    'half the bytes is half the bar, though percentComplete said 3')
+})
+
+test('a queued row says Queued instead of a misleading 0%', () => {
+  const body = RENDERER.slice(RENDERER.indexOf('function _sharingRowHtml'),
+    RENDERER.indexOf('function _renderSharingPanel'))
+  assert.match(body, /'Queued'/)
+  assert.match(body, /esc\(speedText\)/, 'and it still goes out through esc')
 })
 
 test('Escape closes the panel, but not out from under someone typing in it', () => {
