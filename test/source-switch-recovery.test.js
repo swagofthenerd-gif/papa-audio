@@ -72,11 +72,16 @@ test('a failed automatic switch says so instead of going silent', () => {
 })
 
 test('a source that never played does not become the title\'s remembered choice', () => {
-  const body = fn('_playerPickSource')
+  // The whole commit moved into _commitSwitch, which runs when the picture
+  // actually arrives — so the candidate is now set only on a switch that
+  // really played, not merely one that started.
+  const body = fn('_commitSwitch')
   assert.match(body, /_watch\.sourceCandidate = \{ source: next\.source/,
     'a candidate, promoted only once it has actually played')
-  assert.doesNotMatch(body, /_rememberPreferredSource\(\{ source: next\.source/,
-    'writing it here wrote it on "the switch started", not "it played"')
+  assert.doesNotMatch(fn('_playerPickSource'), /_rememberPreferredSource\(/,
+    'writing it in the pick wrote it on "the switch started", not "it played"')
+  assert.doesNotMatch(fn('_playerPickSource'), /_watch\.sourceCandidate =/,
+    'and nothing about the preference may be decided before the picture')
   // The promotion rule it now goes through still exists and still waits.
   assert.match(SRC, /_watch\.sourceCandidate && st\.position >= _SOURCE_PREF_AFTER_S/)
 })

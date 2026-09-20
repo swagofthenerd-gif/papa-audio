@@ -4634,16 +4634,110 @@ function _forgetPackStrip() {
   _setPackFiles([])
 }
 
+// What the strip held, so a switch that never arrives can put it back. The
+// strip is cleared as soon as a switch starts — it must be, because main tears
+// the old streamer down immediately and a click on a stale row would reach a
+// stream that no longer exists — but if the switch then fails, the OLD release
+// is still the one playing and its strip is still the true one. Without this
+// the strip vanished for good on any failed switch, taking the pack fast path
+// for the next episode with it.
+function _snapshotPackStrip() {
+  return { files: Array.isArray(_packFiles) ? _packFiles.slice() : [], via: _packVia }
+}
+function _restorePackStrip(strip) {
+  if (!strip || !Array.isArray(strip.files) || !strip.files.length) return
+  _setPackFiles(strip.files, strip.via)
+  if (_player && _player.setPack) _player.setPack(strip.files, _switchPackEpisode, _keepPackEpisode)
+}
+
 // Switching by hand, from inside the video. The stall-driven switch below does
 // the same thing on its own; this is the viewer deciding rather than the app
 // noticing. Position is kept — main keeps the player alive across the swap and
 // seeks back.
+// A switch main has STARTED but whose picture has not arrived yet.
+//
+// Everything a switch changes used to be applied on `ok`, which means only
+// that main accepted the request and began resolving — seconds, sometimes
+// minutes, before anything plays. So during every switch, and permanently
+// after any failure, the list showed source B as current while mpv was still
+// on A's frozen frame; the row was marked current so it could not even be
+// re-picked; the episode strip was emptied for a release that never arrived;
+// and the guard meant to allow one switch at a time was released in
+// milliseconds, so two quick clicks raced each other.
+//
+// Nothing is committed until the new source actually plays.
+var _switchPending = null
+// How long to wait for that picture before calling the switch dead. Main's own
+// worst case is the debrid budget plus a torrent start with its extensions, so
+// this sits beyond it: it exists to catch the case where no event arrives at
+// all, not to pre-empt main's own error.
+var _SWITCH_CONFIRM_MS = 90000
+
+// The new source is really playing: apply everything the switch was holding.
+function _commitSwitch(p) {
+  if (!p) return
+  if (p.timer) { clearTimeout(p.timer); p.timer = null }
+  if (_switchPending === p) _switchPending = null
+  _autoSwitchInFlight = false
+  const next = p.next
+  _watch.pick = next
+  // Fresh stall accounting for the source that just started, not for the one
+  // it replaced.
+  _watch.stallEvents = 0
+  _watch.stallNotified = false
+  _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
+  _playSourceKey = _sourceKey(next)
+  const rel = (window.PapaReleaseName && next.title) ? window.PapaReleaseName.parse(next.title) : null
+  // A CANDIDATE, not a decision: the app's own rule is that a manual pick must
+  // play for _SOURCE_PREF_AFTER_S before it becomes this title's remembered
+  // source. The tick in _onVideoStateTick promotes it.
+  _watch.sourceCandidate = { source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null }
+  _syncSourcesHighlight()
+  if (_player && _player.syncSources) _player.syncSources()
+}
+
+// It did not play. Put back what was taken and say so.
+function _abandonSwitch(p, message) {
+  if (!p) return
+  if (p.timer) { clearTimeout(p.timer); p.timer = null }
+  if (_switchPending === p) _switchPending = null
+  _autoSwitchInFlight = false
+  // A switch that never arrived must not cost the source its place:
+  // _nextUntriedSource skips a tried source for the rest of the episode, so a
+  // transient failure permanently hid a perfectly good release.
+  if (_watch && _watch.tried) delete _watch.tried[_sourceKey(p.next)]
+  // Nor should it spend the episode's automatic-recovery budget.
+  if (p.auto) _watch.autoSwitches = Math.max(0, (_watch.autoSwitches || 1) - 1)
+  // The old release is still the one playing, so its episode strip is still
+  // the true one.
+  _restorePackStrip(p.strip)
+  if (message) showToast(message)
+}
+
+// Hand the pending switch whatever just started playing. A 'playing' that
+// names a different source (or names none, i.e. an ordinary play) means this
+// switch has been superseded.
+function _resolveSwitchOnPlaying(payload) {
+  const p = _switchPending
+  if (!p) return
+  const want = (p.next && (p.next.magnet || p.next.url)) || null
+  const got = (payload && payload.switchedTo) || null
+  if (want && got && want === got) _commitSwitch(p)
+  else _abandonSwitch(p, null)
+}
+
 async function _playerPickSource(key) {
   // The fallback keeps this runnable in the single-function vm harnesses the
   // video tests use, which evaluate one function with the globals in scope.
   const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
   if (!window.api.videoSwitchStream) { showToast('Switching sources is not available in this build'); return }
-  if (_autoSwitchInFlight) return
+  if (_autoSwitchInFlight) {
+    // A deliberate choice supersedes a switch already under way. Being
+    // silently dropped is what made a second click feel like a dead button —
+    // and one of those switches was often an automatic one he never asked for.
+    if (_switchPending) _abandonSwitch(_switchPending, null)
+    else { showToast('Already switching — one moment…'); return }
+  }
   const next = (Array.isArray(pctx.streams) ? pctx.streams : []).find(function (s) { return _sourceKey(s) === key })
   if (!next) return
   if (next.kind !== 'torrent') { showToast('Only torrent sources can be switched to'); return }
@@ -4680,44 +4774,32 @@ async function _playerPickSource(key) {
   showToast('Switching to ' + (next.source || 'another source') + '…')
   const res = await window.api.videoSwitchStream({ result })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-  _autoSwitchInFlight = false
-  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
+  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) {
+    _autoSwitchInFlight = false
+    return
+  }
   if (res && res.ok) {
-    // The episodes on screen are the old release's, and its numbering is not
-    // the new one's.
+    // HELD, not applied. `ok` means only that main accepted the request and
+    // began resolving; the picture can be seconds away. _resolveSwitchOnPlaying
+    // commits this when the new source actually starts, and the timer gives up
+    // if it never does — the renderer had no time limit of its own at all, so
+    // a dead switch could sit for minutes with nothing said.
+    // The strip belongs to the release being left, and main has already torn
+    // its streamer down — a click on a stale row would reach a stream that no
+    // longer exists. Stashed first, so a failed switch can put it back.
+    const pending = { next: next, auto: false, at: Date.now(), timer: null, strip: _snapshotPackStrip() }
     _forgetPackStrip()
-    _watch.pick = next
-    _watch.stallEvents = 0
-    _watch.stallNotified = false
-    _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
-    // An explicit choice is a standing preference for this title, exactly as
-    // choosing from the hero selector is.
-    _playSourceKey = _sourceKey(next)
-    const rel = (window.PapaReleaseName && next.title) ? window.PapaReleaseName.parse(next.title) : null
-    // A CANDIDATE, not a decision. Writing the preference here wrote it on
-    // `ok`, which means the switch STARTED — so a release that never produced
-    // a single frame became this title's remembered source, and every future
-    // episode started there. It also bypassed the app's own rule that a manual
-    // pick must play for _SOURCE_PREF_AFTER_S before it is believed. The tick
-    // in _onVideoStateTick promotes this once it has actually played.
-    _watch.sourceCandidate = { source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null }
-    _syncSourcesHighlight()
-    if (_player && _player.syncSources) _player.syncSources()
-    // No "Switched to …" here. ok means the switch STARTED: main has torn the
-    // old streamer down and begun resolving, which now includes asking
-    // RealDebrid first and can take seconds. Claiming it had switched while
-    // the old frozen frame was still on screen is precisely what made a
-    // working switch read as a hang. "Switching to …" was already said above,
-    // mpv's OSD narrates the stages over the picture, and the picture
-    // changing is the only honest confirmation.
+    pending.timer = setTimeout(function () {
+      _abandonSwitch(pending, 'That source never started — still playing the previous one.')
+    }, _SWITCH_CONFIRM_MS)
+    _switchPending = pending
   } else {
-    // A switch that never started must not cost the source its place. `tried`
-    // is written before the outcome is known, and _nextUntriedSource skips a
-    // tried source for the rest of the episode — so a transient failure (a
-    // debrid back-off, an expired budget) permanently hid a perfectly good
-    // release and the list shrank with every attempt.
+    _autoSwitchInFlight = false
+    // A switch that never started must not cost the source its place.
     if (_watch && _watch.tried) delete _watch.tried[_sourceKey(next)]
-    showToast(_videoErrorText((res && res.error) || 'Could not switch source'))
+    // 'theatre': the player covers the page, so advice to "pick another from
+    // the list below" points at a list the viewer cannot see.
+    showToast(_videoErrorText((res && res.error) || 'Could not switch source', 'theatre'))
   }
 }
 
@@ -4761,33 +4843,33 @@ async function _autoSwitchSource() {
   showToast('Source stalled — switching to another…')
   const res = await window.api.videoSwitchStream({ result })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-  _autoSwitchInFlight = false
   // The world moved on while we awaited — a different show/season is on screen
   // now, so applying this switch's state to _watch would corrupt it.
-  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
+  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) {
+    _autoSwitchInFlight = false
+    return
+  }
   if (res && res.ok) {
-    // The episodes on screen are the stalled release's, and its numbering is
-    // not the new one's. Nobody asked for this switch, so a strip left behind
-    // here is even easier to click by mistake.
-    _forgetPackStrip()
-    // Rebuild the watch state coherently around the new pick rather than
-    // poking _watch.pick in place: fresh stall accounting for the new source,
-    // the new pick recorded so a later stall never re-picks the dead one, and
-    // the resume/candidate fields left as they were for this same episode.
-    _watch.pick = next
-    _watch.stallEvents = 0
-    _watch.stallNotified = false
+    // HELD until the picture arrives, exactly as the manual path holds it.
+    // Nobody asked for this switch, so claiming it had happened — and emptying
+    // the episode strip for it — while the old release was still the one on
+    // screen was worse here than anywhere.
     const before = _playing || {}
-    _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
-    _syncSourcesHighlight()
-    // V058: the fallback says what changed, not only that it happened — a
-    // different quality, or a dub where there was a sub, is a real change
-    // the person would want to know about and can undo from the list.
+    const pending = { next: next, auto: true, at: Date.now(), timer: null, strip: _snapshotPackStrip() }
+    _forgetPackStrip()
+    pending.timer = setTimeout(function () {
+      _abandonSwitch(pending, 'That source never started — still playing the previous one.')
+    }, _SWITCH_CONFIRM_MS)
+    _switchPending = pending
+    // V058: say what is CHANGING, not only that something is — a different
+    // quality, or a dub where there was a sub, is a real change the person
+    // would want to know about and can undo from the list.
     const changed = []
     if (before.quality && next.quality && before.quality !== next.quality) changed.push(before.quality + ' → ' + next.quality)
     if (before.dub != null && next.dub != null && Boolean(before.dub) !== Boolean(next.dub)) changed.push(next.dub ? 'now dubbed' : 'now subtitled')
     showToast('Switching to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
   } else {
+    _autoSwitchInFlight = false
     // This branch did not exist. A stall-driven switch that failed said
     // nothing whatsoever — "Source stalled — switching to another…" and then
     // permanent silence over a frozen frame — while still having spent one of
@@ -4795,7 +4877,7 @@ async function _autoSwitchSource() {
     // tried. Two of those and auto-recovery was dead for that episode.
     _watch.autoSwitches = Math.max(0, (_watch.autoSwitches || 1) - 1)
     if (_watch.tried) delete _watch.tried[_sourceKey(next)]
-    showToast(_videoErrorText((res && res.error) || 'Could not switch to another source'))
+    showToast(_videoErrorText((res && res.error) || 'Could not switch to another source', 'theatre'))
   }
 }
 
@@ -5009,6 +5091,10 @@ function _handleVideoEvent(payload) {
     return
   } else if (payload.kind === 'playing') {
     _capWarning = null
+    // A picture is the only honest confirmation that a switch worked. If one
+    // is pending, this either commits it or — when something else started —
+    // abandons it.
+    _resolveSwitchOnPlaying(payload)
     // The in-page engine says 'playing' on the first frame; mpv says it when
     // the process is up, before any frame — so in purist mode the start-up
     // watchdog stays armed until the state stream shows the position moving.
@@ -5104,6 +5190,14 @@ function _handleVideoEvent(payload) {
     showToast('Resumed')
   } else if (payload.kind === 'error') {
     _disarmStartWatch()
+    // Nothing above that call, not even a comment: test/start-honesty-wiring
+    // pins the adjacency deliberately, so the watchdog can never be disarmed
+    // late by a line slipped in front of it.
+    // A switch waiting on a picture will not get one now. Put back what it
+    // took — the source keeps its place in the list, its episode strip comes
+    // back, and an automatic switch gets its budget back — before the message
+    // below is shown.
+    if (_switchPending) _abandonSwitch(_switchPending, null)
     // The same failure arrives twice from two paths (the torrent's own error
     // and the switch's); one message is enough.
     const nowE = Date.now()

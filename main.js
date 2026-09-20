@@ -16442,7 +16442,11 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
         // bytes around the playhead first instead of the file head.
         _prioritiseStreamAtPlayhead()
       }
-      safeSend('video-event', { kind: 'playing' })
+      // Named, so the page can tell THIS switch's picture from an ordinary
+      // play that superseded it. Without an identity the renderer had to
+      // assume, and assuming is how a switch got credited for a source that
+      // never started.
+      safeSend('video-event', { kind: 'playing', switchedTo: result.magnet || result.url || null })
       if (streamer) {
         try {
           const files = streamer.files()

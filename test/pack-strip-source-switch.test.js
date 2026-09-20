@@ -44,10 +44,19 @@ function harness(over) {
   const seen = { setPack: [], toasts: [], switched: [], predownload: 0 }
   const ctx = Object.assign({
     console, Number, String, Boolean, Array, Object, Math, JSON, Date, Promise,
+    // A switch is now HELD until the new source actually plays, with a timer
+    // that gives up if it never does — so the lift needs real timers. Unref'd
+    // so a pending switch cannot keep the test runner alive.
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.unref(); return t },
+    clearTimeout,
 
     // The real _setPackFiles is lifted below, so this is the live variable it
     // writes — not a stub standing in for it.
     _packFiles: DEBRID_PACK.slice(),
+    // Which half produced the strip. Real module-level state in the renderer
+    // (var _packVia = 'torrent'); the switch snapshots it so a failed switch
+    // can put the strip back, and the lift needs it declared.
+    _packVia: 'debrid',
     _updatePredownloadControl() { seen.predownload++ },
 
     _autoSwitchInFlight: false,
