@@ -4821,6 +4821,10 @@ function _startWatchTick(nowMs) {
 // The last thing debrid did for this play, in plain words. Read by the tests
 // and available to any surface that wants to show it.
 var _debridNote = ''
+// The download speed limit cannot carry what is being opened (instant-play A).
+// Held for the life of the play so the stage keeps saying it while the bar
+// crawls, rather than one toast that is gone before the stall is believable.
+var _capWarning = null
 function _handleVideoEvent(payload) {
   if (!_player) return
   if (payload.kind === 'audio') return   // badges come from the state stream
@@ -4828,6 +4832,17 @@ function _handleVideoEvent(payload) {
   // The mouse moved over the picture. Only the theatre cares, and only to know
   // the viewer is still watching rather than gone.
   if (payload.kind === 'activity') { _player.noteActivity(); return }
+
+  // The speed limit in Settings is lower than this release needs, so the
+  // download can never catch up with playback however good the swarm is. Said
+  // once, loudly, and then kept under the progress line — a spinner that is
+  // genuinely making progress and one that mathematically cannot finish look
+  // identical, and that is what made a correctly-working app look broken.
+  if (payload.kind === 'cap') {
+    _capWarning = [payload.message, payload.next].filter(Boolean).join(' ')
+    if (_capWarning) showToast(_capWarning)
+    return
+  }
 
   // Debrid either served this play or could not. Saying which, and why, is the
   // whole point: falling back to peers in silence made a working subscription
@@ -4913,7 +4928,8 @@ function _handleVideoEvent(payload) {
     if (sig !== _startWatchLastSig) { _startWatchLastSig = sig; _startWatchWords() }
     _player.setStageMessage('<div class="spin"></div><div>' +
       esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
-      (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : ''))
+      (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : '') +
+      (_capWarning ? '<div class="stage-warn">' + esc(_capWarning) + '</div>' : ''))
   } else if (payload.kind === 'web-ready') {
     // The stream server has a session for this play (V1): play it in the
     // page. Badges say what the planner did ("converted", "HDR shown as SDR").
@@ -4925,6 +4941,7 @@ function _handleVideoEvent(payload) {
     }
     return
   } else if (payload.kind === 'playing') {
+    _capWarning = null
     // The in-page engine says 'playing' on the first frame; mpv says it when
     // the process is up, before any frame — so in purist mode the start-up
     // watchdog stays armed until the state stream shows the position moving.
@@ -4950,6 +4967,7 @@ function _handleVideoEvent(payload) {
     _updatePredownloadControl()
   } else if (payload.kind === 'ended') {
     _disarmStartWatch()
+    _capWarning = null
     // mpv finished with the file. An error end (corrupt or truncated file)
     // used to be a black screen with live controls and no explanation; a
     // natural end left the last frame up and nothing marked as watched.

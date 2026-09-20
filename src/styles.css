@@ -9183,6 +9183,18 @@ body.video-fullscreen .vtheatre { top:0; }
   background:rgba(0,0,0,.55); padding:6px 12px; border-radius:8px; color:#fff;
   backdrop-filter:blur(8px);
 }
+/* The download speed limit cannot carry this release (instant-play A). It
+   rides under the progress line for the whole start-up, so it has to read as a
+   warning at a glance and not as more progress detail.
+   The amber is literal rather than var(--warn-ink): this pill is always the
+   dark one over the picture, in both themes, and the light theme's token is
+   tuned to be legible on the page ground instead — it would be near-black on
+   black here. */
+.vt-stage-msg .stage-warn {
+  color:#ffca3a; font-weight:600; max-width:44ch; line-height:1.45;
+  background:rgba(60,34,0,.72);
+  border:1px solid rgba(255,202,58,.35);
+}
 .vt-stage-msg .spin {
   width:26px; height:26px; border-radius:50%;
   border:2px solid rgba(255,255,255,.16); border-top-color:var(--accent);

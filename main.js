@@ -16,6 +16,7 @@ const dlState_ = require('./src/dl-state')
 const dlExplain = require('./src/dl-explain')
 const videoKeep = require('./src/video-keep')
 const { createDebrid } = require('./src/debrid')
+const bandwidth = require('./src/bandwidth-guard')
 const trackMemory = require('./src/track-memory')
 const { createWatchdog } = require('./src/memory-watchdog')
 const profilerCapture = require('./src/profiler-capture')
@@ -11883,8 +11884,32 @@ function _migratePlayerModeOnce() {
   } catch (_) {}
 }
 
+// A download cap below the streaming floor is lifted once (instant-play A).
+// A cap throttles the whole WebTorrent client, so it governs live watching as
+// well as background downloads, and a cap too low to sustain video turns every
+// peer-backed play into a permanent buffer — which is exactly what was found
+// stored on 2026-09-20: 1 Mbps against a 2160p preference. Only RealDebrid
+// (plain HTTPS, outside the throttle) still worked, so the app looked broken
+// at random. Lifted once and stamped; a cap the user sets afterwards carries
+// downloadLimitByUser and is never touched again.
+let _dlLimitMigrated = false
+function _migrateDownloadLimitOnce() {
+  if (_dlLimitMigrated) return
+  _dlLimitMigrated = true
+  try {
+    const stored = store.get('videoSettings', {}) || {}
+    const r = bandwidth.migrateCap(stored)
+    if (r.changed) {
+      store.set('videoSettings', r.next)
+      console.log('[papa-video] download limit lifted: ' + r.reason +
+        ' — Settings → Video sets a new one, and it will be kept')
+    }
+  } catch (_) {}
+}
+
 function _videoSettings() {
   _migratePlayerModeOnce()
+  _migrateDownloadLimitOnce()
   return Object.assign(
     {
       // 'purist' plays through mpv in the native window, bit-exact, with
@@ -12772,6 +12797,10 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
     // A mode chosen in Settings is the user's; the one-time migration to
     // purist (below) leaves it alone.
     if (clean.playerMode) clean.playerModeByUser = true
+    // Same contract for the download cap: a number typed in Settings is a
+    // deliberate choice and survives the one-time lift above, including a
+    // deliberate re-entry of a low one.
+    if ('downloadLimitMbps' in clean) clean.downloadLimitByUser = true
     const next = { ...current, ...clean }
     store.set('videoSettings', next)
     // Clearing the key is as much a change as setting one, and the ranking and
@@ -12806,10 +12835,7 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
     const streamer = _videoSession.streamer
     if (streamer) {
       if (next.downloadLimitMbps !== current.downloadLimitMbps) {
-        const mbps = Number(next.downloadLimitMbps)
-        const bps = (next.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0)
-          ? null : Math.floor(mbps * 125000)
-        try { streamer.setDownloadLimit(bps) } catch (_) {}
+        try { streamer.setDownloadLimit(bandwidth.capBytesPerSec(next.downloadLimitMbps)) } catch (_) {}
       }
       if (next.seedWhileWatching !== current.seedWhileWatching) {
         try { streamer.setSeedWhileWatching(next.seedWhileWatching !== false) } catch (_) {}
@@ -15032,9 +15058,22 @@ function _startTorrentStream(result, { current, fail, onReady, quiet }) {
   const settings = _videoSettings()
   // The bandwidth cap (App #41) and seed-back switch (App #42) come from the
   // stored video settings. Mbps→bytes/s is ×125000; null/0 means uncapped.
-  const mbps = Number(settings.downloadLimitMbps)
-  const downloadLimitBps = (settings.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0)
-    ? null : Math.floor(mbps * 125000)
+  const downloadLimitBps = bandwidth.capBytesPerSec(settings.downloadLimitMbps)
+  // A cap that cannot carry this release is a stall that has not happened yet
+  // (instant-play A). The stream is still started — the cap may have been set
+  // deliberately and a thin copy may yet cope — but the viewer is told now,
+  // while the spinner still looks like progress, instead of discovering it
+  // twenty minutes into a buffer that can never end. Said once per play, and
+  // never by a hedge challenger, which is not the stream anyone is watching.
+  if (!quiet) {
+    const verdict = bandwidth.capVerdict({
+      capMbps: settings.downloadLimitMbps,
+      height: bandwidth.heightOfQuality(result && result.quality),
+    })
+    if (!verdict.ok && current()) {
+      safeSend('video-event', { kind: 'cap', message: verdict.message, next: verdict.next })
+    }
+  }
   const streamer = new TorrentStreamer({
     client: getTorrentClient(),
     downloadLimitBps,
@@ -16081,10 +16120,9 @@ ipcMain.handle('video-download-start', async (_, { result, meta } = {}) => {
       return { ok: false, error: 'Two downloads are already running — let one finish first' }
     }
     const settings = _videoSettings()
-    const mbps = Number(settings.downloadLimitMbps)
     const streamer = new TorrentStreamer({
       client: getTorrentClient(),
-      downloadLimitBps: (settings.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0) ? null : Math.floor(mbps * 125000),
+      downloadLimitBps: bandwidth.capBytesPerSec(settings.downloadLimitMbps),
       announceFn: _mergedAnnounce,
       seedWhileWatching: settings.seedWhileWatching !== false,
       timeoutMs: 60000,

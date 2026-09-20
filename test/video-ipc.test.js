@@ -1200,9 +1200,16 @@ test('video-settings-set only writes whitelisted keys', () => {
 test('a new streamer is built with the stored cap and seed setting', () => {
   const at = MAIN.indexOf('function _startTorrentStream(')
   const body = MAIN.slice(at, MAIN.indexOf("ipcMain.handle('video-play'", at))
-  // Mbps → bytes/s is ×125000, and null/0 leaves it uncapped.
-  assert.match(body, /\* 125000/)
+  // Mbps → bytes/s used to be spelled out here three times over; it is now one
+  // definition in src/bandwidth-guard.js (×125000, null/0 uncapped, proved in
+  // test/bandwidth-guard.test.js). What this handler must still do is USE it.
+  assert.match(body, /bandwidth\.capBytesPerSec\(settings\.downloadLimitMbps\)/)
   assert.match(body, /downloadLimitBps,/)
+  // And a cap that cannot carry the release has to be said out loud before the
+  // stall, not discovered during it (instant-play A).
+  assert.match(body, /bandwidth\.capVerdict\(/, 'the cap must be judged against this release')
+  assert.match(body, /kind: 'cap'/, 'and the verdict must reach the screen')
+  assert.match(body, /if \(!quiet\)/, 'a hedge challenger must not announce it')
   assert.match(body, /seedWhileWatching: settings\.seedWhileWatching !== false/)
 })
 

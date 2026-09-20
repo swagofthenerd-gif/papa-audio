@@ -51,3 +51,34 @@ test('no shortcut is advertised that the theatre cannot perform', () => {
   assert.deepStrictEqual(deadOnes, [],
     `these keys are advertised in the shortcut list but the theatre has no case for them: ${deadOnes.join(', ')}`)
 })
+
+// Instant-play A. The stored download limit was 1 Mbps against a 2160p
+// preference, so every peer-backed play buffered forever — and a spinner that
+// is genuinely making progress looked exactly like one that mathematically
+// cannot finish. The arithmetic is proved in test/bandwidth-guard.test.js;
+// what these check is that the answer actually reaches a viewer.
+test('a speed limit that cannot carry the release is announced, not discovered', () => {
+  assert.match(R, /payload\.kind === 'cap'/,
+    'the renderer must handle the cap verdict the main process sends')
+  assert.match(R, /_capWarning = \[payload\.message, payload\.next\]/,
+    'both the problem and the way out are kept')
+  assert.match(R, /if \(_capWarning\) showToast\(_capWarning\)/,
+    'said once, loudly, when it is raised')
+})
+
+test('the speed-limit warning stays under the progress line while the bar crawls', () => {
+  const at = R.indexOf("if (payload.kind === 'buffering')")
+  assert.ok(at > 0, 'the buffering branch must still exist')
+  const body = R.slice(at, at + 2400)
+  assert.match(body, /_capWarning \? '<div class="stage-warn">'/,
+    'one toast is gone before the stall is believable; the stage has to keep saying it')
+})
+
+test('one play\'s speed-limit warning is not the next play\'s', () => {
+  for (const kind of ['playing', 'ended']) {
+    const at = R.indexOf("} else if (payload.kind === '" + kind + "') {")
+    assert.ok(at > 0, 'the ' + kind + ' branch must exist')
+    assert.match(R.slice(at, at + 120), /_capWarning = null/,
+      kind + ' must clear the warning')
+  }
+})
