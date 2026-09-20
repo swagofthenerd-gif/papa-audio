@@ -9487,7 +9487,11 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
       cached: true,
       cachedAt: _lastUploadPollAt,
       daemon: _uploadDaemonOk,
-      activeUploads: _lastUploadResult.activeUploads,
+      // Zero, not the frozen figure, once the daemon stops answering: nothing
+      // can be verified as actually moving through a connection that is down,
+      // same reasoning as the rows below. The daily counters are unaffected —
+      // they are a tally of what already happened, not a claim about now.
+      activeUploads: _uploadDaemonOk ? _lastUploadResult.activeUploads : 0,
       totalUploadedToday: _lastUploadResult.totalUploadedToday,
       distinctPeersToday: _lastUploadResult.distinctPeersToday,
       filesUploadedToday: _lastUploadResult.filesUploadedToday,

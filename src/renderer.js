@@ -29319,6 +29319,9 @@ function retuneDownloadsPolling() {
 //
 // All the text comes from PapaTransferIndicator; this half only paints.
 const SHARING_POLL_MS = 60000
+// index.html's static default for #nav-sharing's title; kept here so the
+// daemon-down message can be swapped back out for it rather than erased.
+const SHARING_ROW_DEFAULT_TITLE = 'Who is taking files from you'
 let _sharingPollTimer = null
 let _sharingStats = null
 // Declared here rather than with the panel: this refresh has to know whether
@@ -29348,10 +29351,21 @@ function _paintSharingPill() {
   const el = document.getElementById('nav-sharing-pill')
   if (!row || !el || !window.PapaTransferIndicator) return
   const s = _sharingStats
+  // The daemon cannot vouch for anything as active while it is not answering:
+  // a cached snapshot's activeUploads is a frozen number, not a live fact, and
+  // main.js can only zero it on paths that actually read the flag. Checking it
+  // again here means a stale merge from before the outage still gets caught.
+  const daemonDown = !!(s && s.daemon === false)
   const pill = s ? window.PapaTransferIndicator.sharingPill({
-    activeUploads: s.activeUploads,
+    activeUploads: daemonDown ? 0 : s.activeUploads,
     filesToday: s.filesUploadedToday,
   }) : null
+  // Nothing left to say "still live" once the daemon stops answering — say so
+  // in the tooltip, rather than leaving the row looking like an idle, healthy
+  // day. Swapped back out for the page's own default the rest of the time.
+  row.title = daemonDown
+    ? 'Can’t reach the Soulseek daemon right now — showing today’s total only.'
+    : SHARING_ROW_DEFAULT_TITLE
   // Nothing in flight and nothing given away today: the whole row goes, rather
   // than sitting there saying zero.
   if (!pill) {
@@ -38851,17 +38865,27 @@ function _slskBindWishlistHits() {
 // peers" line in the hub header. Last-known stats are cached so a repaint has
 // something to show before the fetch returns.
 var _slskUploadStats = null
+// index.html's static default for #slsk-hub-sharing's title; swapped back in
+// once the daemon is answering again rather than left overwritten.
+var HUB_SHARING_DEFAULT_TITLE = 'What you are sharing back on Soulseek'
 function _paintHubSharing() {
   var el = document.getElementById('slsk-hub-sharing')
   if (!el) return
   var s = _slskUploadStats
   if (!s) { el.textContent = ''; return }
-  var active = Number(s.activeUploads) || 0
+  // _slskUploadStats can go a while between reads — it is only refreshed on
+  // hub navigation and by activity pushes, which do not carry `daemon` — so a
+  // count that went stale mid-outage must not still read as live here either.
+  var daemonDown = s.daemon === false
+  var active = daemonDown ? 0 : (Number(s.activeUploads) || 0)
   var peers = Number(s.distinctPeersToday) || 0
   var up = _fmtBytes(Number(s.totalUploadedToday) || 0)
   // Text, never markup — no user strings here, but keep the sink safe anyway.
   el.textContent = 'Sharing: ' + active + ' active · ' + up + ' uploaded today · ' +
     peers + ' peer' + (peers === 1 ? '' : 's')
+  el.title = daemonDown
+    ? 'Can’t reach the Soulseek daemon right now — showing today’s totals only.'
+    : HUB_SHARING_DEFAULT_TITLE
 }
 function _renderHubSharing() {
   if (!window.api || !window.api.slskUploadStats) return

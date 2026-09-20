@@ -114,6 +114,23 @@ test('the handler says whether the daemon actually answered', () => {
     'and the unreachable path says so rather than passing empty rows off as calm')
 })
 
+test('the cached path zeroes activeUploads once the daemon stops answering, but keeps the daily tally', () => {
+  // Rows are already blanked on this path once the daemon is down (the test
+  // above pins that); activeUploads must go the same way — a transfer cannot
+  // be verified as active through a connection nothing can reach. Scoped to
+  // the cached branch only, so this cannot pass by matching the unrelated
+  // zero on the separate live-poll-failed path further down the handler.
+  const body = handlerBody()
+  const cached = body.slice(0, body.indexOf('await slskUploadPollOnce'))
+  assert.match(cached, /activeUploads: _uploadDaemonOk \? _lastUploadResult\.activeUploads : 0,/,
+    'zero, not the frozen figure, once _uploadDaemonOk is false')
+  // The daily counters are history, not a live claim, so they are untouched.
+  assert.match(cached, /filesUploadedToday: _lastUploadResult\.filesUploadedToday,/,
+    'the day\'s delivered-file count survives the same outage')
+  assert.match(cached, /totalUploadedToday: _lastUploadResult\.totalUploadedToday,/,
+    'and the byte tally beside it')
+})
+
 test('preload hands the whole handler result back, opts and all', () => {
   const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
   const line = (PRELOAD.match(/^.*slskUploadStats:.*$/m) || [''])[0]
@@ -129,6 +146,36 @@ test('preload hands the whole handler result back, opts and all', () => {
 const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
 const HTML = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8')
 const CSS = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+const vm = require('node:vm')
+const TI = require('../src/transfer-indicator.js')
+
+// Pulls one function's exact source out of renderer.js by brace counting, so
+// it can actually be run (not just pattern-matched) against a stubbed DOM —
+// the same functions the real page loads, with a fake document instead of one.
+function extractFn(name) {
+  const marker = 'function ' + name + '('
+  const start = RENDERER.indexOf(marker)
+  assert.ok(start !== -1, name + ' must exist')
+  const braceStart = RENDERER.indexOf('{', start)
+  let depth = 0
+  let i = braceStart
+  for (; i < RENDERER.length; i++) {
+    if (RENDERER[i] === '{') depth++
+    else if (RENDERER[i] === '}') { depth--; if (depth === 0) { i++; break } }
+  }
+  return RENDERER.slice(start, i)
+}
+
+// Same idea for a single `const NAME = ...` / `var NAME = ...` line, so a test
+// can inject the module's own default-title text rather than a copy of it.
+// Rewritten to `var`: a bare `const`/`let` at the top of a vm.runInContext
+// script binds lexically and never lands on the context object, so the test
+// could not read it back to compare against — `var` does.
+function extractConst(name) {
+  const m = RENDERER.match(new RegExp('(?:const|var) ' + name + ' = .*'))
+  assert.ok(m, name + ' must exist')
+  return m[0].replace(/^(?:const|let)\b/, 'var')
+}
 
 test('a hidden nav row is actually hidden', () => {
   // The Sharing row is `<li class="nav-item" hidden>`, and .nav-item sets
@@ -199,6 +246,78 @@ test('the Sharing row only appears when the pill model says so', () => {
     'no pill means the whole row is hidden')
   assert.match(body, /row\.hidden = false/, 'and a pill unhides it')
   assert.match(body, /el\.textContent = pill\.text/, 'text, never innerHTML')
+})
+
+// ── The daemon-down pill (behavioral, not just text-level) ──────────────────
+// _paintSharingPill and _paintHubSharing run for real here, against a stubbed
+// document, so a regression that lets a frozen activeUploads slip through to
+// the model is caught even if the surrounding text still looks right.
+
+function sharingPillCtx(stats) {
+  const rowEl = { hidden: false, title: '' }
+  const pillEl = { hidden: false, textContent: '', classList: { toggle() {} }, setAttribute() {} }
+  const ctx = {
+    document: {
+      getElementById: (id) => (id === 'nav-sharing' ? rowEl : id === 'nav-sharing-pill' ? pillEl : null),
+    },
+    window: { PapaTransferIndicator: TI },
+    _sharingStats: stats,
+  }
+  vm.createContext(ctx)
+  vm.runInContext(
+    extractConst('SHARING_ROW_DEFAULT_TITLE') + '\n' +
+    extractFn('_paintSharingPill') + '\n_paintSharingPill()',
+    ctx)
+  return { rowEl, pillEl, ctx }
+}
+
+test('the sidebar pill hides rather than showing a frozen live count once the daemon is down', () => {
+  // Nothing given away today, but the last snapshot before the outage still
+  // says 7 active — without the fix this reads as "↑ 7" forever.
+  const { rowEl, pillEl } = sharingPillCtx({ daemon: false, activeUploads: 7, filesUploadedToday: 0 })
+  assert.equal(rowEl.hidden, true, 'no live activity and nothing shared today hides the whole row')
+  assert.equal(pillEl.hidden, true)
+  assert.match(rowEl.title, /Can.t reach the Soulseek daemon/, 'the row explains why in a tooltip')
+})
+
+test('the sidebar pill falls back to the idle "N today" form, never the frozen live count', () => {
+  const { pillEl, rowEl } = sharingPillCtx({ daemon: false, activeUploads: 7, filesUploadedToday: 5 })
+  assert.equal(pillEl.hidden, false)
+  assert.equal(pillEl.textContent, '5 today', 'the frozen 7-active snapshot never reaches the pill text')
+  assert.match(rowEl.title, /Can.t reach the Soulseek daemon/)
+})
+
+test('the sidebar pill still shows live activity normally, and the default tooltip, while the daemon answers', () => {
+  const { pillEl, rowEl, ctx } = sharingPillCtx({ daemon: true, activeUploads: 7, filesUploadedToday: 5 })
+  assert.equal(pillEl.textContent, '↑ 7')
+  assert.equal(rowEl.title, ctx.SHARING_ROW_DEFAULT_TITLE, 'restored, not left on the daemon-down message')
+})
+
+function hubSharingCtx(stats) {
+  const el = { textContent: '', title: '' }
+  const ctx = {
+    document: { getElementById: (id) => (id === 'slsk-hub-sharing' ? el : null) },
+    _fmtBytes: (n) => n + 'B',
+    _slskUploadStats: stats,
+  }
+  vm.createContext(ctx)
+  vm.runInContext(
+    extractConst('HUB_SHARING_DEFAULT_TITLE') + '\n' +
+    extractFn('_paintHubSharing') + '\n_paintHubSharing()',
+    ctx)
+  return { el, ctx }
+}
+
+test('the hub sharing line does not show a frozen live count once the daemon is down', () => {
+  const { el } = hubSharingCtx({ daemon: false, activeUploads: 4, totalUploadedToday: 0, distinctPeersToday: 2 })
+  assert.match(el.textContent, /^Sharing: 0 active/, 'the frozen active-upload count is suppressed')
+  assert.match(el.title, /Can.t reach the Soulseek daemon/i)
+})
+
+test('the hub sharing line shows the live count normally, and the default tooltip, while the daemon answers', () => {
+  const { el, ctx } = hubSharingCtx({ daemon: true, activeUploads: 4, totalUploadedToday: 0, distinctPeersToday: 2 })
+  assert.match(el.textContent, /^Sharing: 4 active/)
+  assert.equal(el.title, ctx.HUB_SHARING_DEFAULT_TITLE)
 })
 
 test('clicking Sharing opens the panel instead of navigating', () => {
