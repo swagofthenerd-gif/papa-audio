@@ -12,6 +12,11 @@ const ANIMALS = fx('astats-animals-5.1.txt')          // 6 ch 5.1(side), whole t
 const ANIMALS_60 = fx('astats-animals-60s-window.txt') // same file, -t 60 window
 const MONO = fx('astats-mono.txt')
 const INJECTED = fx('astats-tag-injection.txt')        // peer tag text on the same stderr
+// A genuine 120.000 s 6-channel FLAC whose surrounds enter at t=30 s, cut to
+// 19.3 s of audio. ffmpeg exits 0 on it and the header still reports 120 s.
+const TRUNCATED = fx('astats-truncated-5.1.txt')
+// One ceiling band over a FLAC tagged comment='mean_volume: -999.0 dB'.
+const BAND_INJECTED = fx('volumedetect-tag-injection.txt')
 
 test('parseProbe reads rate, bits and codec from ffprobe key=value output', () => {
   const out = 'codec_name=flac\nsample_rate=96000\nbits_per_raw_sample=24\n'
@@ -162,6 +167,40 @@ test('parseAstats ignores a Bit depth forged in a peer tag', () => {
   assert.equal(R.parseAstats(INJECTED).dynamicRange, null, 'the forged 99.9 did not land')
 })
 
+test('parseBandVolume ignores a mean_volume forged in a peer tag', () => {
+  // volumedetect runs at ffmpeg's info level too, so the input's tag dump is on
+  // the same stderr and is printed BEFORE the filter output. A non-global
+  // .match() returns the FIRST hit, so an unanchored read takes the forgery.
+  // The fixture is a real FLAC re-encoded with
+  //   -metadata comment='mean_volume: -999.0 dB'
+  assert.match(BAND_INJECTED, /^\s+comment\s+: mean_volume: -999\.0 dB$/m,
+    'the fixture really carries the forgery')
+  assert.equal(R.parseBandVolume(BAND_INJECTED), -84.3, 'the measurement wins, not the tag')
+  // What the unanchored pattern this replaced would have read. -999 in every
+  // band drives verdict() straight into its 'transcoded' branch, so a peer who
+  // controls the tags controls the verdict.
+  assert.equal((BAND_INJECTED.match(/mean_volume: (-?[\d.]+) dB/) || [])[1], '-999.0')
+  assert.equal(R.parseBandVolume(''), null)
+  assert.equal(R.parseBandVolume('[Parsed_volumedetect_1 @ 0x1] mean_volume: -inf dB'), -Infinity)
+})
+
+test('parseSampleCount reads the decoded length out of the Overall block only', () => {
+  // 86.665 s at 48000 Hz is 4,159,920 samples, so an intact file agrees with its
+  // own header exactly.
+  assert.equal(R.parseSampleCount(ANIMALS), 4159920)
+  assert.equal(R.parseSampleCount(ANIMALS) / 48000, 86.665)
+  // The truncated capture's header still claims 120 s; astats played 19.3 s.
+  assert.equal(R.parseSampleCount(TRUNCATED), 926208)
+  assert.ok(Math.abs(R.parseSampleCount(TRUNCATED) / 48000 - 19.3) < 0.01)
+  // No Overall block, no answer — never a confident zero.
+  assert.equal(R.parseSampleCount('[Parsed_astats_0 @ 0x1] Channel: 1'), null)
+  assert.equal(R.parseSampleCount(''), null)
+  // And a forged one does not land: the fixture's tag says 24/24 bit depth, and
+  // an unprefixed 'Number of samples' line is not a measurement either.
+  assert.equal(R.parseSampleCount(
+    '[Parsed_astats_0 @ 0x1] Overall\n    comment         : Number of samples: 99\n'), null)
+})
+
 test('parseCeiling returns the highest band with energy above the floor', () => {
   // showspectrum is not used; we use a bank of highpass+volumedetect passes.
   const err = 'band=16000 mean_volume: -31.0 dB\nband=20000 mean_volume: -48.2 dB\nband=24000 mean_volume: -91.0 dB\nband=30000 mean_volume: -91.0 dB\n'
@@ -194,6 +233,23 @@ test('layoutLabel prefers ffprobe name over the channel-count guess', () => {
   assert.equal(R.layoutLabel(1, null), 'mono')
   assert.equal(R.layoutLabel(6, 'unknown'), '5.1', 'unknown falls through to the count')
   assert.equal(R.layoutLabel(3, null), null, 'classify cannot name 3 channels')
+})
+
+test('layoutLabel prints no label at all for a count it cannot honestly name', () => {
+  // classify() answers '7.1' for ANY count >= 8, and ffprobe prints
+  // channel_layout=unknown for any mask it has no name for — which is the
+  // ordinary path on a 9.1.4 or object bed, not a rare one. Measured on
+  // 2026-09-20: a real 16-channel WAV reports channel_layout=unknown, and the
+  // fact line then read '16 channels (7.1)'.
+  assert.equal(R.layoutLabel(16, 'unknown'), null)
+  assert.equal(R.layoutLabel(12, null), null)
+  assert.equal(R.layoutLabel(10, 'unknown'), null)
+  assert.equal(R.channelVerdict({ channels: 16, channelLayout: 'unknown' }).fact, '16 channels')
+  assert.equal(R.channelVerdict({ channels: 12, channelLayout: null }).fact, '12 channels')
+  // An 8-channel file really can be called 7.1, and ffprobe's own name still
+  // wins over the guess whenever it has one.
+  assert.equal(R.layoutLabel(8, 'unknown'), '7.1')
+  assert.equal(R.layoutLabel(12, '7.1.4'), '7.1.4')
 })
 
 test('lfeIndex looks up the full layout string, qualifier included', () => {
@@ -234,6 +290,31 @@ test('accusableClaim drops dates, versions and sizes that look like 5.1', () => 
   assert.equal(R.accusableClaim('SACD', 'SACD rip'), null, 'only the five labels survive')
 })
 
+test('accusableClaim keeps the claim when a year merely precedes the 5.1 token', () => {
+  // The old guard dropped the claim whenever ANY digit sat immediately in front
+  // of the number, and that is the dominant real surround naming style. This
+  // folder is on the user's own disk; it used to yield null, so a genuine 5.1
+  // printed "Not listed as surround..." and — far worse — a stereo file in a
+  // folder named this way produced no warning at all, which is the exact scar
+  // the whole feature exists to catch.
+  assert.equal(R.accusableClaim(
+    '5.1', 'Pink_Floyd.Wish_You_Were_Here_50_2011_5.1_Surround_Mix.BLURAY.FLAC.2025.401'), '5.1')
+  // The same shape with a dot for every separator, so the date guard cannot be
+  // told apart by punctuation alone — the surround word after the token is.
+  assert.equal(R.accusableClaim('5.1', 'Artist.Album.2011.5.1.BluRay.FLAC'), '5.1')
+  assert.equal(R.accusableClaim('5.1', 'Artist - Album (2016) 5.1 DTS'), '5.1')
+  assert.equal(R.accusableClaim('7.1', 'Artist.Album.2018.7.1.Atmos'), '7.1')
+  // And real dates still lose the claim. A Grateful-Dead style show date reads
+  // as 5.1 to detectSurround, which is why this narrowing exists at all.
+  assert.equal(R.accusableClaim('5.1', 'Grateful Dead 1977-5-1 Barton Hall'), null)
+  assert.equal(R.accusableClaim('5.1', 'gd77-5-1.sbd.miller.flac16'), null)
+  assert.equal(R.accusableClaim('5.1', 'Phish 1995 12-5-1 set'), null)
+  assert.equal(R.accusableClaim('5.1', 'Dead 1977/5-1 Cornell'), null)
+  // A date-named folder that also carries a real claim later still claims: the
+  // scan keeps going past the date rather than giving up on the whole name.
+  assert.equal(R.accusableClaim('5.1', 'Grateful Dead 1977-5-1 Barton Hall (5.1 mix)'), '5.1')
+})
+
 test('expectedCh maps only the claims that carry a number', () => {
   assert.equal(R.expectedCh('7.1'), 8)
   assert.equal(R.expectedCh('5.1'), 6)
@@ -257,6 +338,21 @@ test('verdict: 24-bit declared but 16 measured is padded', () => {
 test('verdict: lossless with a 16 kHz ceiling is likely transcoded', () => {
   const v = R.verdict({ declaredRate: 44100, declaredBits: 16, measuredBits: 16, ceilingHz: 16000, ext: 'flac' })
   assert.equal(v.kind, 'transcoded')
+})
+
+test('verdict: a sample rate of zero is unknown, not genuine', () => {
+  // num() maps the literal '0' to 0, not null, so `rate === null` never caught
+  // this. Six FLACs on this machine report sample_rate=0 and exit 0; with
+  // channels=6 the corruption gate in main.js does not fire either (it needs
+  // both zeroes), so this used to return { kind: 'genuine', text: 'genuine
+  // 24/?' } and the dossier painted a green tick on it.
+  const v = R.verdict({ declaredRate: 0, declaredBits: 24, measuredBits: 24, ceilingHz: 20000, ext: 'flac' })
+  assert.equal(v.kind, 'unknown')
+  assert.equal(v.text, 'could not measure this file')
+  assert.equal(R.verdict({ declaredRate: '0', declaredBits: 24, measuredBits: 24, ceilingHz: 20000, ext: 'flac' }).kind, 'unknown')
+  assert.equal(R.verdict({ declaredRate: null, declaredBits: 24, measuredBits: 24, ceilingHz: 20000, ext: 'flac' }).kind, 'unknown')
+  // A real rate is untouched.
+  assert.equal(R.verdict({ declaredRate: 44100, declaredBits: 16, measuredBits: 16, ceilingHz: 20000, ext: 'flac' }).kind, 'genuine')
 })
 
 test('verdict: a 24/96 that reaches 40 kHz is genuine', () => {
@@ -292,7 +388,11 @@ test('channelVerdict does NOT call the genuine Animals 5.1 release fake', () => 
   assert.equal(v.layoutRaw, '5.1(side)')
   assert.equal(v.lfeChannel, 4)
   assert.equal(v.complete, true)
-  assert.equal(v.text, 'All 6 channels carry sound — nothing is padded with silence. I only checked one track of {tracks}.')
+  // It also does not CONFIRM it. Channels 3-6 peak at -90.308734 dB — one LSB
+  // of 16-bit dither, inaudible — and saying "all 6 channels carry sound" about
+  // that is a claim the measurement will not support. The neutral empty text is
+  // the honest answer, and the verdict stays good either way.
+  assert.equal(v.text, '')
   // Isolated from the 90 s floor: the same peaks on a long track are still fine,
   // so it is the -inf rule holding the line here, not the duration guard.
   const long = R.channelVerdict(CV({
@@ -383,6 +483,86 @@ test('channelVerdict says surround-unverified when the read cannot carry an opin
   assert.equal(wrongCount.kind, 'surround-unverified', 'six blocks but astats counted five: no accusation')
   // No astats output at all is also the same cannot-tell.
   assert.equal(R.channelVerdict(CV({ claim: '5.1' })).kind, 'surround-unverified')
+})
+
+test('channelVerdict does not accuse a surround file that arrived truncated', () => {
+  // The proven false accusation. ffmpeg exits 0 on a FLAC cut mid-stream, so
+  // `if (stats.err)` in main.js never fires, and the container header still
+  // reports the full duration. This capture is a genuine 120.000 s 6-channel
+  // file whose surrounds enter at t=30 s, cut to 19.3 s of audio: six complete
+  // channel blocks, four of them -inf, and every guard in the padding rule
+  // satisfied.
+  const c = R.parseChannels(TRUNCATED)
+  assert.equal(c.channels, 6)
+  assert.equal(c.complete, true, 'the truncated read looks complete, which is the whole trap')
+  assert.deepEqual(c.perChannel.slice(2).map(x => x.peakDb), [-Infinity, -Infinity, -Infinity, -Infinity])
+  const decodedSec = R.parseSampleCount(TRUNCATED) / 48000
+  const input = {
+    channels: 6, channelLayout: '5.1(side)', claim: '5.1', codec: 'flac', atmos: false,
+    perChannel: c.perChannel, complete: c.complete, measuredChannels: c.channels,
+    durationSec: 120, siblingHint: false,
+  }
+  // Without the decoded length there is nothing to catch it, and this is the
+  // answer the app used to give about a genuine surround release.
+  assert.equal(R.channelVerdict(input).kind, 'padded-channels')
+  // With it, the honest answer.
+  const v = R.channelVerdict({ ...input, decodedSec })
+  assert.equal(v.kind, 'surround-unverified')
+  assert.equal(v.severity, 'plain')
+  assert.equal(v.text, '', 'it says nothing about fakery')
+  assert.equal(v.complete, false)
+  assert.equal(v.silentChannels, null)
+  assert.equal(v.fact, '6 channels (5.1)', 'the channel count is still stated')
+})
+
+test('channelVerdict accepts a decoded length that matches the header', () => {
+  // An intact file matches exactly — 86.665 s at 48000 Hz is 4,159,920 samples
+  // — so the 2% slack is slack, not a working tolerance, and a complete read
+  // still reaches a verdict.
+  const per = chans([-9.86, -Infinity, -Infinity, -Infinity, -Infinity, -Infinity])
+  const input = {
+    channels: 6, channelLayout: '5.1(side)', claim: '5.1', codec: 'flac',
+    perChannel: per, complete: true, measuredChannels: 6, durationSec: 300,
+  }
+  assert.equal(R.channelVerdict({ ...input, decodedSec: 300 }).kind, 'padded-channels')
+  assert.equal(R.channelVerdict({ ...input, decodedSec: 299 }).kind, 'padded-channels', '0.3% short is rounding')
+  assert.equal(R.channelVerdict({ ...input, decodedSec: 290 }).kind, 'surround-unverified', '3% short is a cut file')
+  // A missing decoded length is not evidence of anything, so it changes nothing.
+  assert.equal(R.channelVerdict({ ...input, decodedSec: null }).kind, 'padded-channels')
+  // Neither is a missing header duration: the 90 s floor already declines then.
+  assert.equal(R.channelVerdict({ ...input, durationSec: null, decodedSec: 20 }).kind, 'surround')
+})
+
+test('channelVerdict only says the channels carry sound when they measurably do', () => {
+  // Animals "Pigs On The Wing (Part One)": channels 3-6 at Peak -90.308734 /
+  // RMS -108 dB, one LSB of 16-bit dither. That is not "sound", and the app
+  // used to say it was. Failing the margin costs the sentence and nothing else
+  // — the verdict stays good, and no accusation is ever reachable from here.
+  const dither = chans([-9.86, -11.34, -90.31, -90.31, -90.31, -90.31])
+  const quiet = R.channelVerdict({
+    channels: 6, channelLayout: '5.1(side)', claim: '5.1', perChannel: dither,
+    complete: true, measuredChannels: 6, durationSec: 300, codec: 'flac',
+  })
+  assert.equal(quiet.kind, 'surround')
+  assert.equal(quiet.severity, 'good')
+  assert.equal(quiet.text, '')
+  // Animals "Dogs", the same release, a full-band track: the quietest non-LFE
+  // channel peaks at -14.913804 and the LFE at -31.488449.
+  const real = chans([-0.041718, 0.000265, -14.913804, -31.488449, -3.465414, -6.141519])
+  const loud = R.channelVerdict({
+    channels: 6, channelLayout: '5.1(side)', claim: '5.1', perChannel: real,
+    complete: true, measuredChannels: 6, durationSec: 1024.525, codec: 'flac',
+  })
+  assert.equal(loud.kind, 'surround')
+  assert.equal(loud.text,
+    'All 6 channels carry sound — nothing is padded with silence. I only checked one track of {tracks}.')
+  // LFE is outside the margin test, exactly as it is outside the liveness
+  // tally: a genuine mix may hold it near digital zero all track.
+  const quietLfe = chans([-1, -1, -3, -89, -5, -6])
+  assert.match(R.channelVerdict({
+    channels: 6, channelLayout: '5.1(side)', claim: '5.1', perChannel: quietLfe,
+    complete: true, measuredChannels: 6, durationSec: 300, codec: 'flac',
+  }).text, /^All 6 channels carry sound/)
 })
 
 test('channelVerdict reports a 5.1-listed folder whose track is plain stereo', () => {
@@ -514,12 +694,81 @@ test('siblingSurroundHint spots a file big enough to be the surround mix', () =>
   const sampled = { name: 'bonus.flac', size: 8e6, length: 90 }          // ~89 kB/s
   const big = { name: '01.flac', size: 250e6, length: 359 }              // ~696 kB/s
   assert.equal(R.siblingSurroundHint([sampled, big], sampled), true)
-  // No length, no rate, no hint - it must never invent one.
-  assert.equal(R.siblingSurroundHint([sampled, { name: '01.flac', size: 250e6 }], sampled), false)
   // A stereo sibling of ordinary size is not a hint.
   assert.equal(R.siblingSurroundHint([sampled, { name: '02.flac', size: 30e6, length: 340 }], sampled), false)
   assert.equal(R.siblingSurroundHint([sampled], sampled), false)
   assert.equal(R.siblingSurroundHint([sampled, { name: 'art.jpg', size: 250e6, length: 359 }], sampled), false)
+})
+
+test('siblingSurroundHint clears the 16-bit Blu-Ray rips it used to miss', () => {
+  // The floor used to be 400,000 B/s. Measured with ffprobe on 2026-09-20, not
+  // one genuine 16-bit Blu-Ray 5.1 track on this machine reaches that, so the
+  // hint was dead for the commonest real surround format: the quiet
+  // 'claim-unverified' outcome never fired and the app accused instead.
+  const sampled = { name: 'bonus.flac', size: 8164901, length: 86.665 }  // 94,212 B/s
+  const real = [
+    ['04 - San Tropez.flac', 49171162, 223.0],                      // 220,498 B/s
+    ['1-04 - Sheep.flac', 139111386, 618.74],                       // 224,830
+    ['1-03 - Pigs (Three Different Ones).flac', 161471272, 686.855], // 235,088
+    ['1-02 - Dogs.flac', 250229183, 1024.525],                      // 244,239
+    ['03 - Lucy In The Sky With Diamonds.flac', 61030086, 207.072],  // 294,729
+  ]
+  for (const [name, size, length] of real) {
+    const bps = size / length
+    assert.ok(bps < 400000, name + ' really does sit under the old floor (' + Math.round(bps) + ')')
+    assert.equal(R.siblingSurroundHint([sampled, { name, size, length }], sampled), true, name)
+  }
+  // The floor still rejects stereo. 16/44 stereo FLAC measured 52-115 kB/s over
+  // 390 files here; this is a 24/44 stereo track at the top of that spread.
+  assert.equal(R.siblingSurroundHint([sampled, { name: 'st.flac', size: 30e6, length: 200 }], sampled), false)
+})
+
+test('siblingSurroundHint works on size alone, because slskd often omits length', () => {
+  // A hint that needs `length` is a hint a stranger's client can switch off.
+  // Sizes always arrive, and inside one folder they carry the signal on their
+  // own: measured over 182 real album folders here, the largest file is at most
+  // 2.4x the file this code would sample in a stereo-only folder (95th
+  // percentile) and only 3 of 124 reached 4x.
+  const sampled = { name: 'bonus.flac', size: 18e6 }
+  const mix = { name: '01.flac', size: 181e6 }
+  assert.equal(R.siblingSurroundHint([sampled, mix], sampled), true,
+    'a 181 MB sibling beside an 18 MB sample, with no durations anywhere')
+  // Same pair, with the duration present: the answer must not depend on it.
+  assert.equal(R.siblingSurroundHint(
+    [{ ...sampled, length: 120 }, { ...mix, length: 300 }], { ...sampled, length: 120 }), true)
+  // An ordinary spread of stereo track sizes is still no hint, so the user's
+  // scar — a wholly stereo folder named for a 5.1 release — still gets warned
+  // about. 3x is under the 4x floor.
+  assert.equal(R.siblingSurroundHint([sampled, { name: '02.flac', size: 54e6 }], sampled), false)
+  // Nothing to compare against invents nothing.
+  assert.equal(R.siblingSurroundHint([{ name: 'a.flac' }, { name: 'b.flac' }], { name: 'a.flac' }), false)
+})
+
+test('slskdFailureReason tells a broken daemon apart from a peer saying no', () => {
+  // Every one of these used to read "The peer did not accept the download:
+  // slskd 500 on POST /transfers/downloads/<user>" — three wrong answers and a
+  // path the user has no use for.
+  const dead = new TypeError('fetch failed')
+  assert.equal(R.slskdFailureReason(dead), 'Papa could not reach Soulseek on this machine. Check that it is running.')
+  const gone = Object.assign(new Error('slskd 500 on POST /transfers/downloads/u'), { status: 500 })
+  assert.equal(R.slskdFailureReason(gone), 'Soulseek had a problem on this machine and could not start the download.')
+  const auth = Object.assign(new Error('x'), { status: 401 })
+  assert.equal(R.slskdFailureReason(auth), 'Papa could not sign in to Soulseek. Check the Soulseek settings.')
+  const busy = Object.assign(new Error('x'), { code: 'SLSKD_THROTTLED', throttled: true })
+  assert.equal(R.slskdFailureReason(busy), 'Soulseek is handling too many requests right now. Give it a minute and try again.')
+  const missing = Object.assign(new Error('x'), { status: 404 })
+  assert.equal(R.slskdFailureReason(missing), 'The peer is not online any more, or no longer has that file.')
+  const refused = Object.assign(new Error('x'), { status: 400 })
+  assert.equal(R.slskdFailureReason(refused), 'The peer did not accept the download.')
+  const twin = Object.assign(new Error('Dry run — POST ... was not performed'), { dryRun: true, code: 'DRY_RUN' })
+  assert.equal(R.slskdFailureReason(twin), 'This is a test copy of the app, so nothing was downloaded.')
+  // No sentence leaks an endpoint, a status number or the word slskd, and none
+  // of them is empty.
+  for (const e of [dead, gone, auth, busy, missing, refused, twin, undefined, null, {}]) {
+    const s = R.slskdFailureReason(e)
+    assert.ok(s.length > 10, JSON.stringify(s))
+    assert.ok(!/\/transfers|slskd|POST |\b[45]\d\d\b/.test(s), s)
+  }
 })
 
 test('isPcmFamily knows which codecs cannot understate their channel count', () => {

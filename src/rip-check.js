@@ -116,6 +116,37 @@ function parseAstats(text) {
   return { measuredBits: num(bits), dynamicRange: dr === undefined ? null : num(dr) }
 }
 
+// One band's mean_volume, out of a raw `highpass+volumedetect` stderr capture.
+//
+// This MUST carry the same '^\[[^\]]*\]' anchor every astats regex carries, and
+// for the same reason: volumedetect also logs at ffmpeg's info level, so the
+// input's tag dump shares the stream and is printed BEFORE the filter output. A
+// non-global .match() returns the FIRST hit, so an unanchored pattern reads the
+// peer's tag rather than the measurement. Reproduced on 2026-09-20 with
+//   ffmpeg -i in.flac -t 30 -metadata comment='mean_volume: -999.0 dB' forged.flac
+// the unanchored form returns '-999.0' and the anchored one '-84.3'. A peer
+// controls those tags, and -999 in every band flips the verdict to
+// 'transcoded'. The tag dump indents its lines, so a bracket at column zero is
+// out of a peer's reach.
+const RE_MEAN_VOLUME = /^\[[^\]]*\]\s+mean_volume:\s*(\S+)\s*dB\s*$/m
+
+function parseBandVolume(text) {
+  const m = String(text || '').match(RE_MEAN_VOLUME)
+  return m ? dbNum(m[1]) : null
+}
+
+// How many samples astats actually decoded, from the Overall block. Used to
+// catch a truncated download: ffmpeg exits 0 on a FLAC cut mid-stream, and the
+// container header still reports the full duration, so nothing else notices.
+function parseSampleCount(text) {
+  const s = String(text || '')
+  const m = s.match(new RegExp(RE_OVERALL.source, 'm'))
+  if (!m) return null
+  const n = s.slice(m.index + m[0].length)
+    .match(/^\[[^\]]*\]\s+Number of samples:\s*([\d.]+)\s*$/m)
+  return n ? num(n[1]) : null
+}
+
 function parseCeiling(text, floorDb = FLOOR_DB) {
   const s = String(text || '')
   const floor = num(floorDb) === null ? FLOOR_DB : Number(floorDb)
@@ -140,15 +171,28 @@ function floorFor(channels) {
   return FLOOR_DB - 10 * Math.log10(c / 2)     // 6ch -> -89.77, 8ch -> -91.02
 }
 
+// How many channels each of classify()'s labels actually describes. A guessed
+// label is only honest when it accounts for every channel measured, so this is
+// the check that stops a 16-channel file being announced as 7.1.
+const LABEL_CHANNELS = { mono: 1, stereo: 2, '4.0': 4, '5.0': 5, '5.1': 6, '6.1': 7, '7.1': 8 }
+
 // ffprobe's own name wins, with the parenthesised qualifier stripped for
 // display. classify() is the fallback only: it returns '7.1' for any count >= 8,
 // which would announce a measured 5.1.2 bed as 7.1. Do not write a third
 // channel->label mapping — format-badges and library-manage already disagree.
+//
+// ffprobe prints channel_layout=unknown for any mask it has no name for, so the
+// fallback is the ordinary path on a 9.1.4 bed or an object bed, not a rare one.
+// Measured 2026-09-20: a real 16-channel WAV reports channel_layout=unknown, and
+// classify() then called it '7.1' — the fact line read '16 channels (7.1)'. A
+// guessed label is therefore used only when its own channel count matches what
+// was measured; otherwise the bare count is printed with no label at all.
 function layoutLabel(channels, channelLayout) {
   const base = String(channelLayout || '').replace(/\(.*$/, '').trim()
   if (base && base.toLowerCase() !== 'unknown') return base
   const c = classify(channels)
-  return c === 'unknown' ? null : c
+  if (c === 'unknown') return null
+  return LABEL_CHANNELS[c] === (Number(channels) || 0) ? c : null
 }
 
 // astats never prints a channel name, so LFE position comes from ffmpeg's own
@@ -174,6 +218,26 @@ function lfeIndex(channels, channelLayout) {
 // detectSurround, so the accusing path gets a stricter claim of its own.
 const CLAIM_NUM = { '5.1': /5[._-]1/, '7.1': /7[._-]1/ }
 
+// Vocabulary that only ever sits beside a real surround claim. Deliberately
+// narrow: 'mix' and 'audio' are left out because a taper folder can carry them
+// next to a show date, and a word list that over-fires turns the date guard off
+// for exactly the names it exists to protect.
+const SURROUND_NEAR =
+  /^[._\- ]*(surround|surr|multichannel|multich|mch|blu[._\- ]?ray|dts|atmos|sacd|dvd[._\- ]?a|dvda|quad)\b/i
+
+// Does a date component run into this number through the number's own
+// separator? '1977-5-1', 'gd77-5-1' and '1995 12-5-1' all do; each puts a 2- or
+// 4-digit component immediately in front, joined by the same character the
+// token uses internally. A year that merely PRECEDES a separate surround token
+// does not: real surround names spell the year off with a different separator
+// ('..._2011_5.1_Surround_Mix...') or follow the token with a surround word
+// ('Artist.Album.2011.5.1.BluRay.FLAC').
+function dateComponentBefore(before, sep) {
+  if (/(?:^|\D)(?:\d{2}|\d{4})\/$/.test(before)) return true      // 1977/5-1
+  const esc = /[.\-]/.test(sep) ? '\\' + sep : sep
+  return new RegExp('(?:^|\\D)(?:\\d{2}|\\d{4})' + esc + '$').test(before)
+}
+
 function accusableClaim(label, text) {
   const s = String(text || '')
   if (label === 'ATMOS' || label === 'MCH') return label
@@ -183,33 +247,75 @@ function accusableClaim(label, text) {
   const g = new RegExp(re.source, 'gi')
   let m
   while ((m = g.exec(s)) !== null) {
+    const tok = m[0]                                                            // '5.1', '5-1', '5_1'
     const before = s.slice(Math.max(0, m.index - 12), m.index)
-    const after = s.slice(m.index + m[0].length, m.index + m[0].length + 6)
-    if (/\d[._\-/]$/.test(before)) continue                                    // 1977-5-1, 12-5-1
+    const after = s.slice(m.index + tok.length, m.index + tok.length + 24)
     if (/[vV]$/.test(before)) continue                                          // v5.1
     if (/\b(disc|disk|cd|vol|volume|part|pt|track|tr)[._\- ]*$/i.test(before)) continue
     if (/^[._\-/]\d/.test(after)) continue                                      // 5-1-77
     if (/^[._\- ]?(gb|mb|kb|tb)\b/i.test(after)) continue                       // 5.1GB
+    // The date guard is last, and a surround word right after the token
+    // overrides it. The old guard was a bare `\d[._\-/]$` on `before`, which
+    // dropped the claim whenever ANY digit preceded — the dominant real
+    // surround naming style. Measured on this disk 2026-09-20:
+    // 'Pink_Floyd.Wish_You_Were_Here_50_2011_5.1_Surround_Mix.BLURAY.FLAC.2025.401'
+    // returned null, so a stereo file inside a folder named for a 5.1 release
+    // produced no warning at all — the exact case this check exists to catch.
+    if (dateComponentBefore(before, tok[1]) && !SURROUND_NEAR.test(after)) continue
     return label
   }
   return null
 }
 
-// Does the folder hold a file big enough to be the surround mix the sampled
-// track isn't? Measured bytes-per-second here: 16/44 stereo ~88 kB/s, 24/96
-// stereo ~250 kB/s, 24/48 6ch ~520 kB/s, 24/96 6ch ~840 kB/s. This only ever
-// suppresses an accusation; it never creates one.
+// The bytes-per-second floor at which a sibling is big enough to be the
+// surround mix the sampled track isn't.
+//
+// Re-derived from measurement on 2026-09-20 (ffprobe duration against file size
+// over every multichannel FLAC in /mnt/data/MUSIC — 754 files). The old floor of
+// 400,000 cleared only 54% of them and NONE of the 16-bit Blu-Ray class the
+// user actually owns: Meddle "San Tropez" 220,498 B/s, Animals "Sheep" 224,830,
+// Animals "Pigs (Three Different Ones)" 235,088, Animals "Dogs" 244,239, Sgt.
+// Pepper "Lucy In The Sky With Diamonds" 294,729. The hint was therefore dead
+// for the commonest genuine surround format, so the gentle 'claim-unverified'
+// outcome never fired and the app accused instead. 180,000 is the 5th
+// percentile of those 754 files (95.6% clear it), sits 18% below the lowest of
+// the five named tracks, and still sits well above 16/44 stereo FLAC, which
+// measured 52-115 kB/s across 390 stereo files here.
+const SURROUND_BPS = 180000
+
+// slskd very often omits `length`, and with no duration there is no rate to
+// compute — which killed the hint no matter how decisive the sizes were. Size
+// alone still carries the signal, because size is the one field slskd always
+// supplies. Measured over 182 real album folders on this disk: in stereo-only
+// folders the largest file is at most 2.4x the file this code would sample
+// (95th percentile), and only 3 of 124 reached 4x; in folders that do hold a
+// surround mix, 13 of 58 reached it. A sibling four times the sampled file is
+// therefore big enough to be the mix, while the user's actual scar — a wholly
+// stereo folder named for a 5.1 release — still gets its warning.
+const SURROUND_SIZE_RATIO = 4
+
+// This only ever SUPPRESSES an accusation; it never creates one. Every arm
+// below is therefore allowed to be generous.
 function siblingSurroundHint(files, sampled) {
   const bps = f => {
     const s = Number(f && f.size), l = Number(f && f.length)
     return (Number.isFinite(s) && Number.isFinite(l) && l > 30) ? s / l : null
   }
+  const size = f => {
+    const s = Number(f && f.size)
+    return Number.isFinite(s) && s > 0 ? s : null
+  }
   const mine = bps(sampled)
+  const mySize = size(sampled)
   return (files || []).some(f => {
     if (f === sampled) return false
     if (!AUDIO_RE.test(f.name || f.filename || '')) return false
     const b = bps(f)
-    return b !== null && b >= 400000 && (mine === null || b >= mine * 2)
+    // Rate is the sharper test, so it wins whenever the sibling carries one.
+    if (b !== null) return b >= SURROUND_BPS && (mine === null || b >= mine * 2)
+    // No duration: fall back to relative size, which is always supplied.
+    const s = size(f)
+    return s !== null && mySize !== null && s >= mySize * SURROUND_SIZE_RATIO
   })
 }
 
@@ -258,7 +364,12 @@ function fmt(bits, rate) {
 function verdict({ declaredRate, declaredBits, measuredBits, ceilingHz, ext }) {
   const lossless = /^(flac|wav|aiff?|aif|ape|wv|alac|dsf|dff)$/i.test(String(ext || ''))
   const rate = num(declaredRate), bits = num(declaredBits), mbits = num(measuredBits), ceil = num(ceilingHz)
-  if (ceil === null || rate === null) return { kind: 'unknown', text: 'could not measure this file' }
+  // `rate <= 0` is its own case, not a missing one. num() maps the literal '0'
+  // to 0 rather than null, so a file ffprobe read as sample_rate=0 used to sail
+  // past this gate: measured 2026-09-20, declaredRate 0 with declaredBits 24
+  // returned { kind: 'genuine', text: 'genuine 24/?' } and the dossier painted a
+  // green tick on it. Insufficient data must answer 'unknown'.
+  if (ceil === null || rate === null || rate <= 0) return { kind: 'unknown', text: 'could not measure this file' }
   // Declared hi-res but nothing above the CD band: an upsample.
   if (rate >= 88200 && ceil <= 22000) {
     return { kind: 'upsampled', text: 'upsampled, really ~' + fmt(mbits && mbits <= 16 ? 16 : bits, 44100) }
@@ -288,8 +399,25 @@ const SMALLEST_TAIL = ' This was the smallest file in the folder, which on a sur
 // The channel answer. Separate from verdict() on purpose: verdict()'s five
 // kinds map straight onto the CSS class slr-rip-${kind} and drive the tick/warn
 // glyph, so a new kind there would paint a warning triangle on a good 5.1 rip.
+// A decoded run shorter than this fraction of the header duration means the
+// file was cut off, so the per-channel read describes only its opening. An
+// intact file matches exactly — measured 2026-09-20 on a 120.000 s 6-channel
+// FLAC, astats reported 'Number of samples: 5760000' against 48000 Hz, i.e.
+// 120.000 s — so 2% is pure slack, not a working tolerance.
+const DECODE_SHORTFALL = 0.98
+
+// How far above the digital noise floor every non-LFE channel must peak before
+// the app will say out loud that the channels carry sound. The 16-bit one-LSB
+// floor measures -90.308734 dBFS (Animals "Pigs On The Wing (Part One)",
+// channels 3-6, whole track). -60 dBFS is 30 dB above that and 45 dB below the
+// quietest non-LFE channel measured on a genuine full-band Blu-Ray 5.1 track
+// here (Animals "Dogs", channel 3, Peak -14.913804). Failing this margin costs
+// only the confirming sentence; it never produces an accusation.
+const CONFIRM_FLOOR_DB = -60
+
 function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
-  measuredChannels, codec, atmos, durationSec, siblingHint, sampledSmallest } = {}) {
+  measuredChannels, codec, atmos, durationSec, siblingHint, sampledSmallest,
+  decodedSec } = {}) {
   const ch = Number(channels)
   const layoutRaw = layoutOf(channelLayout)
   const claimLabel = claim == null ? null : String(claim)
@@ -323,7 +451,20 @@ function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
   const lfe = lfeIndex(ch, layoutRaw)
   const blocks = Array.isArray(perChannel) ? perChannel : []
   const agreed = measured === ch && ch > 0
-  const read = agreed && blocks.length === ch && !!complete
+  // A truncated download decodes clean: ffmpeg exits 0 on a FLAC cut mid-stream
+  // and the container header still reports the full duration, so `stats.err` in
+  // main.js never fires. Reproduced 2026-09-20 on a genuine 120 s 5.1 file whose
+  // surrounds enter at t=30 s, cut to 19.3 s of audio: ffprobe still said
+  // duration=120.000000, astats still returned six complete channel blocks, and
+  // the rules below returned kind='padded-channels' severity='warn' — a
+  // confident false accusation against a genuine surround release. Comparing the
+  // duration astats actually decoded against the header's answer is what catches
+  // it, and a disagreement demotes the read to the explicit cannot-tell.
+  const headerSec = num(durationSec)
+  const playedSec = num(decodedSec)
+  const truncated = headerSec !== null && headerSec > 0 && playedSec !== null &&
+    playedSec < headerSec * DECODE_SHORTFALL
+  const read = agreed && blocks.length === ch && !!complete && !truncated
   // A channel counts as silent ONLY when its whole-track Peak level dB is
   // literally -inf. The one genuine near-miss measured here (Animals ch3-6, an
   // official Blu-Ray 5.1 remix) sits at -90.308734 over the whole track; the
@@ -339,7 +480,17 @@ function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
     return !!c && c.peakDb != null && c.peakDb !== -Infinity
   }).length
   const surroundSilent = surroundIdx.length > 0 && surroundIdx.every(i => silent.includes(i))
-  const dur = num(durationSec)
+  // Every channel the confirming sentence would speak for. LFE is left out for
+  // the same reason it is left out of the liveness tally: a genuine mix may hold
+  // it at digital zero all track.
+  const spokenFor = []
+  for (let i = 1; i <= ch; i++) if (i !== lfe) spokenFor.push(i)
+  const wellAboveFloor = spokenFor.length > 0 && spokenFor.every(i => {
+    const c = blocks.find(x => x && x.index === i)
+    return !!c && typeof c.peakDb === 'number' && Number.isFinite(c.peakDb) &&
+      c.peakDb > CONFIRM_FLOOR_DB
+  })
+  const dur = headerSec
   const fact = factOf(ch, label)
   const base = {
     label,
@@ -403,9 +554,15 @@ function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
   // the per-channel data cannot carry an opinion.
   if (ch >= 4 && !read) return out('surround-unverified', 'plain', base)
 
-  // 9.
+  // 9. The confirming sentence needs more than "not literally -inf". On the
+  // genuine Animals "Pigs On The Wing (Part One)" channels 3-6 sit at Peak
+  // -90.308734 / RMS -108 dB — one LSB of dither, inaudible — and the old rule
+  // called that "carry sound". The ACCUSING rule above is untouched and stays as
+  // conservative as it was (it still must not accuse that track); only the claim
+  // made out loud is gated, and failing the gate falls back to the neutral empty
+  // text, never to a warning.
   if (ch >= 4 && claimLabel !== null) {
-    const clean = read && silent.length === 0
+    const clean = read && silent.length === 0 && wellAboveFloor
     return out('surround', 'good', Object.assign({}, base, {
       text: clean ? 'All ' + ch + ' channels carry sound — nothing is padded with silence.' + tracks : '',
     }))
@@ -421,6 +578,32 @@ function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
 
   // 11. ch === 3 with no claim, or a count layoutLabel cannot name.
   return out('other', 'plain', base)
+}
+
+// Why the download request failed, in one plain sentence.
+//
+// Every failure used to be reported as the peer's refusal and every one of them
+// printed the internal endpoint, so a dead local daemon, an expired token and a
+// rate-limit all read as "The peer did not accept the download: slskd 500 on
+// POST /transfers/downloads/<user>". Three of those four facts were wrong and
+// the fourth was a path the user has no use for. slskdFetch tags what it
+// throws, so the cases can be told apart: `throttled` on a 429, `status` on any
+// other non-2xx, `dryRun` on a refused twin write, and nothing at all when
+// fetch itself failed — which is what a daemon that is not running looks like.
+function slskdFailureReason(err) {
+  const e = err || {}
+  const status = Number(e.status)
+  if (e.dryRun || e.code === 'DRY_RUN') return 'This is a test copy of the app, so nothing was downloaded.'
+  if (e.throttled || e.code === 'SLSKD_THROTTLED' || status === 429) {
+    return 'Soulseek is handling too many requests right now. Give it a minute and try again.'
+  }
+  if (status === 401 || status === 403) {
+    return 'Papa could not sign in to Soulseek. Check the Soulseek settings.'
+  }
+  if (status === 404) return 'The peer is not online any more, or no longer has that file.'
+  if (status >= 500) return 'Soulseek had a problem on this machine and could not start the download.'
+  if (status >= 400) return 'The peer did not accept the download.'
+  return 'Papa could not reach Soulseek on this machine. Check that it is running.'
 }
 
 // ffmpeg argv for one ceiling band: everything below `hz` removed, then how
@@ -458,4 +641,6 @@ module.exports = {
   BANDS, FLOOR_DB, MAX_SAMPLE_BYTES,
   parseChannels, channelVerdict, floorFor, layoutLabel, lfeIndex, accusableClaim, expectedCh,
   siblingSurroundHint, pickTrackInfo, dbNum, isPcmFamily,
+  parseBandVolume, parseSampleCount, slskdFailureReason,
+  SURROUND_BPS, SURROUND_SIZE_RATIO, CONFIRM_FLOOR_DB, DECODE_SHORTFALL,
 }

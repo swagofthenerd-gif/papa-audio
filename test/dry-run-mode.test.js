@@ -54,6 +54,7 @@ const ARGS = {
   'tag-write-batch': { edits: [{ filePath: '/mnt/data/MUSIC/a.flac' }] },
   'library-set-artwork': { albumId: 'a1', sourcePath: '/a.jpg' },
   'papa-import-all': { path: '/x.json' },
+  'slsk-verify-rip': { username: 'u', folderPath: 'p', files: [{ name: 'a.flac', size: 1e6, length: 300 }] },
 }
 
 // The one effectful call each handler must reach when the dry run is OFF, and
@@ -93,6 +94,23 @@ const EFFECT = {
   'tag-write-batch': 'flacTags.writeBatch',
   'library-set-artwork': 'spawn',
   'papa-import-all': 'fs.readFileSync',
+  'slsk-verify-rip': 'slskdFetch',
+}
+
+// Module-level constants a handler body does ARITHMETIC on. Everything else the
+// sandbox leaves as a recording stub, but a stub cannot be coerced to a number:
+// `Date.now() + stub` throws on the primitive conversion, and the live run then
+// dies before it reaches the effectful call this file is watching for. Values
+// are read out of main.js rather than retyped, so a changed constant cannot
+// leave the sandbox describing a version of the handler that no longer exists.
+function mainConstant(name) {
+  const m = MAIN.match(new RegExp('^const ' + name + ' = ([\\d *]+)$', 'm'))
+  assert.ok(m, name + ' is no longer a numeric constant in main.js')
+  return m[1].split('*').reduce((a, b) => a * Number(b.trim()), 1)
+}
+
+const GLOBALS = {
+  'slsk-verify-rip': { RIP_DEADLINE_MS: mainConstant('RIP_DEADLINE_MS') },
 }
 
 function isRefusal(r) {
@@ -104,10 +122,20 @@ function isRefusal(r) {
 
 for (const channel of GATED_CHANNELS) {
   test(`${channel} refuses in a dry run and touches nothing`, async () => {
-    const run = await runHandler(channel, { dryRun: true, args: ARGS[channel] })
+    const run = await runHandler(channel, { dryRun: true, args: ARGS[channel], globals: GLOBALS[channel] })
     assert.ok(isRefusal(run.result),
       `${channel} answered ${JSON.stringify(run.result)} instead of a dry-run refusal`)
-    assert.deepStrictEqual(Object.keys(run.result).sort(), ['dryRun', 'error', 'ok'])
+    // The refusal is exactly {ok, error, dryRun}. One handler adds `reason`,
+    // because its own contract is {ok, reason} and the dossier reads reason on
+    // every other exit it has; when it is there it must repeat `error`
+    // verbatim, never say something different.
+    const keys = Object.keys(run.result).sort()
+    if (keys.includes('reason')) {
+      assert.deepStrictEqual(keys, ['dryRun', 'error', 'ok', 'reason'])
+      assert.strictEqual(run.result.reason, run.result.error)
+    } else {
+      assert.deepStrictEqual(keys, ['dryRun', 'error', 'ok'])
+    }
     assert.strictEqual(run.error, null, `${channel} threw: ${run.error && run.error.message}`)
     // The point of the whole exercise: the body did not run. Not one call.
     assert.deepStrictEqual(run.calls, [],
@@ -119,7 +147,7 @@ for (const channel of GATED_CHANNELS) {
 
 for (const channel of GATED_CHANNELS) {
   test(`${channel} is untouched when the dry run is off`, async () => {
-    const run = await runHandler(channel, { dryRun: false, args: ARGS[channel] })
+    const run = await runHandler(channel, { dryRun: false, args: ARGS[channel], globals: GLOBALS[channel] })
     assert.ok(!isRefusal(run.result),
       `${channel} refused even though the dry run is off`)
     const want = EFFECT[channel]
@@ -196,7 +224,7 @@ test('the dry run is off unless PAPA_DRY_RUN is exactly "1"', () => {
 test('with the variable unset, no handler anywhere produces a refusal', async () => {
   const off = predicateUnder({})
   for (const channel of GATED_CHANNELS) {
-    const run = await runHandler(channel, { dryRun: off, args: ARGS[channel] })
+    const run = await runHandler(channel, { dryRun: off, args: ARGS[channel], globals: GLOBALS[channel] })
     assert.ok(!isRefusal(run.result),
       `${channel} refused with PAPA_DRY_RUN unset: ${JSON.stringify(run.result)}`)
   }
@@ -206,7 +234,7 @@ test('with the variable unset, no handler anywhere produces a refusal', async ()
 
 test('every refusal says in plain words what did not happen', async () => {
   for (const channel of GATED_CHANNELS) {
-    const run = await runHandler(channel, { dryRun: true, args: ARGS[channel] })
+    const run = await runHandler(channel, { dryRun: true, args: ARGS[channel], globals: GLOBALS[channel] })
     assert.match(run.result.error, /^Dry run — .+ was not performed$/,
       `${channel}: ${run.result.error}`)
   }

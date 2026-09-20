@@ -1,0 +1,61 @@
+Input #0, flac, from 'forged.flac':
+  Metadata:
+    comment         : mean_volume: -999.0 dB
+    JR_DATE         : 44820
+    TOOL NAME       : Media Center
+    TOOL VERSION    : 26.0.107
+    ALBUM           : Animals
+    track           : 1
+    title           : Pigs on the Wing (Part One)
+    ARTIST          : Pink Floyd
+    GENRE           : Progressive Rock
+    album_artist    : Pink Floyd
+    DATE            : 1977-01-21
+    encoder         : Lavf62.12.102
+  Duration: 00:00:30.00, start: 0.000000, bitrate: 1116 kb/s
+  Stream #0:0: Audio: flac, 48000 Hz, 5.1(side), s16
+  Stream #0:1: Video: png, rgb24(pc, gbr/unknown/unknown), 1000x1000, 90k tbr, 90k tbn (attached pic)
+    Metadata:
+      comment         : Cover (front)
+[Parsed_volumedetect_1 @ 0x55cce2b22c00] n_samples: 0
+Stream mapping:
+  Stream #0:0 -> #0:0 (flac (native) -> pcm_s16le (native))
+Press [q] to stop, [?] for help
+Output #0, null, to 'pipe:':
+  Metadata:
+    comment         : mean_volume: -999.0 dB
+    JR_DATE         : 44820
+    TOOL NAME       : Media Center
+    TOOL VERSION    : 26.0.107
+    ALBUM           : Animals
+    track           : 1
+    title           : Pigs on the Wing (Part One)
+    ARTIST          : Pink Floyd
+    GENRE           : Progressive Rock
+    album_artist    : Pink Floyd
+    DATE            : 1977-01-21
+    encoder         : Lavf62.12.102
+  Stream #0:0: Audio: pcm_s16le, 48000 Hz, 5.1(side), s16, 4608 kb/s
+    Metadata:
+      encoder         : Lavc62.28.102 pcm_s16le
+[Parsed_volumedetect_1 @ 0x7f2524004c80] n_samples: 8640000
+[Parsed_volumedetect_1 @ 0x7f2524004c80] mean_volume: -84.3 dB
+[Parsed_volumedetect_1 @ 0x7f2524004c80] max_volume: -48.4 dB
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_48db: 3
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_49db: 9
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_50db: 12
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_51db: 15
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_52db: 29
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_53db: 42
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_54db: 75
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_55db: 170
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_56db: 209
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_57db: 313
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_58db: 526
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_59db: 675
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_60db: 785
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_61db: 1242
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_62db: 2029
+[Parsed_volumedetect_1 @ 0x7f2524004c80] histogram_63db: 3300
+[out#0/null @ 0x55cce2b20840] video:0KiB audio:16875KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+size=N/A time=00:00:30.00 bitrate=N/A speed=1.38e+03x elapsed=0:00:00.02    
