@@ -23,7 +23,8 @@ function limits(stored) {
   const { fns } = liftFns(
     ['_slskUploadLimit', '_slskSpeedLimitKiB', '_slskUploadLimitText', '_slskNumberOrNull'], {
       store: { get: (_k, d) => (stored === undefined ? d : stored) },
-    }, ['SLSK_UPLOAD_SLOTS_MIN', 'SLSK_UPLOAD_SLOTS_MAX', 'SLSK_UPLOAD_SLOTS_DEFAULT'])
+    }, ['SLSK_UPLOAD_SLOTS_MIN', 'SLSK_UPLOAD_SLOTS_MAX', 'SLSK_UPLOAD_SLOTS_DEFAULT',
+      'SLSK_UPLOAD_MBPS_MAX'])
   // The answer is built inside the vm context, so it belongs to a different
   // realm's Object and would never be reference-equal. Copied out once, here,
   // rather than every assertion having to remember.

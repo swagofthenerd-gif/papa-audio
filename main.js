@@ -141,8 +141,6 @@ const IPC_TIMEOUT_OVERRIDES = {
   'add-music-folder': 0,
   'library-pick-artwork': 0,
   'slsk-set-download-dir': 0,
-  // Restarts slskd; not a per-request deadline (roadmap 137).
-  'slsk-share-mode-set': 0,
   // The folder list's Apply: a full stop/start plus a share rescan, which is
   // minutes on a large library.
   'slsk-share-folders-set': 0,
@@ -1473,6 +1471,85 @@ function _slskShareDirs(musicFolders, downloadDir) {
   return out
 }
 
+// ── The guard on what may go out ─────────────────────────────────────────────
+// src/slsk-share.js is pure string work, so a symlink walks straight through
+// it: a folder called "myhome" pointing at /home/shaharyar reads as an
+// ordinary music folder. This is the half that follows the link, and it lives
+// here because it is the only half that touches the disk.
+//
+// A folder that is not there cannot be resolved. The path comes back unchanged
+// and the string judgement stands on its own, which is right: an absent folder
+// shares nothing anyway, and the row in Settings says it is missing.
+function _slskRealPath(p) {
+  try { return fs.realpathSync(p) } catch (_) { return p }
+}
+
+function _slskRefusalOpts() {
+  let home = ''
+  try { home = app.getPath('home') } catch (_) { home = '' }
+  return { home, slskdDir: SLSKD_DIR }
+}
+
+// The real guard on what strangers can see. The folder chooser's refusal is a
+// convenience — it only covers the one route where a person picks a folder in
+// a dialog. This is the predicate run on EVERY folder on its way into the
+// stored selection, whatever put it there.
+function _slskShareRefusal(dir) {
+  return slskShare.pickRefusal(dir, _slskRefusalOpts(), _slskRealPath)
+}
+
+// The same judgement for a library folder, worded as a library folder. Adding
+// a music folder is not sharing it — but every music folder becomes a tickable
+// row in the share list, so an unguarded add is a second route to making /
+// shareable.
+function _slskMusicFolderRefusal(dir) {
+  return slskShare.musicFolderRefusal(dir, _slskRefusalOpts(), _slskRealPath)
+}
+
+// Take a folder off the share list because it has stopped being part of the
+// library. The old three-way mode was DYNAMIC — it named "the first music
+// folder", so removing that folder changed what went out by itself. The ticked
+// list is a snapshot of paths, so nothing prunes it unless this does, and a
+// folder he deliberately removed from his library would otherwise stay shared
+// with strangers for good.
+//
+// `before` is what was going out a moment ago, read by the caller BEFORE it
+// touched musicFolders: the migration behind _slskShareSelection reads
+// musicFolders, so running it after the removal would freeze a different folder
+// than the one that is live.
+//
+// Only the exact folder is pruned. A subfolder of it that he ticked separately
+// is a choice he made on its own and is not undone by this.
+async function _slskUnshareFolder(folderPath, before) {
+  const gone = slskShare.normalisePath(folderPath)
+  const quiet = { pruned: false, changed: false, restarted: false }
+  if (!gone) return quiet
+  const selection = _slskShareSelection()
+  const kept = selection.filter(p => slskShare.normalisePath(p) !== gone)
+  if (kept.length === selection.length) return quiet
+  store.set('slskShareFolders', kept)
+  console.log('[papa] stopped sharing ' + gone + ': it is not a music folder any more')
+  const after = _slskShareLive()
+  // Unticking a folder that was covered by a parent, or one that was already
+  // missing, changes the list without changing one byte of what goes out. No
+  // config rewrite, no restart, no three-minute rescan for nothing.
+  if ((before || []).join('\n') === after.join('\n')) {
+    return { pruned: true, changed: false, restarted: false }
+  }
+  const cfg = store.get('slskConfig', {})
+  writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
+  if (!(_slskEnabled() && (slskdProc || slskdReady))) {
+    return { pruned: true, changed: true, restarted: false }
+  }
+  stopSlskd()
+  try { await startSlskd() } catch (e) {
+    console.error('[papa] slskd restart after a folder was unshared:',
+      String(e && e.message || e))
+    return { pruned: true, changed: true, restarted: false }
+  }
+  return { pruned: true, changed: true, restarted: true }
+}
+
 // ── How hard other people may pull on this connection ────────────────────────
 // slskd's own defaults are ten upload slots and no speed limit at all
 // (--upload-slots 10, --upload-speed-limit 2147483647), and the app never wrote
@@ -1488,6 +1565,12 @@ function _slskShareDirs(musicFolders, downloadDir) {
 const SLSK_UPLOAD_SLOTS_MIN = 1
 const SLSK_UPLOAD_SLOTS_MAX = 20
 const SLSK_UPLOAD_SLOTS_DEFAULT = 4
+// The speed box had no ceiling at all while the slots box had one, so a
+// mistyped 100000 went through as a real number and slskd's speed_limit came
+// out at 97,656,250 KiB/s — a cap so far above any line that it is the same as
+// no cap, under a sentence claiming he had one. 100 MB/s is 800 megabits, well
+// past the fastest home upstream, so nothing real is cut off by it.
+const SLSK_UPLOAD_MBPS_MAX = 100
 
 // A number the caller actually gave, or nothing. `null`, `''` and `undefined`
 // all mean "not given" — Number(null) is 0, and taking that at face value would
@@ -1514,6 +1597,7 @@ function _slskUploadLimit(patch) {
   let mbps = _slskNumberOrNull(p.mbps)
   if (mbps === null) mbps = _slskNumberOrNull(stored.mbps)
   if (mbps === null || mbps <= 0) mbps = 0
+  if (mbps > SLSK_UPLOAD_MBPS_MAX) mbps = SLSK_UPLOAD_MBPS_MAX
   return { slots, mbps }
 }
 
@@ -1552,6 +1636,29 @@ function _slskOffUntil() {
   if (_slskEnabled()) return null
   const until = store.get('slskdOffUntil', null)
   return until ? Number(until) : null
+}
+
+// What a handler answers when he asks it to do something over Soulseek and
+// Soulseek is off. A plain sentence with `off: true` next to it, never a
+// rethrown daemon error: "Connection refused" reads as a fault, and this is
+// not a fault.
+function _SLSK_OFF_DOWNLOAD() {
+  return {
+    ok: false,
+    off: true,
+    error: 'Soulseek is off. Turn it back on in Settings → Soulseek to download.',
+  }
+}
+
+// Same thing for the handlers whose contract is {ok, reason} rather than
+// {ok, error} — the rip check reads `reason` on every one of its exits.
+function _SLSK_OFF_REASON(what) {
+  return {
+    ok: false,
+    off: true,
+    reason: 'Soulseek is off. Turn it back on in Settings → Soulseek to ' +
+      what + '.',
+  }
 }
 
 function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {}) {
@@ -5287,11 +5394,33 @@ ipcMain.handle('get-yt-recent', () => store.get('ytRecentAlbums', []))
 ipcMain.on('save-yt-recent', (_, arr) => store.set('ytRecentAlbums', arr))
 
 // ── Folder management ────────────────────────────────────────────────────────
+// Every music folder becomes a tickable row in the Soulseek share list, so an
+// unguarded "add folder" is a second route to making / or ~/.ssh shareable.
+// Both add paths run the same predicate the share list runs, worded for a
+// library folder. The sentence goes out as a message box rather than a return
+// value because these two channels answer with the folder array itself, and
+// three call sites in the renderer read it as one.
+function _refuseMusicFolder(refusal) {
+  console.warn('[papa] refused a music folder: ' + refusal.error)
+  try {
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: "That folder can't be a music folder",
+      message: refusal.error,
+      buttons: ['OK'],
+    })
+  } catch (_) {}
+}
+
 ipcMain.handle('add-music-folder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'], title: 'Add Music Folder'
   })
   if (!r.canceled && r.filePaths[0]) {
+    const refusal = _slskMusicFolderRefusal(r.filePaths[0])
+    // Answered like a cancel: the three call sites all treat a falsy answer as
+    // "he changed his mind", and the message box has already said why.
+    if (refusal) { _refuseMusicFolder(refusal); return null }
     const folders = store.get('musicFolders', [])
     if (!folders.includes(r.filePaths[0])) {
       folders.push(r.filePaths[0])
@@ -5308,6 +5437,8 @@ ipcMain.handle('add-music-folder-path', (_, folderPath) => {
   try {
     if (!fs.statSync(folderPath).isDirectory()) return store.get('musicFolders', [])
   } catch (_) { return store.get('musicFolders', []) }
+  const refusal = _slskMusicFolderRefusal(folderPath)
+  if (refusal) { _refuseMusicFolder(refusal); return store.get('musicFolders', []) }
   const folders = store.get('musicFolders', [])
   if (!folders.includes(folderPath)) {
     folders.push(folderPath)
@@ -5318,9 +5449,22 @@ ipcMain.handle('add-music-folder-path', (_, folderPath) => {
 })
 
 ipcMain.handle('remove-music-folder', (_, folderPath) => {
+  // Read what is going out right now BEFORE musicFolders changes underneath
+  // it: _slskShareSelection migrates an old store by reading musicFolders, and
+  // migrating after the removal would freeze the wrong folder.
+  let before = []
+  try { before = _slskShareLive() } catch (_) { before = [] }
   const folders = store.get('musicFolders', []).filter(f => f !== folderPath)
   store.set('musicFolders', folders)
   setupLibraryWatcher()
+  // A folder he took out of his library must stop being offered to strangers.
+  // Not awaited: the prune and the config rewrite are the synchronous half and
+  // are already done by the time this returns, so what goes out is correct the
+  // moment the handler answers. Only the daemon restart is left running behind
+  // it, and making him wait minutes for that before the folder disappears from
+  // the list would be a worse lie than the one being fixed.
+  _slskUnshareFolder(folderPath, before).catch(e =>
+    console.error('[papa] could not unshare the removed folder:', String(e && e.message || e)))
   return folders
 })
 
@@ -8404,6 +8548,10 @@ ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
   // The single most forbidden action on a QA twin. slskdFetch refuses the POST
   // anyway; this is here so the renderer gets a sentence instead of a throw.
   if (DRY_RUN) return _dryRunRefusal('starting a Soulseek download')
+  // Ungated until now: it POSTed a transfer to a daemon he had switched off,
+  // and then rethrew the daemon's own error, so the renderer told him the
+  // download had failed instead of telling him Soulseek was off.
+  if (!_slskEnabled()) return _SLSK_OFF_DOWNLOAD()
   try {
     const res = await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`,
       [{ filename, size }])
@@ -9067,7 +9215,14 @@ function dlReconcileMissing(state, key, live, cfg, now, lostTrack) {
   return 'abandoned'
 }
 
+// The off gate belongs on the TICK, not on dlStart(). dlStart only guards the
+// four-second interval; five handlers — enqueue, add-source, respread, unbench
+// and prioritise — call dlTick directly the moment he presses a button, and
+// every one of them reached straight past the off switch and dispatched
+// transfers to a daemon he had switched off. Queueing while off is fine and
+// stays fine; sending is what stops.
 async function dlTick() {
+  if (!_slskEnabled()) return
   if (dlTicking) {
     const stuckFor = Date.now() - _dlTickStartedAt
     if (stuckFor > DL_TICK_DEADLINE_MS) {
@@ -10789,8 +10944,34 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   })
   if (result.canceled || !result.filePaths.length) return { ok: false }
   const downloadDir = result.filePaths[0]
+  // Read (and migrate, if it never has been) the ticked list while the OLD
+  // download folder is still the stored one. His real stored mode is
+  // 'downloads', so migrating after the move would freeze the selection on a
+  // folder he has just walked away from.
+  const from = slskShare.normalisePath(_downloadDir())
+  const selection = _slskShareSelection()
   const cfg = store.get('slskConfig', {})
   store.set('slskConfig', { ...cfg, downloadDir })
+  // The ticked list is a snapshot of paths, not the word "downloads". Without
+  // this, moving the download folder silently keeps sharing the old one and
+  // silently stops sharing the new one — the opposite of what he asked for on
+  // both counts. If the folder he was leaving was ticked, the tick follows it.
+  const to = slskShare.normalisePath(downloadDir)
+  if (from && to && from !== to &&
+      selection.some(p => slskShare.normalisePath(p) === from)) {
+    const moved = []
+    const seen = Object.create(null)
+    for (const p of selection) {
+      const n = slskShare.normalisePath(p)
+      const next = n === from ? to : n
+      if (!next || seen[next]) continue
+      seen[next] = true
+      moved.push(next)
+    }
+    store.set('slskShareFolders', moved)
+    console.log('[papa] the download folder moved and its tick moved with it: ' +
+      from + ' -> ' + to)
+  }
   writeSlskdConfig({ ...cfg, downloadDir })
   // slskd reads its download folder once, at startup. Writing the config and
   // stopping there meant the newly picked folder did nothing until the next
@@ -10809,33 +10990,13 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   return { ok: true, downloadDir, restarted: false }
 })
 
-// The old three-way dropdown. Kept working while the new folder list is being
-// built on top of it, and it now writes the new key as well as the old one, so
-// the two views of the same setting can never drift apart. It is deleted with
-// the markup that drives it.
-ipcMain.handle('slsk-share-mode-get', () => {
-  const mode = slskShare.normalise(store.get('slskShareMode', slskShare.DEFAULT))
-  const dirs = slskShare.shareDirs(mode, store.get('musicFolders', []), _downloadDir())
-  return { mode, dirs, text: slskShare.describe(mode, dirs), modes: slskShare.MODES }
-})
-ipcMain.handle('slsk-share-mode-set', async (_, { mode }) => {
-  if (DRY_RUN) return _dryRunRefusal('changing what is shared')
-  const m = slskShare.normalise(mode)
-  store.set('slskShareMode', m)
-  store.set('slskShareFolders',
-    slskShare.fromLegacyMode(m, store.get('musicFolders', []), _downloadDir()))
-  const cfg = store.get('slskConfig', {})
-  writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
-  let restarted = false
-  if (_slskEnabled() && (slskdProc || slskdReady)) {
-    stopSlskd()
-    try { await startSlskd(); restarted = true } catch (e) {
-      console.error('[papa] slskd restart after share change:', String(e && e.message || e))
-    }
-  }
-  const dirs = slskShare.shareDirs(m, store.get('musicFolders', []), _downloadDir())
-  return { ok: true, mode: m, dirs, text: slskShare.describe(m, dirs), restarted }
-})
+// The old three-way dropdown had two handlers here and they outlived the markup
+// that drove them. Nothing in the UI called them any more — but IPC is not the
+// UI. Anything that reached 'slsk-share-mode-set' wrote the old key AND
+// overwrote the whole ticked list from it, silently replacing folders he chose
+// with whatever the old mode table says. Both handlers and both preload
+// bindings are deleted. slskShareMode itself stays in the store, read by
+// nothing except the one-time migration in _slskShareSelection.
 
 // ── The folder list ──────────────────────────────────────────────────────────
 // Every row the list can show, built here and handed over whole: the music
@@ -10900,11 +11061,24 @@ ipcMain.handle('slsk-share-folders-set', async (_, { folders } = {}) => {
   // Stored as he ticked them, normalised and deduped but NOT collapsed and NOT
   // filtered for existence: a folder that is temporarily unmounted keeps its
   // tick and comes back on its own, and the row is what tells him it is gone.
+  //
+  // THIS IS THE GUARD. It is the only path that commits what goes out to
+  // strangers, and it used to validate nothing but "absolute and not a
+  // duplicate" — so a renderer bug, a stale list or anything else that reached
+  // this channel could share '/'. The dialog's refusal covers one route in;
+  // this covers all of them, symlinks included.
   const validated = []
+  const refused = []
   const seen = Object.create(null)
   for (const f of wanted) {
     const p = slskShare.normalisePath(f)
     if (!p || p.charAt(0) !== '/' || seen[p]) continue
+    const refusal = _slskShareRefusal(p)
+    if (refusal) {
+      refused.push({ path: p, reason: refusal.reason, error: refusal.error })
+      console.warn('[papa] not sharing ' + p + ': ' + refusal.error)
+      continue
+    }
     seen[p] = true
     validated.push(p)
   }
@@ -10917,10 +11091,10 @@ ipcMain.handle('slsk-share-folders-set', async (_, { folders } = {}) => {
   // Restart path 7 of 7. Changing what is shared while Soulseek is off saves
   // the choice and applies it next time it comes on.
   if (!_slskEnabled()) {
-    return { ok: true, folders: validated, dirs, text, restarted: false, enabled: false }
+    return { ok: true, folders: validated, refused, dirs, text, restarted: false, enabled: false }
   }
   if (!(slskdProc || slskdReady)) {
-    return { ok: true, folders: validated, dirs, text, restarted: false }
+    return { ok: true, folders: validated, refused, dirs, text, restarted: false }
   }
   stopSlskd()
   try {
@@ -10929,9 +11103,9 @@ ipcMain.handle('slsk-share-folders-set', async (_, { folders } = {}) => {
     console.error('[papa] slskd restart after share change:', String(e && e.message || e))
     // Saved is saved. Not a green tick: the daemon did not come back, and the
     // health supervisor is what will try again.
-    return { ok: false, folders: validated, dirs, text, restarted: false, error: String(e && e.message || e) }
+    return { ok: false, folders: validated, refused, dirs, text, restarted: false, error: String(e && e.message || e) }
   }
-  return { ok: true, folders: validated, dirs, text, restarted: true }
+  return { ok: true, folders: validated, refused, dirs, text, restarted: true }
 })
 
 ipcMain.handle('slsk-share-folder-pick', async () => {
@@ -10941,13 +11115,12 @@ ipcMain.handle('slsk-share-folder-pick', async () => {
   })
   if (result.canceled || !result.filePaths.length) return { ok: false, cancelled: true }
   const picked = result.filePaths[0]
-  // The cheap half of "know what you are about to share": the obviously wrong
-  // answers are refused before the folder can ever reach the list. Nothing is
-  // counted and nothing is written — this only opens a dialog and answers.
-  const refusal = slskShare.pickRefusal(picked, {
-    home: app.getPath('home'),
-    slskdDir: SLSKD_DIR,
-  })
+  // The convenient half of "know what you are about to share": the obviously
+  // wrong answers get a sentence here, at the moment he picks them, instead of
+  // vanishing from the list later. The guard that actually decides what goes
+  // out is in slsk-share-folders-set. Nothing is counted and nothing is
+  // written — this only opens a dialog and answers.
+  const refusal = _slskShareRefusal(picked)
   if (refusal) return { ok: false, refused: true, reason: refusal.reason, error: refusal.error }
   return { ok: true, path: slskShare.normalisePath(picked) }
 })
@@ -11782,6 +11955,10 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const refusal = _dryRunRefusal('downloading a track to verify a rip')
     return { ...refusal, reason: refusal.error }
   }
+  // The check works by pulling a real track off the peer, so it is a download
+  // like any other. Ungated until now: it POSTed that transfer while Soulseek
+  // was off and then reported the daemon's refusal as a bad rip.
+  if (!_slskEnabled()) return _SLSK_OFF_REASON('check this folder')
   const pick = ripCheck.pickTrackInfo(files || [])
   if (!pick) return { ok: false, reason: 'No audio file in this folder to test.' }
   const track = pick.file

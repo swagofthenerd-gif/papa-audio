@@ -109,14 +109,15 @@ const BLOCK = (() => {
 	return R.slice(from, to)
 })()
 
-function paint({ rows, saved, dlFiles, uploads }) {
+function paint({ rows, saved, dlFiles, uploads, applyAnswer }) {
 	const ids = ['slsk-share-list', 'slsk-share-count', 'slsk-share-busy',
 		'slsk-share-apply-btn', 'slsk-share-text', 'slsk-enabled',
 		'slsk-enabled-text', 'slsk-enabled-timer-btn']
 	const els = {}
 	for (const id of ids) els[id] = node(id)
 	const said = []
-	const env = { els, rows, saved, dlFiles: dlFiles || [], uploads: uploads || 0, said, SHARE }
+	const env = { els, rows, saved, dlFiles: dlFiles || [], uploads: uploads || 0, said, SHARE,
+		applyAnswer: applyAnswer || { ok: true, dirs: [], refused: [] } }
 	return new Function('env', `
 		const { els, said } = env
 		const PapaSlskShare = env.SHARE
@@ -131,13 +132,19 @@ function paint({ rows, saved, dlFiles, uploads }) {
 		function showSnackbar(m) { said.push(String(m)) }
 		function _mgConfirm() {}
 		const document = { getElementById(id) { return els[id] || null } }
-		const window = { api: {} }
+		// Apply's answer is whatever the test handed in; the repaint that
+		// follows it reads nothing, so the snackbar is the only thing left.
+		const window = { api: {
+			slskShareFoldersSet: async () => env.applyAnswer,
+			slskShareFoldersGet: async () => null,
+		} }
 		${BLOCK}
 		_slskShareRows = env.rows
 		_slskShareSaved = env.saved
 		_paintSlskShareList()
 		return {
 			els, said,
+			apply: _slskShareApply,
 			enabled: _paintSlskEnabled,
 			inFlight: _slskOffInFlightText,
 			clock: _slskOffUntilClock,
@@ -285,4 +292,31 @@ test('turning it off is only confirmed when something is actually in flight', ()
 	assert.strictEqual(upOnly.inFlight(),
 		'3 people are taking files from you. Turning Soulseek off stops all of it.',
 		'no downloads, so no promise about downloads coming back')
+})
+
+// main drops a folder its refusal predicate will not let out — a symlink to
+// home, a whole drive, anything that reached the channel it should not have.
+// A row disappearing with nothing said is the silent behaviour this panel
+// exists to stop, so Apply says which folder and why.
+test('a folder main refused is named, not quietly dropped', async () => {
+	const out = paint({
+		rows: [DOWNLOADS], saved: [DOWNLOADS.path],
+		applyAnswer: {
+			ok: true, dirs: ['/mnt/data/MUSIC/Downloads'],
+			refused: [{ path: '/', reason: 'drive',
+				error: "That's a whole drive. Pick the folder your music is actually in." }],
+		},
+	})
+	await out.apply()
+	assert.ok(out.said.some(m => /whole drive/.test(m)),
+		'he is told which folder did not go out and why: ' + JSON.stringify(out.said))
+})
+
+test('a clean apply still just says how much is shared', async () => {
+	const out = paint({
+		rows: [DOWNLOADS], saved: [DOWNLOADS.path],
+		applyAnswer: { ok: true, dirs: ['/mnt/data/MUSIC/Downloads'], refused: [] },
+	})
+	await out.apply()
+	assert.ok(out.said.some(m => /Sharing 1 folder/.test(m)), JSON.stringify(out.said))
 })

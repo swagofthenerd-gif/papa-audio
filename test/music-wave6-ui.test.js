@@ -92,7 +92,11 @@ test('the slskd config shares what the setting says, and the setting is in the p
     'the three-way mode no longer picks the folders')
   assert.ok(!M.includes('const shareDir = musicFolders[0] || path.dirname(downloadDir)'), 'the silent whole-library share is gone')
   assert.ok(M.includes("ipcMain.handle('slsk-share-folders-set'"))
-  assert.ok(M.includes("ipcMain.handle('slsk-share-mode-set'"))
+  // Both three-way-mode handlers are deleted. They were dead in the UI and
+  // live over IPC, and slsk-share-mode-set overwrote the whole ticked list
+  // from the old key — a way for what he shares to change without him.
+  assert.ok(!M.includes("ipcMain.handle('slsk-share-mode-set'"))
+  assert.ok(!M.includes("ipcMain.handle('slsk-share-mode-get'"))
   // The dropdown is gone from the panel. In its place: the folder list, the
   // Apply that is the only thing which commits, and the switch that stops
   // Soulseek using the network at all.

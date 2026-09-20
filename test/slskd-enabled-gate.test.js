@@ -150,15 +150,33 @@ test('installing the daemon while Soulseek is off installs it and leaves it stop
 
 test('changing the download folder while Soulseek is off writes the config and starts nothing', async () => {
   const dialog = { showOpenDialog: async () => ({ canceled: false, filePaths: ['/mnt/data/MUSIC/Downloads'] }) }
+  // The handler now moves the download folder's tick with the folder, so it
+  // needs a store it can actually read and the real path helpers. A recording
+  // stub there would answer "yes, that path is ticked" to everything.
+  const shareEnv = () => {
+    const data = { slskShareFolders: [], slskConfig: { downloadDir: '/mnt/old/Downloads' } }
+    return {
+      dialog,
+      slskShare: require('../src/slsk-share.js'),
+      store: {
+        data,
+        get: (k, d) => (Object.prototype.hasOwnProperty.call(data, k) ? data[k] : d),
+        set: (k, v) => { data[k] = v },
+      },
+      _downloadDir: () => data.slskConfig.downloadDir,
+    }
+  }
   const off = await runHandler('slsk-set-download-dir', {
-    args: {}, globals: Object.assign({ dialog }, OFF),
+    args: {}, globals: Object.assign(shareEnv(), OFF),
+    alsoLift: ['_slskShareSelection'],
   })
   assert.ok(off.calls.some(c => c.startsWith('writeSlskdConfig')))
   assert.ok(!started(off.calls))
   assert.strictEqual(off.result.restarted, false)
 
   const on = await runHandler('slsk-set-download-dir', {
-    args: {}, globals: Object.assign({ dialog }, ON),
+    args: {}, globals: Object.assign(shareEnv(), ON),
+    alsoLift: ['_slskShareSelection'],
   })
   assert.ok(started(on.calls))
 })

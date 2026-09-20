@@ -334,11 +334,10 @@ contextBridge.exposeInMainWorld('api', {
   slskRetryTransfer:  (p) => ipcRenderer.invoke('slsk-retry-transfer', p),
   slskGetDownloadDir: ()  => ipcRenderer.invoke('slsk-get-download-dir'),
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
-  // Roadmap 137: what is shared with Soulseek peers. The three-way mode is on
-  // its way out; these two stay only until the dropdown's markup goes.
-  slskShareModeGet:   ()  => ipcRenderer.invoke('slsk-share-mode-get'),
-  slskShareModeSet:   (p) => ipcRenderer.invoke('slsk-share-mode-set', p),
-  // The folder list that replaces it: read every row, write the ticked set,
+  // Roadmap 137: what is shared with Soulseek peers. The two three-way-mode
+  // bindings are gone with their handlers — a binding nothing calls is still a
+  // way to overwrite the whole ticked list from the old key.
+  // The folder list that replaced it: read every row, write the ticked set,
   // and open the native chooser for one more folder.
   slskShareFoldersGet: ()  => ipcRenderer.invoke('slsk-share-folders-get'),
   slskShareFoldersSet: (p) => ipcRenderer.invoke('slsk-share-folders-set', p),

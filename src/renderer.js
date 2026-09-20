@@ -27367,6 +27367,10 @@ async function _slskShareApply() {
     // back and the health supervisor is what will try again.
     showSnackbar("Your choice is saved, but Soulseek didn't come back up. " +
       "It'll try again on its own in a minute.", '', function () {}, 8000)
+  } else if (r.refused && r.refused.length) {
+    // main dropped a folder on the way in. A row vanishing with nothing said
+    // is the silent behaviour this whole panel exists to stop, so it is said.
+    showSnackbar(r.refused[0].error, '', function () {}, 8000)
   } else if (r.enabled === false) {
     showSnackbar('Saved. It takes effect when you turn Soulseek back on.')
   } else {
@@ -29369,9 +29373,17 @@ function _setSlskStatus(s) {
   // "Starting" is a third state, not a shade of offline. slskd rebuilds its
   // database on every launch and can take minutes to answer; painting that as
   // "Soulseek offline" is what made a perfectly healthy daemon look broken.
+  //
+  // "Off" is the fourth, and it was the loudest lie on the screen: he turns
+  // Soulseek off himself and the footer answers with a red dot and the word
+  // "offline" — the same thing it says when the daemon has fallen over. Red
+  // means something is wrong. This is not wrong. slsk-status answers
+  // `enabled: false` and the slskd-status-change push answers `off: true`;
+  // either one means he did this on purpose.
+  var deliberatelyOff = slsk.status.off === true || slsk.status.enabled === false
   state.connectionStatus.slskd = slsk.status.connected
     ? 'connected'
-    : (slsk.status.starting ? 'starting' : 'disconnected')
+    : (deliberatelyOff ? 'off' : (slsk.status.starting ? 'starting' : 'disconnected'))
   _paintSlskConnDot()
   if (!prev.connected && slsk.status.connected) _onSlskConnected()
 }
@@ -29383,13 +29395,20 @@ function _paintSlskConnDot() {
   var stateName = state.connectionStatus.slskd
   var isConnected = stateName === 'connected'
   var isStarting = stateName === 'starting'
+  var isOff = stateName === 'off'
   // Amber for starting: not good yet, but nothing is wrong and nothing needs
-  // doing — it is worth waiting for rather than worth worrying about.
-  var colour = isConnected ? '#1db954' : (isStarting ? '#e0a800' : '#e74c3c')
+  // doing — it is worth waiting for rather than worth worrying about. Grey for
+  // off, for the same reason and more so: he asked for it.
+  var colour = isConnected ? '#1db954'
+    : (isOff ? '#8a8f98' : (isStarting ? '#e0a800' : '#e74c3c'))
   if (dot) dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + colour
   slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
   var last = slskdEl.childNodes[slskdEl.childNodes.length - 1]
-  if (last) last.textContent = isConnected ? ' Soulseek' : (isStarting ? ' Soulseek starting…' : ' Soulseek offline')
+  if (last) {
+    last.textContent = isConnected ? ' Soulseek'
+      : (isOff ? ' Soulseek off'
+        : (isStarting ? ' Soulseek starting…' : ' Soulseek offline'))
+  }
 }
 
 // The connection just came up. A search asked for while the daemon was still

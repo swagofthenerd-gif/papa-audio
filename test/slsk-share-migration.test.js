@@ -78,7 +78,8 @@ function writer(seed, { existing = new Set([...MUSIC, DOWNLOADS]) } = {}) {
         error(m) { logged.push(String(m)) },
       },
     },
-    ['SLSK_UPLOAD_SLOTS_MIN', 'SLSK_UPLOAD_SLOTS_MAX', 'SLSK_UPLOAD_SLOTS_DEFAULT'])
+    ['SLSK_UPLOAD_SLOTS_MIN', 'SLSK_UPLOAD_SLOTS_MAX', 'SLSK_UPLOAD_SLOTS_DEFAULT',
+      'SLSK_UPLOAD_MBPS_MAX'])
   return {
     store,
     logged,
@@ -175,6 +176,39 @@ test("this machine's own setting keeps meaning the one folder it means today", (
     'his music folders are not shared today and must not start being shared')
   assert.deepStrictEqual(w.store.data.slskShareFolders, [DOWNLOADS],
     'and the ticked list he now sees is that same single folder')
+})
+
+test('the stored path reaches the YAML as the exact bytes it was stored as', () => {
+  // The old shareDirs() handed the stored string to the YAML writer verbatim.
+  // The new pipeline normalises first, so a stored path that came back from
+  // normalisePath as a different string — even a merely re-joined one — would
+  // mean a rewritten slskd.yml and a multi-minute share rescan for a change
+  // nobody made. His real stored values, one at a time, through the real writer.
+  for (const folder of [DOWNLOADS].concat(MUSIC)) {
+    const w = writer({
+      slskShareFolders: [folder],
+      musicFolders: MUSIC,
+      slskConfig: { downloadDir: DOWNLOADS },
+    })
+    assert.deepStrictEqual(shareDirLines(w.write({ downloadDir: DOWNLOADS })),
+      ['    - ' + JSON.stringify(folder)],
+      'the folder he shares must reach slskd.yml spelled exactly as it is stored')
+    assert.deepStrictEqual(w.store.data.slskShareFolders, [folder],
+      'and must not be rewritten in the store either')
+  }
+})
+
+test('a stored path that is NOT in one spelling is still tidied up', () => {
+  // The other half of the same rule: normalisation has to keep happening where
+  // there is something to normalise, or '/a/b' and '/a/b/' become two folders
+  // and slskd indexes the same music twice.
+  const w = writer({
+    slskShareFolders: [DOWNLOADS + '/', '/mnt/data/MUSIC/./Downloads'],
+    musicFolders: MUSIC,
+    slskConfig: { downloadDir: DOWNLOADS },
+  })
+  assert.deepStrictEqual(shareDirLines(w.write({ downloadDir: DOWNLOADS })),
+    ['    - ' + JSON.stringify(DOWNLOADS)], 'two spellings, one folder')
 })
 
 test('the migration writes the list down and leaves the old key where it was', () => {

@@ -245,11 +245,24 @@ test('every store key that is read is also written somewhere', () => {
   // _torrentAdd read a top-level `downloadDir` that nothing wrote, so every
   // torrent went to a hardcoded /mnt/data path regardless of the setting. The
   // symmetry is mechanical, so check it mechanically.
+  // One key is deliberately read-only, and has to stay that way. slskShareMode
+  // is the old three-way sharing setting. It is read exactly once, by the
+  // migration that turns it into the ticked folder list, and never written
+  // again — the two handlers that used to write it are deleted, because
+  // writing it also overwrote the ticked list. It is left in the store
+  // untouched so an older build rolled back to still finds it.
+  const READ_ONLY_ON_PURPOSE = new Set(['slskShareMode'])
   const reads = new Set([...CODE.matchAll(/store\.get\(\s*'([^']+)'/g)].map(m => m[1]))
   const writes = new Set([...CODE.matchAll(/store\.(?:set|delete)\(\s*'([^']+)'/g)].map(m => m[1]))
-  const orphans = [...reads].filter(k => !writes.has(k)).sort()
+  const orphans = [...reads]
+    .filter(k => !writes.has(k) && !READ_ONLY_ON_PURPOSE.has(k)).sort()
   assert.deepStrictEqual(orphans, [],
     'a key that is read and never written is a setting that cannot be changed')
+  for (const k of READ_ONLY_ON_PURPOSE) {
+    assert.ok(reads.has(k), k + ' is on the read-only list but nothing reads it')
+    assert.ok(!writes.has(k),
+      k + ' is written again: the old mode must never overwrite the ticked list')
+  }
 })
 
 test('every store key that is written is also read somewhere', () => {

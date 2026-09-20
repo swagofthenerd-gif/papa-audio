@@ -188,7 +188,7 @@ const GATED_CHANNELS = [
   'video-cache-delete', 'video-keep-delete', 'video-cache-sweep-watched',
   'slsk-enqueue-downloads', 'slsk-retry-transfer', 'slsk-cancel-transfer',
   'slsk-respread-backlog', 'slsk-configure', 'slsk-set-download-dir',
-  'slsk-share-mode-set', 'yt-download',
+  'yt-download',
   // The four slskd write paths found ungated on 2026-09-19. slskdFetch refuses
   // them all at the choke point now, but a twin's user should be told what did
   // not happen rather than shown a thrown error, so each one carries its own

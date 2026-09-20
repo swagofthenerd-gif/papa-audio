@@ -21,7 +21,10 @@ const { runHandler, MAIN_PATH } = require('./helpers/lift-ipc.js')
 // against a Proxy instead of against the code.
 const SHARE_HELPERS = ['_slskShareSelection', '_slskShareDirs', '_slskShareCandidates',
   '_slskShareLive', '_slskUploadLimit', '_slskSpeedLimitKiB', '_slskNumberOrNull',
-  '_slskUploadLimitText']
+  '_slskUploadLimitText',
+  // The refusal predicate that decides what may go out, and the two helpers it
+  // is built from. As recording stubs they answer "refuse everything".
+  '_slskRealPath', '_slskRefusalOpts', '_slskShareRefusal']
 const slskShare = require('../src/slsk-share.js')
 
 const MAIN = fs.readFileSync(MAIN_PATH, 'utf8')
@@ -46,7 +49,13 @@ function env(seed, extra) {
     },
     slskShare,
     path: nodePath,
-    fs: { existsSync: (p) => p !== '/mnt/elsewhere/Gone' },
+    fs: {
+      existsSync: (p) => p !== '/mnt/elsewhere/Gone',
+      // This pretend machine has no symlinks: every path is already real.
+      realpathSync: (p) => p,
+    },
+    app: { getPath: () => '/home/shaharyar' },
+    SLSKD_DIR: '/home/shaharyar/.config/papa-audio/slskd',
     _downloadDir: () => DOWNLOADS,
     _slskEnabled: () => true,
     writeSlskdConfig(opts) { wrote.push(opts) },
@@ -166,7 +175,8 @@ test('the same folder ticked twice is one folder, not two', async () => {
 test('a relative or empty path is never written into the share list', async () => {
   const globals = env({ musicFolders: MUSIC, slskConfig: { downloadDir: DOWNLOADS } })
   const { result } = await runHandler('slsk-share-folders-set', {
-    args: { folders: ['', '  ', 'Music', '../etc', DOWNLOADS] }, globals,
+    args: { folders: ['', '  ', 'Music', '../etc', DOWNLOADS] },
+    globals, alsoLift: SHARE_HELPERS,
   })
   assert.deepStrictEqual(Array.from(result.folders), [DOWNLOADS],
     'only absolute paths reach slskd.yml')
@@ -174,7 +184,9 @@ test('a relative or empty path is never written into the share list', async () =
 
 test('unticking everything is allowed, and says what it costs', async () => {
   const globals = env({ musicFolders: MUSIC, slskConfig: { downloadDir: DOWNLOADS } })
-  const { result } = await runHandler('slsk-share-folders-set', { args: { folders: [] }, globals })
+  const { result } = await runHandler('slsk-share-folders-set', {
+    args: { folders: [] }, globals, alsoLift: SHARE_HELPERS,
+  })
   assert.strictEqual(result.ok, true)
   assert.strictEqual(result.folders.length, 0)
   assert.match(result.text, /not sharing anything/i)
@@ -190,7 +202,7 @@ test('the folder chooser refuses the home folder and says what it would have don
     app: { getPath: () => '/home/shaharyar' },
     SLSKD_DIR: '/home/shaharyar/.config/papa-audio/slskd',
   })
-  const { result } = await runHandler('slsk-share-folder-pick', { globals })
+  const { result } = await runHandler('slsk-share-folder-pick', { globals, alsoLift: SHARE_HELPERS })
   assert.strictEqual(result.ok, false)
   assert.strictEqual(result.refused, true)
   assert.strictEqual(result.reason, 'home')
@@ -203,7 +215,7 @@ test('the folder chooser refuses a whole drive', async () => {
     app: { getPath: () => '/home/shaharyar' },
     SLSKD_DIR: '/home/shaharyar/.config/papa-audio/slskd',
   })
-  const { result } = await runHandler('slsk-share-folder-pick', { globals })
+  const { result } = await runHandler('slsk-share-folder-pick', { globals, alsoLift: SHARE_HELPERS })
   assert.strictEqual(result.reason, 'drive')
   assert.match(result.error, /whole drive/)
 })
@@ -214,7 +226,7 @@ test('a real music folder is accepted, and nothing is written yet', async () => 
     app: { getPath: () => '/home/shaharyar' },
     SLSKD_DIR: '/home/shaharyar/.config/papa-audio/slskd',
   })
-  const { result } = await runHandler('slsk-share-folder-pick', { globals })
+  const { result } = await runHandler('slsk-share-folder-pick', { globals, alsoLift: SHARE_HELPERS })
   assert.strictEqual(result.ok, true)
   assert.strictEqual(result.path, '/mnt/data/MUSIC', 'one spelling, trailing slash removed')
   assert.strictEqual(globals._wrote.length, 0,
@@ -228,7 +240,7 @@ test('cancelling the chooser is not a refusal and not an error', async () => {
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     app: { getPath: () => '/home/shaharyar' },
   })
-  const { result } = await runHandler('slsk-share-folder-pick', { globals })
+  const { result } = await runHandler('slsk-share-folder-pick', { globals, alsoLift: SHARE_HELPERS })
   assert.strictEqual(result.ok, false)
   assert.strictEqual(result.cancelled, true)
   assert.strictEqual(result.refused, undefined, 'no scolding sentence for a change of mind')
