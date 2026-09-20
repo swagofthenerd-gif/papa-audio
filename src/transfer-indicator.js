@@ -4,7 +4,11 @@
 // Two directions, one module. Downloads come from the transfers snapshot the
 // download poll already fetches (users -> directories -> files); uploads come
 // from slskd's /transfers/uploads, slimmed by main into rows of
-// { filename, username, state, percentComplete, averageSpeed }.
+// { filename, username, state, percentComplete, averageSpeed, bytesTransferred,
+// size }. The last two are what make a real rate possible: averageSpeed is a
+// cumulative average over the whole transfer and barely moves once a transfer
+// is under way, so the live figure has to come from the change in bytes
+// between two samples — see currentSpeed below.
 //
 // slskd's states are a .NET [Flags] enum, so they arrive comma-joined:
 // "Queued, Remotely", "Completed, Succeeded", "Requested, Queued". Counting by
@@ -22,6 +26,12 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
 
   const SEPS = /[\\/]/
+
+  // Two samples further apart than this are not a rate worth quoting: a
+  // suspended laptop, a clock step, or a panel left closed for a while all land
+  // here, and dividing a big byte delta by a wrong interval prints a wrong
+  // number confidently. Saying nothing is the honest answer.
+  const SPEED_MAX_GAP_MS = 60000
 
   // One size formatter for the whole app; the local fallback only matters when
   // this module is loaded on its own (node tests, or before the shelves script).
@@ -102,7 +112,16 @@
       state: String(f.state || ''),
       percentComplete: Number(f.percentComplete) || 0,
       averageSpeed: Number(f.averageSpeed) || 0,
+      bytesTransferred: _n(f.bytesTransferred),
+      size: _n(f.size),
     })
+  }
+
+  // A byte count, or 0. Negative and non-numeric both mean "slskd did not say",
+  // and a negative would turn into a negative rate two functions downstream.
+  function _n(v) {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : 0
   }
 
   // ── The pills ──────────────────────────────────────────────────────────────
@@ -141,29 +160,94 @@
     return null
   }
 
-  // sharingRows(uploads) -> [{ username, file, folder, pct, speed, state }]
-  // Live transfers first, then alphabetical by peer — so the rows someone is
-  // actually watching stay at the top and do not reshuffle underneath them.
+  // sharingRows(uploads)
+  //   -> [{ key, username, file, folder, pct, speed, state, bytes, size }]
+  //
+  // "Happening now" means exactly that: only transfers slskd reports as in
+  // flight or queued survive, and the judgement is made on the state flags
+  // through isMoving/isWaiting — never on a name, never on a percentage.
+  //
+  // This used to sort live-first and keep everything else. slskd's
+  // /transfers/uploads holds finished transfers in its list long after they are
+  // over, so the panel accumulated the same peers and the same songs for as
+  // long as the app stayed up, while the day's byte counter climbed underneath
+  // — a growing history wearing the label "Happening now".
+  //
+  // Nothing lingers after it finishes, deliberately. A finish would have to be
+  // dated to expire it, this module holds no clock by design, and the row that
+  // would linger is the row that made the list look frozen in the first place.
+  // What went out today is the tally underneath, which counts every one of them
+  // and is the right place for history.
+  //
+  // In-flight first, then queued, then alphabetical by peer, so the rows
+  // someone is actually watching stay at the top and do not reshuffle
+  // underneath them.
   function sharingRows(uploads) {
-    const rows = flatten(uploads).map(function (f) {
+    const rows = []
+    for (const f of flatten(uploads)) {
+      if (!isMoving(f.state) && !isWaiting(f.state)) continue
       const parts = f.filename.split(SEPS).filter(Boolean)
-      return {
+      rows.push({
+        // The identity of this transfer across polls, so two samples of it can
+        // be lined up to get a rate. Peer-controlled, so it is a map key only —
+        // it is never rendered.
+        key: f.username + '\n' + f.filename,
         username: f.username,
         file: parts.length ? parts[parts.length - 1] : '',
         folder: parts.length > 1 ? parts[parts.length - 2] : '',
-        pct: f.percentComplete,
+        // Bytes over size when slskd gives both: percentComplete is rounded and
+        // lags, and the bar is the thing the eye reads as movement.
+        pct: f.size > 0 ? _clampPct(f.bytesTransferred / f.size * 100) : f.percentComplete,
+        // slskd's cumulative average, the starting point for currentSpeed.
         speed: f.averageSpeed,
         state: f.state,
-      }
-    })
+        bytes: f.bytesTransferred,
+        size: f.size,
+      })
+    }
     rows.sort(function (a, b) {
-      const la = (isMoving(a.state) || isWaiting(a.state)) ? 0 : 1
-      const lb = (isMoving(b.state) || isWaiting(b.state)) ? 0 : 1
+      const la = isMoving(a.state) ? 0 : 1
+      const lb = isMoving(b.state) ? 0 : 1
       if (la !== lb) return la - lb
       if (a.username !== b.username) return a.username < b.username ? -1 : 1
       return a.file < b.file ? -1 : (a.file > b.file ? 1 : 0)
     })
     return rows
+  }
+
+  function _clampPct(n) {
+    const v = Number(n)
+    if (!Number.isFinite(v) || v < 0) return 0
+    return v > 100 ? 100 : v
+  }
+
+  // currentSpeed(prev, cur, elapsedMs) -> bytes per second, or null.
+  //
+  // `prev` and `cur` are the same transfer's row from two consecutive samples,
+  // `elapsedMs` the wall-clock gap between them. The rate is the change in
+  // bytes over that gap — the number that actually moves while a peer pulls,
+  // unlike slskd's averageSpeed, which is the whole transfer's running average
+  // and settles almost immediately.
+  //
+  // null means "no honest answer": the caller shows the percentage instead of
+  // a made-up figure.
+  function currentSpeed(prev, cur, elapsedMs) {
+    if (!cur || typeof cur !== 'object') return null
+    const avg = Number(cur.speed)
+    const fallback = Number.isFinite(avg) && avg > 0 ? avg : null
+    // No previous sample yet — the panel just opened, or this transfer is new
+    // in this poll. The cumulative average is the only thing there is to say.
+    if (!prev || typeof prev !== 'object') return fallback
+    const ms = Number(elapsedMs)
+    if (!Number.isFinite(ms) || ms <= 0 || ms > SPEED_MAX_GAP_MS) return null
+    const was = Number(prev.bytes)
+    const now = Number(cur.bytes)
+    if (!Number.isFinite(was) || !Number.isFinite(now)) return null
+    if (was < 0 || now < 0) return null
+    // Fewer bytes than last time: slskd restarted the transfer and is counting
+    // again from zero. There is no rate to read out of that.
+    if (now < was) return null
+    return (now - was) * 1000 / ms
   }
 
   // todayLine(stats) -> the sentence under the sharing rows. `bytesToday` is
@@ -173,8 +257,15 @@
     // filesToday only, for the same reason as sharingPill: bytes are not files.
     const files = Number(s.filesToday) || 0
     const peers = Number(s.distinctPeersToday) || 0
-    if (files <= 0) return 'Nothing shared today yet.'
     const bytes = Number(s.bytesToday) || 0
+    // Nothing has finished, but bytes have gone out: the first transfer of the
+    // day is still running. Saying "nothing shared today yet" under a panel
+    // that is visibly sending something is the kind of small lie that makes the
+    // whole surface untrustworthy.
+    if (files <= 0 && bytes > 0) {
+      return 'Nothing finished today yet · ' + fmtSize(bytes) + ' out so far'
+    }
+    if (files <= 0) return 'Nothing shared today yet.'
     const line = files + ' file' + (files === 1 ? '' : 's')
       + ' to ' + peers + ' ' + (peers === 1 ? 'person' : 'people') + ' today'
     return bytes > 0 ? line + ' · ' + fmtSize(bytes) : line
@@ -184,6 +275,7 @@
     downloadPill: downloadPill,
     sharingPill: sharingPill,
     sharingRows: sharingRows,
+    currentSpeed: currentSpeed,
     todayLine: todayLine,
     // Exported for the wiring and for tests that enumerate slskd's states.
     isMoving: isMoving,
