@@ -92,5 +92,62 @@
     return out
   }
 
-  return { watchKey, parseWatchKey, packEpisodeKeys }
+
+  // The watch key a KEPT file answers to — a file saved for offline, living in
+  // videoKeepIndex (instant-play: "Download for offline" then Play).
+  //
+  // Play probes for a local copy by watch key, and that probe only ever
+  // searched the rewatch cache. A file downloaded for offline is in the OTHER
+  // store, so pressing Play on an episode already sitting on disk started a
+  // cold peer download of bytes the user had already paid for — while the card
+  // said SAVED.
+  //
+  // Two writers fill that store and they do not agree:
+  //   * the download path records titleKey + season + episode + meta,
+  //   * the keep-while-streaming path records only id/title/path/size/keptAt,
+  //     and now the session's own `watchKey` — which, being the key itself, is
+  //     preferred here over anything reconstructed.
+  // An entry carrying neither is unmatchable and yields null rather than a
+  // guess: a wrong match would play the wrong episode from disk, which is a
+  // worse failure than falling through to the network.
+  function keepEntryKey(entry) {
+    if (!entry || typeof entry !== 'object') return null
+    if (typeof entry.watchKey === 'string' && entry.watchKey) return entry.watchKey
+    var tk = typeof entry.titleKey === 'string' ? entry.titleKey : ''
+    var at = tk.indexOf(':')
+    if (at < 1) return null
+    var type = tk.slice(0, at)
+    var id = tk.slice(at + 1)
+    if (!id) return null
+    // A film's title key IS its watch key; there is no episode to find.
+    if (type === 'movie') return watchKey('movie', id)
+    var ep = entry.episode
+    if (ep == null && entry.meta && entry.meta.episode != null) ep = entry.meta.episode
+    if (ep == null || !isFinite(Number(ep))) return null
+    var season = entry.season
+    if (season == null && entry.meta && entry.meta.season != null) season = entry.meta.season
+    return watchKey(type, id, season, Number(ep))
+  }
+
+
+  // The kept entries that answer to this watch key, best first. Separated from
+  // the disk check so the matching is testable on its own: the caller still
+  // has to prove the file is really there before calling it a hit.
+  // Newest first — if the same episode was saved twice, the later save is the
+  // one the user means.
+  function findKept(keeps, key) {
+    if (!key) return []
+    var list = Array.isArray(keeps) ? keeps : []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var k = list[i]
+      if (!k || !k.path) continue
+      if (keepEntryKey(k) !== key) continue
+      out.push(k)
+    }
+    out.sort(function (a, b) { return (Number(b.keptAt) || 0) - (Number(a.keptAt) || 0) })
+    return out
+  }
+
+  return { watchKey, parseWatchKey, packEpisodeKeys, keepEntryKey, findKept }
 })

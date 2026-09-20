@@ -15881,6 +15881,14 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
         id: crypto.randomBytes(8).toString('hex'),
         title: (show && String(show).trim()) || info.name || 'video',
         path: dest, sizeBytes: size, keptAt: Date.now(),
+        // The identity this save has always had to hand and never recorded.
+        // Without it the entry matched no key, so the file could be saved and
+        // then never found again by Play, by the badge, or by the probe —
+        // it existed only as a row in the On-device list. `cacheKey` IS the
+        // renderer's watch key for what is playing right now.
+        watchKey: _videoSession.cacheKey || null,
+        titleKey: _titleKeyOf(_videoSession.cacheMeta) || null,
+        meta: _videoSession.cacheMeta || null,
       }
       sideStores.videoKeepIndex.update(prev => {
         const list = (Array.isArray(prev) ? prev : []).filter(e => e && e.path !== dest)
@@ -16192,6 +16200,13 @@ async function _downloadFinish(id, d, info) {
     })
     sideStores.videoKeepIndex.set(index)
     _instantMark(_titleKeyOf(d.meta.detail), 'device')
+    // And for the EPISODE. Marking only the title made a whole series read as
+    // SAVED once one episode had been downloaded, while the episode rows —
+    // which look themselves up by per-episode key — showed nothing at all.
+    try {
+      const epKey = watchKeys.keepEntryKey(index[index.length - 1])
+      if (epKey) _instantMark(epKey, 'device')
+    } catch (_) {}
     safeSend('video-download-event', { kind: 'done', id, title: d.meta.title })
     if (Notification.isSupported()) new Notification({ title: 'Download finished', body: d.meta.title || info.name, silent: false }).show()
   } catch (e) {
@@ -16554,15 +16569,49 @@ const DEBRID_BUDGET_MS = 14000
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the
 // on-device view. Missing files self-heal out of the index.
+// The OTHER on-device store. Play probes for a local copy by watch key and
+// that probe only ever searched the rewatch cache — so a file the user had
+// DOWNLOADED FOR OFFLINE was invisible to Play. Its card said SAVED, and
+// pressing Play started a cold peer download of bytes already on the disk.
+// Confirmed by three independent readings of this handler (2026-09-20).
+//
+// A kept file is not a cache entry and must not be treated as one: it has no
+// eviction clock, so nothing here touches lastUsedAt, and a kept file missing
+// from disk is NOT pruned from here — video-keep-list owns that index's
+// self-healing (it partitions on aliveFiles) and pruning it from a read path
+// would race that. A missing file simply is not a hit.
+function _keptHitFor(key) {
+  try {
+    // Matching is watch-key's (entries written by the keep-while-streaming path
+    // carried no identity at all until it started stamping one; those match
+    // nothing and are skipped rather than guessed at — a wrong match plays the
+    // wrong episode). Existence is ours.
+    for (const k of watchKeys.findKept(sideStores.videoKeepIndex.get(), key)) {
+      if (!fs.existsSync(k.path)) continue
+      return {
+        ok: true,
+        hit: {
+          key, path: k.path, title: k.title || null,
+          sizeBytes: k.sizeBytes || 0, meta: k.meta || null,
+          // Saved, not cached: the caller must not offer to evict it and the
+          // badge for it is SAVED, which is a different promise.
+          kept: true,
+        },
+      }
+    }
+  } catch (_) { /* the keep index is a convenience; never fail a play over it */ }
+  return { ok: true, hit: null }
+}
+
 ipcMain.handle('video-cache-get', async (_, { key } = {}) => {
   try {
     if (!key) return { ok: true, hit: null }
     const entries = _videoCacheEntries()
     const e = entries.find(x => x.key === key)
-    if (!e) return { ok: true, hit: null }
+    if (!e) return _keptHitFor(key)
     if (!fs.existsSync(e.path)) {
       sideStores.videoCacheIndex.set(entries.filter(x => x.key !== key))
-      return { ok: true, hit: null }
+      return _keptHitFor(key)
     }
     e.lastUsedAt = Date.now()
     sideStores.videoCacheIndex.set(entries)
