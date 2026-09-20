@@ -9830,6 +9830,43 @@ body.theme-light .cinema {
   -webkit-app-region: no-drag;
 }
 
+/* ══════════════════════════════════════════════════════
+   PANEL RESIZER  (src/panel-resize.js)
+   The grab strip, the collapse chevron and the slim rail, shared by every
+   side panel the resizer is attached to. Token-driven, so the light theme
+   needs nothing beyond the one hairline below.
+══════════════════════════════════════════════════════ */
+.papa-pr-grip {
+  position:absolute; top:0; bottom:0; z-index:20;
+  cursor:col-resize; touch-action:none;
+  background:transparent;
+  transition:background .14s var(--ease);
+}
+.papa-pr-grip-left  { left:0; }
+.papa-pr-grip-right { right:0; }
+.papa-pr-grip:hover, .papa-pr-grip.is-dragging { background:var(--accent); opacity:.55; }
+
+.papa-pr-toggle {
+  position:absolute; top:10px; z-index:21;
+  width:20px; height:22px; padding:0; line-height:20px;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm);
+  color:var(--text3); font-size:13px; cursor:pointer;
+  transition:color .14s var(--ease), background .14s var(--ease);
+}
+.papa-pr-toggle-left  { left:9px; }
+.papa-pr-toggle-right { right:9px; }
+.papa-pr-toggle:hover { color:var(--text); background:var(--glass-hi); }
+.papa-pr-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+/* The collapsed rail. visibility:hidden rather than display:none on purpose:
+   it takes every control inside the panel out of the tab order, so a collapsed
+   panel cannot swallow the keyboard, while the chevron that brings it back
+   stays both visible and reachable. */
+.papa-pr-collapsed > * { visibility:hidden; }
+.papa-pr-collapsed > .papa-pr-toggle { visibility:visible; left:3px; right:3px; }
+.papa-pr-collapsed { overflow:hidden; min-width:0; }
+
 /* ════════════════════════════════════════════════════
    PAPA CINEMA  ·  the film identity
    ────────────────────────────────────────────────────

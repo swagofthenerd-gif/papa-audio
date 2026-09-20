@@ -297,6 +297,19 @@
         })
         col.insertAdjacentElement('afterend', h)
       })
+      armInspResizer()
+    }
+
+    // The inspector is the last panel in the row, so its drag edge is its left
+    // one. It is the same job as the browsing columns but a different shape, so
+    // it uses the shared panel resizer rather than a second copy of the grip
+    // code above. Not collapsible: folding it would leave a selected album with
+    // nowhere to show itself, which reads as the page having broken.
+    function armInspResizer() {
+      const PR = (typeof window !== 'undefined' && window.PapaPanelResize) || null
+      const insp = colsEl.querySelector('.slr-col-insp')
+      if (!PR || !insp) return
+      PR.attach({ el: insp, edge: 'left', key: 'slsk_insp_w', min: 240, max: 560, defaultPx: 320 })
     }
 
     function render() {

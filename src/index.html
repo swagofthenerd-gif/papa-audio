@@ -1387,6 +1387,9 @@
 <script src="diary-timeline.js"></script>
 <!-- Pure aggregation for the home "Your year so far" card (App §76). Loaded
      before renderer.js, which reads window.PapaHomeRecap. -->
+<!-- One resizer for every side panel. Loaded before anything that attaches
+     to a panel, so window.PapaPanelResize is there when they mount. -->
+<script src="panel-resize.js"></script>
 <script src="home-recap.js"></script>
 <script src="wrapped-ui.js"></script>
 <script src="slsk-shop-ui.js"></script>

@@ -757,12 +757,20 @@ test('the six drags all start on pointerdown', () => {
     ['makeDraggable', "trackEl.addEventListener('pointerdown'"],
     ['the Discover swipe', "swipeEl.addEventListener('pointerdown'"],
     ['the queue reorder', "handle.addEventListener('pointerdown', e => {"],
-    ['the queue-panel resizer', "handle.addEventListener('pointerdown', function(e) {"],
     ['the sidebar resizer', "sidebarResizer.addEventListener('pointerdown'"],
   ]
   for (const [what, needle] of anchors) {
     assert.ok(RENDERER.includes(needle), what + ' must start on pointerdown')
   }
+  // The queue-panel resizer left renderer.js: every side panel now shares
+  // src/panel-resize.js, so that drag is anchored there instead.
+  const PANEL = fs.readFileSync(path.join(SRC, 'panel-resize.js'), 'utf8')
+  assert.match(PANEL, /grip\.addEventListener\('pointerdown'/,
+    'the shared panel resizer must start on pointerdown')
+  assert.match(PANEL, /setPointerCapture/)
+  assert.match(PANEL, /addEventListener\('pointercancel'/)
+  assert.match(PANEL, /e\.button !== 0/)
+  assert.doesNotMatch(PANEL, /document\.addEventListener/)
   // makeDraggable serves both the player progress bar and the volume slider,
   // which is why five anchors cover six drags.
   const uses = [...RENDERER.matchAll(/makeDraggable\(/g)].length
@@ -786,14 +794,20 @@ test('every element a drag starts on disables browser touch handling', () => {
   // nothing on exactly the input method this was added for.
   const CSS = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
   for (const sel of ['.progress-track', '.vol-track', '.queue-drag-handle',
-                     '.sidebar-resizer', '.discovery-swipe']) {
+                     '.sidebar-resizer', '.discovery-swipe', '.papa-pr-grip']) {
     const at = CSS.indexOf(sel + ' {')
     assert.ok(at > 0, `found ${sel}`)
     const rule = CSS.slice(at, CSS.indexOf('}', at))
     assert.match(rule, /touch-action:\s*none/, sel)
   }
-  // The queue resizer is created in JS with an inline style.
-  assert.match(RENDERER, /cursor:col-resize;z-index:10;touch-action:none/)
+  // The queue resizer used to be built in renderer.js with an inline style.
+  // It is now one of the panels attached to the shared resizer, whose grab
+  // strip is .papa-pr-grip above — and the Folders columns have their own
+  // strip in the room's stylesheet, which needs the same property.
+  const ROOM = fs.readFileSync(path.join(SRC, 'slsk-room.css'), 'utf8')
+  const grip = ROOM.slice(ROOM.indexOf('.slr-col-grip{'), ROOM.indexOf('}', ROOM.indexOf('.slr-col-grip{')))
+  assert.ok(grip.startsWith('.slr-col-grip{'), 'found .slr-col-grip')
+  assert.match(grip, /touch-action:\s*none/, '.slr-col-grip')
 })
 
 test('the drag handle is visible where there is no hover', () => {

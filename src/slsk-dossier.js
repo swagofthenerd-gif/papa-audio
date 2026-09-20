@@ -163,6 +163,19 @@
           <div class="slr-dossier-body">${sectionsHtml(m, esc)}</div>
         </div>`
       paintCover()
+      armResizer()
+    }
+
+    // paint() re-serialises the whole panel, which throws the grab strip away
+    // with everything else, so the resizer is re-attached on every paint. It is
+    // not collapsible: folding a dossier to a rail leaves the album you opened
+    // with nowhere to be, which reads as the page having broken rather than as
+    // a panel having folded.
+    function armResizer() {
+      const PR = (typeof window !== 'undefined' && window.PapaPanelResize) || null
+      const panel = root.querySelector('.slr-dossier-panel')
+      if (!PR || !panel) return
+      PR.attach({ el: panel, edge: 'left', key: 'slr_dossier_w', min: 380, max: 900, defaultPx: 560 })
     }
 
     function paintCover() {

@@ -32525,43 +32525,50 @@ function initSearchHistory() {
   }
 }
 
-function initResizableQueue() {
-  var panel = document.getElementById('queue-panel')
-  if (!panel || document.getElementById('queue-resize-handle')) return
-
-  var saved = localStorage.getItem('papa-queue-width')
-  if (saved) panel.style.width = saved
-
-  var handle = document.createElement('div')
-  handle.id = 'queue-resize-handle'
-  // touch-action:none is not optional: without it a touch drag scrolls the
-  // panel instead of resizing it, and the pointermove events never arrive.
-  handle.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:10px;cursor:col-resize;z-index:10;touch-action:none'
-  var _qrId = null
-  var _qrStartX = 0
-  var _qrStartWidth = 0
-  handle.addEventListener('pointerdown', function(e) {
-    if (e.button !== 0) return
-    e.preventDefault()
-    _qrId = e.pointerId
-    _qrStartX = e.clientX
-    _qrStartWidth = panel.offsetWidth
-    try { handle.setPointerCapture(e.pointerId) } catch (_) {}
-  })
-  handle.addEventListener('pointermove', function(e) {
-    if (_qrId !== e.pointerId) return
-    var newWidth = _qrStartWidth - (e.clientX - _qrStartX)
-    panel.style.width = Math.max(240, Math.min(500, newWidth)) + 'px'
-  })
-  function _qrEnd(e) {
-    if (_qrId !== e.pointerId) return
-    _qrId = null
-    try { handle.releasePointerCapture(e.pointerId) } catch (_) {}
-    try { localStorage.setItem('papa-queue-width', panel.style.width) } catch (_) {}
+// Every side panel in the app now shares one resizer (src/panel-resize.js):
+// the queue popover, the now-playing queue inside the fullscreen player, and
+// the Music Agent sidebar that the Settings surface lives in. This used to be
+// twenty lines of pointer bookkeeping here that only the first of those three
+// panels got the benefit of.
+//
+// The queue popover's width is driven by --queue-w in styles.css, so it is
+// resized by setting that custom property ON THE PANEL rather than its width:
+// the panel's own rules then follow the drag, and the root token stays the
+// default for anything else that ever reads it. The legacy "papa-queue-width"
+// store held a CSS string ("340px"); readState() parses it with parseFloat, so
+// an existing width carries over instead of snapping back to the default.
+//
+// Only the agent sidebar is collapsible. The two queue panels already have a
+// close button, so a second way to make them go away is noise; the sidebar is
+// the one a user keeps open next to their music all session.
+function initPanelResizers() {
+  var PR = window.PapaPanelResize
+  if (!PR) return
+  var queue = document.getElementById('queue-panel')
+  if (queue) {
+    PR.attach({
+      el: queue, edge: 'left', key: 'papa-queue-width', cssVar: '--queue-w',
+      min: 240, max: 560, defaultPx: 320,
+    })
   }
-  handle.addEventListener('pointerup', _qrEnd)
-  handle.addEventListener('pointercancel', _qrEnd)
-  panel.appendChild(handle)
+  var npQueue = document.getElementById('np-queue-panel')
+  if (npQueue) {
+    PR.attach({
+      el: npQueue, edge: 'left', key: 'papa-np-queue-width',
+      min: 240, max: 560, defaultPx: 320,
+    })
+  }
+  // Settings is not a page of its own: nav-settings calls openSettings(), which
+  // opens this sidebar and switches it to its Settings tab. So the panel the
+  // user is actually looking at when they say "Settings" is .mcs, and that is
+  // what gets the handle and the collapse rail.
+  var mcs = document.getElementById('mcs')
+  if (mcs) {
+    PR.attach({
+      el: mcs, edge: 'left', key: 'papa-mcs-width',
+      min: 260, max: 720, defaultPx: 300, collapsible: true,
+    })
+  }
 }
 
 function setupListeners() {
@@ -33164,7 +33171,7 @@ function setupListeners() {
     document.getElementById('queue-panel').classList.remove('open')
     document.getElementById('btn-queue')?.classList.remove('active')
   })
-  initResizableQueue()
+  initPanelResizers()
 
   // Sidebar right-click → toggle compact mode.
   // The toggle used to set sidebar.style.width while the resizer set the
