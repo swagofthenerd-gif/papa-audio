@@ -29998,6 +29998,13 @@ const SHARING_POLL_MS = 60000
 const SHARING_ROW_DEFAULT_TITLE = 'What you share, and who is taking it'
 let _sharingPollTimer = null
 let _sharingStats = null
+// The clock reading the snapshot in _sharingStats was taken at, as main dated
+// it. Two callers race for this one variable — the sidebar's 60 s tick, which
+// asks main for whatever its last poll saw, and the open panel's fast tick,
+// which forces a real poll — and the cached one can resolve second while
+// carrying the older picture. Without this the panel someone is watching gets
+// a stale snapshot stamped over it and the bars jump backwards.
+let _sharingStatsAt = 0
 // Declared here rather than with the panel: this refresh has to know whether
 // the panel is on screen, and an undeclared read would be a ReferenceError.
 let _sharingPanelOpen = false
@@ -30071,11 +30078,20 @@ async function _refreshSharingStats(fresh) {
     : window.api.slskUploadStats({ cachedOk: true }))
     .catch(function () { return null })
   if (!s || !s.ok) return
+  // Ignore an answer that is older than the one already on screen. A snapshot
+  // with no date at all still applies — that is main answering in a shape this
+  // guard does not know, and dropping it would be worse than showing it.
+  const at = Number(s.cachedAt) || 0
+  if (at && at < _sharingStatsAt) return
+  if (at) _sharingStatsAt = at
   _sharingStats = s
   _paintSharingPill()
   // The open panel repaints off its own faster clock; this keeps it honest when
   // a 60 s tick lands between two of those.
   if (typeof _renderSharingPanel === 'function' && _sharingPanelOpen) _renderSharingPanel()
+  // Something may have started or stopped moving in this snapshot, which is
+  // what decides how fast the open panel should be ticking.
+  if (typeof _retuneSharingPanelTimer === 'function') _retuneSharingPanelTimer()
 }
 
 // Same shape as retuneDownloadsPolling: a hidden window is not looking at the
@@ -30092,25 +30108,68 @@ function retuneSharingPoll() {
 
 // ── Sharing panel ────────────────────────────────────────────────────────────
 // The slide-over behind the Sharing row: a line per upload — who, what, how far,
-// how fast — and the day's tally underneath. It borrows the queue panel's shell
-// and, while open, refreshes every 10 s with a real poll so the progress bars
-// actually move. That timer dies with the panel.
+// how fast — and the day's tally underneath. It borrows the queue panel's shell.
+//
+// While open it re-polls on a clock that follows the work: about every 2 s
+// while anything is actually moving, and back to the slower tick when it is
+// not. A bar that steps twice a minute does not read as live, and a 2 s tick
+// against an idle daemon is just noise. It is still one timer, swapped when the
+// cadence changes, and it dies with the panel; it does not run while the window
+// is hidden either — _refreshSharingStats keeps that guard for every caller.
 //
 // Every string here comes from a peer: the username and the file path are
 // whatever the other end sent. All of it goes through esc().
 const SHARING_PANEL_REFRESH_MS = 10000
+const SHARING_PANEL_LIVE_MS = 2000
 let _sharingPanelTimer = null
+let _sharingPanelTimerMs = 0
+// The previous rows sample and the clock reading it was taken at, so the rate
+// shown is the change in bytes since then rather than slskd's whole-transfer
+// average. Keyed by transfer; dropped when the panel closes.
+let _sharingSample = null
+
+// Speeds are worked out once per SNAPSHOT, not once per repaint. The same
+// snapshot can be painted twice — on open, then again when a sidebar tick lands
+// — and a second pass over identical bytes would read as a stall and blank a
+// rate that is perfectly fine.
+function _sharingApplySpeeds(rows, atMs) {
+  const TI = window.PapaTransferIndicator
+  if (!TI || !TI.currentSpeed) return rows
+  const prev = _sharingSample
+  if (prev && prev.at === atMs) {
+    for (const r of rows) {
+      r.speed = prev.speeds[r.key] === undefined ? null : prev.speeds[r.key]
+    }
+    return rows
+  }
+  // Take the sample before anything overwrites r.speed: what goes in the next
+  // comparison is what slskd said, not what we derived from it.
+  const bytes = {}
+  for (const r of rows) bytes[r.key] = { bytes: r.bytes, speed: r.speed }
+  const gap = prev ? (atMs - prev.at) : 0
+  const speeds = {}
+  for (const r of rows) {
+    speeds[r.key] = TI.currentSpeed(prev ? prev.bytes[r.key] : null, r, gap)
+    r.speed = speeds[r.key]
+  }
+  _sharingSample = { at: atMs, bytes: bytes, speeds: speeds }
+  return rows
+}
 
 function _sharingRowHtml(r) {
   const pct = Math.max(0, Math.min(100, Number(r.pct) || 0))
-  const moving = window.PapaTransferIndicator
-    && (window.PapaTransferIndicator.isMoving(r.state)
-      || window.PapaTransferIndicator.isWaiting(r.state))
-  const speed = moving && Number(r.speed) > 0 ? _fmtSpeed(Number(r.speed)) : ''
-  return '<div class="sharing-row' + (moving ? '' : ' is-done') + '">'
+  const TI = window.PapaTransferIndicator
+  const moving = !!(TI && TI.isMoving(r.state))
+  const waiting = !!(TI && TI.isWaiting(r.state))
+  // A rate when there is an honest one to give; "Queued" for a transfer that
+  // has not started, which is the truth behind the 0% it used to show; the
+  // percentage otherwise.
+  let speedText = Number(r.speed) > 0 ? _fmtSpeed(Number(r.speed)) : ''
+  if (!speedText) speedText = (waiting && !moving) ? 'Queued' : Math.round(pct) + '%'
+  return '<div class="sharing-row' + (moving || waiting ? '' : ' is-done') + '">'
     + '<button class="sharing-peer" data-peer="' + esc(r.username) + '" '
     + 'title="Browse ' + esc(r.username) + '’s library">' + esc(r.username) + '</button>'
-    + '<span class="sharing-speed">' + esc(speed || Math.round(pct) + '%') + '</span>'
+    + '<span class="sharing-speed">' + esc(speedText) + '</span>'
     + '<div class="sharing-file">' + esc(r.file) + '</div>'
     + (r.folder ? '<div class="sharing-folder">' + esc(r.folder) + '</div>' : '')
     + '<div class="sharing-bar"><div class="sharing-bar-fill" style="width:' + pct + '%"></div></div>'
@@ -30131,7 +30190,12 @@ function _renderSharingPanel() {
     bytesToday: s.totalUploadedToday,
     distinctPeersToday: s.distinctPeersToday,
   }
-  const rows = window.PapaTransferIndicator.sharingRows(s.rows || [])
+  // sharingRows keeps only what is in flight or queued. slskd holds finished
+  // transfers in its list indefinitely, and painting those was what turned
+  // "Happening now" into a slowly growing history of the same peers and songs.
+  const rows = _sharingApplySpeeds(
+    window.PapaTransferIndicator.sharingRows(s.rows || []),
+    Number(s.cachedAt) || Date.now())
   // Never a blank panel: with nobody pulling, the day's tally is the answer.
   // But an unreachable daemon also has no rows, and saying "nobody is taking
   // anything" then would be a flat lie — main flags that case and it gets said
@@ -30151,6 +30215,35 @@ function _renderSharingPanel() {
   })
 }
 
+// How fast the open panel should be re-polling: fast while a transfer is
+// actually in flight, slow otherwise. Queued alone does not earn the fast tick
+// — nothing about a queued row changes between polls.
+function _sharingPanelWantMs() {
+  const TI = window.PapaTransferIndicator
+  const rows = (_sharingStats && Array.isArray(_sharingStats.rows)) ? _sharingStats.rows : []
+  // An unreachable daemon has nothing to report faster; hammering it at 2 s
+  // while it is down would be the worst moment to do so.
+  if (!TI || (_sharingStats && _sharingStats.daemon === false)) return SHARING_PANEL_REFRESH_MS
+  for (const r of rows) if (TI.isMoving(r.state)) return SHARING_PANEL_LIVE_MS
+  return SHARING_PANEL_REFRESH_MS
+}
+
+// Swap the panel's timer for one at the cadence the current snapshot calls for.
+// A no-op when it is already running at that speed, so this is safe to call on
+// every refresh — restarting the interval each time would keep pushing the next
+// tick away and the panel would never actually poll.
+function _retuneSharingPanelTimer() {
+  if (!_sharingPanelOpen) return
+  const want = _sharingPanelWantMs()
+  if (_sharingPanelTimer && _sharingPanelTimerMs === want) return
+  if (_sharingPanelTimer) clearInterval(_sharingPanelTimer)
+  _sharingPanelTimerMs = want
+  _sharingPanelTimer = setInterval(function () {
+    if (!_sharingPanelOpen) return
+    _refreshSharingStats(true)
+  }, want)
+}
+
 function _onSharingPanelKey(e) {
   if (e.key !== 'Escape') return
   // The panel holds number boxes now. Escape inside one of them belongs to the
@@ -30167,6 +30260,10 @@ function _closeSharingPanel() {
   _sharingPanelOpen = false
   // The faster poll exists only for the open panel.
   if (_sharingPanelTimer) { clearInterval(_sharingPanelTimer); _sharingPanelTimer = null }
+  _sharingPanelTimerMs = 0
+  // Drop the rate sample too. A reopened panel starts from slskd's average
+  // rather than dividing a whole closed period's bytes by a gap nobody watched.
+  _sharingSample = null
   document.removeEventListener('keydown', _onSharingPanelKey)
   _unregisterNavDismiss(_closeSharingPanel)
 }
@@ -30197,10 +30294,9 @@ function _openSharingPanel() {
   // poll, so the panel is never blank while the request is in flight.
   _renderSharingPanel()
   _refreshSharingStats(true)
-  _sharingPanelTimer = setInterval(function () {
-    if (!_sharingPanelOpen) return
-    _refreshSharingStats(true)
-  }, SHARING_PANEL_REFRESH_MS)
+  // Start on the slow cadence; the refresh above retunes it to the fast one the
+  // moment its snapshot shows something actually moving.
+  _retuneSharingPanelTimer()
 }
 
 // ── Downloads context menu ───────────────────────────────────────────────────
