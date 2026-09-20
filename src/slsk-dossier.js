@@ -57,22 +57,74 @@
 
   function labelDot(tier) { return `<i class="slr-lbl slr-lbl-${tier}"></i>` }
 
+  // The claim vocabulary the check speaks, in English. Kept beside the pill and
+  // nowhere else: main already turned the folder name into one of these tokens.
+  const CLAIM_WORD = { '5.1': '5.1', '7.1': '7.1', ATMOS: 'Atmos', QUAD: 'quadraphonic', MCH: 'surround' }
+
+  // channelVerdict builds its sentence in the main process, which measures one
+  // track and cannot know how many the album holds, so it leaves the literal
+  // token {tracks}. Fill it here. With no count, the whole clause is dropped
+  // rather than printing a brace at someone.
+  function fillTracks(text, n) {
+    const s = String(text == null ? '' : text)
+    if (!s) return ''
+    if (n) return s.split('{tracks}').join(String(n))
+    return s.replace(/ of \{tracks\}/g, '')
+  }
+
+  // The pill that sits next to the header's Download button. Both halves are
+  // built from words the check already returned — never from a raw dB figure.
+  function warnPillText(c) {
+    const listed = CLAIM_WORD[String(c.claim || '')] || null
+    let right = c.fact || ''
+    if (c.kind === 'padded-channels') right = 'surround channels are silent'
+    else if (c.kind === 'claim-mismatch') right = Number(c.channels) === 1 ? 'checked track is mono' : 'checked track is stereo'
+    return [listed ? 'listed ' + listed : '', right].filter(Boolean).join(' · ')
+  }
+
   function ripHtml(m, esc) {
     const r = m.rip
     if (!r) return `<div class="slr-rip slr-rip-idle"><button class="slr-btn" data-act="verify">Verify this rip</button>
-      <span>Pulls one track, measures it, deletes it. Takes a minute or two.</span></div>`
+      <span>Downloads one track, measures it, deletes it. Tells you the real bit depth and whether it's really surround. A minute or two.</span></div>`
     if (r.running) return `<div class="slr-rip slr-rip-busy"><span class="slr-spin"></span>Pulling ${esc(r.track || 'a track')}…</div>`
     if (!r.ok) return `<div class="slr-rip slr-rip-fail">${esc(r.reason || 'Could not verify.')} <button class="slr-btn slr-btn-quiet" data-act="verify">Try again</button></div>`
+    // Absent-tolerant on purpose: a verdict cached before this feature existed
+    // has no channelCheck at all, and must not acquire a default opinion.
+    const chan = r.channelCheck || null
+    const warn = !!(chan && chan.severity === 'warn')
+    const n = (m.tracks && m.tracks.length) || 0
+    const chanText = chan ? fillTracks(chan.text, n) : ''
     // Only measured facts that actually came back get printed.
     const facts = []
-    if (r.ceilingHz) facts.push('reaches ' + Math.round(r.ceilingHz / 1000) + ' kHz')
+    // volumedetect reports one number for the summed mix, so the wording can
+    // never claim a per-channel figure.
+    if (r.ceilingHz) facts.push('reaches ' + Math.round(r.ceilingHz / 1000) + ' kHz' +
+      (Number(r.channels) >= 3 ? ' (all channels together)' : ''))
     if (r.dynamicRange != null) facts.push('dynamic range ' + r.dynamicRange)
     if (r.measuredBits) facts.push(r.measuredBits + ' bits used')
     const verdict = r.verdict || {}
-    const tail = [facts.join(' · '), r.track ? 'verified from ' + r.track : '', ago(r.at || Date.now())]
+    // On a warning the channel sentence takes the bold line, so the bit-depth
+    // verdict demotes into the grey run rather than disappearing.
+    if (warn && verdict.text) facts.push(verdict.text)
+    // The channel fact leads the run: it is the thing he came to read.
+    if (chan && chan.fact) facts.unshift(chan.fact)
+    const checked = (n ? 'checked one track of ' + n : 'checked one track') +
+      (r.track ? ' (' + r.track + ')' : '')
+    const tail = [facts.join(' · '), checked, ago(r.at || Date.now())]
       .filter(Boolean).join(' · ')
-    return `<div class="slr-rip slr-rip-${esc(verdict.kind || 'unknown')}"><b class="slr-rip-verdict">${verdict.kind === 'genuine' ? '✓' : '⚠'} ${esc(verdict.text || '')}</b>
-      <span>${esc(tail)}</span></div>`
+    // The warn class REPLACES slr-rip-<kind> rather than joining it, so no CSS
+    // source-order tie can leave a contradicted line painted green.
+    const cls = warn ? 'slr-rip slr-rip-chan-warn' : `slr-rip slr-rip-${esc(verdict.kind || 'unknown')}`
+    const bold = warn
+      ? `⚠ ${esc(chanText)}`
+      : `${verdict.kind === 'genuine' ? '✓' : '⚠'} ${esc(verdict.text || '')}`
+    // A second line, never folded into the ' · ' tail.
+    const second = (!warn && chanText) ? `<span class="slr-rip-chan">${esc(chanText)}</span>` : ''
+    // Verdicts cached for up to 30 days predate the channel read; without this
+    // button the feature would not exist for any album already checked.
+    const recheck = chan ? '' : `<button class="slr-btn slr-btn-quiet" data-act="verify">Check again</button>`
+    return `<div class="${cls}"><b class="slr-rip-verdict">${bold}</b>
+      <span>${esc(tail)}</span>${second}${recheck}</div>`
   }
 
   function receptionHtml(m, esc) {
@@ -88,7 +140,11 @@
   }
 
   function sectionsHtml(m, esc) {
+    // A contradiction is worth nothing further down the panel: the Download
+    // button is in the header, so the pill leads the row directly beneath it.
+    const chan = m.rip && m.rip.ok ? m.rip.channelCheck : null
     const facts = [
+      (chan && chan.severity === 'warn') ? `<span class="slr-pill slr-pill-warn">${esc(warnPillText(chan))}</span>` : '',
       `<span class="slr-pill">${labelDot(m.tier)}${esc(m.quality)}</span>`,
       `<span class="slr-pill">${m.tracks.length} track${m.tracks.length === 1 ? '' : 's'}${m.length ? ' · ' + esc(m.length) : ''}</span>`,
       `<span class="slr-pill">${esc(m.size)}</span>`,
