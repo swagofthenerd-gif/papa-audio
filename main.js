@@ -9368,13 +9368,19 @@ let _uploadActive = false   // last-seen active/idle, for the transition event
 // serving a snapshot that may be minutes stale.
 let _lastUploadRows = []
 // The counters and the clock reading from the last successful poll. The sidebar
-// refreshes every 60 s and the open sharing panel every 10 s; without this they
-// would each drive a fresh slskd request, which is exactly the extra traffic the
-// design forbids. Callers that can live with the last poll pass { cachedOk:true }
-// and get this back whenever it is still fresh.
+// repaints every 60 s, and without this each repaint would drive a fresh slskd
+// request, which is exactly the extra traffic the design forbids. Callers that
+// can live with what the last poll saw pass { cachedOk:true }
+// and are served it whatever its age. There is deliberately no freshness window:
+// the poll behind it drops to 5 min while nobody is taking anything, so any
+// window short enough to mean "fresh" would send most sidebar ticks to the
+// daemon after all — the traffic the design rules out. A sidebar count that is
+// minutes old is fine; the open panel does not pass the flag and still polls.
 let _lastUploadResult = null
 let _lastUploadPollAt = 0
-const UPLOAD_CACHE_FRESH_MS = 70 * 1000
+// Whether the last poll actually reached slskd. A cached answer has to carry it,
+// or the renderer cannot tell a quiet daemon from an unreachable one.
+let _uploadDaemonOk = true
 
 // slskd's /transfers/uploads has answered in three shapes over its versions:
 // user -> directories -> files, user -> files, and an already-flat file list.
@@ -9417,8 +9423,10 @@ async function slskUploadPollOnce() {
   } catch (_) {
     // slskd unreachable: do NOT guess. Leave the counters as they are and keep
     // the current cadence; a real snapshot will resume them.
+    _uploadDaemonOk = false
     return null
   }
+  _uploadDaemonOk = true
   const now = Date.now()
   const prev = sideStores.slskUploadStats.get()
   const result = uploadStats.ingest(prev, uploads, now)
@@ -9436,6 +9444,10 @@ async function slskUploadPollOnce() {
       activeUploads: result.activeUploads,
       totalUploadedToday: result.totalUploadedToday,
       distinctPeersToday: result.distinctPeersToday,
+      // The day's file count rides along too: the sidebar pill merges this push
+      // into its stats, and without the field the first push before the first
+      // stats read would leave it with no file count and an idle pill of zero.
+      filesUploadedToday: result.filesUploadedToday,
     })
     const wantMs = nowActive ? UPLOAD_POLL_ACTIVE_MS : UPLOAD_POLL_IDLE_MS
     if (wantMs !== _uploadPollMs) {
@@ -9463,27 +9475,35 @@ function slskUploadPollStart() {
 // count from a fresh poll when slskd answers, degrading to the stored totals when
 // it does not — so the number is never blank just because slskd blinked.
 ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
-  // The sidebar pill and the open sharing panel repaint on their own clocks and
-  // are happy with the last poll. Serving them from the cache is what keeps
-  // those repaints free: slskd sees the existing 60 s / 5 min poll and nothing
-  // more. A stale cache falls through and polls for real.
+  // The sidebar pill repaints on its own 60 s clock and is happy with whatever
+  // the last poll saw. Serving it from the cache — at any age — is what keeps
+  // that repaint free: slskd sees the existing 60 s / 5 min poll and nothing
+  // more. `cachedAt` and `daemon` say how old the answer is and whether the
+  // daemon was still there, so a caller that cares can tell.
   const cachedOk = !!(opts && opts.cachedOk)
-  if (cachedOk && _lastUploadResult
-      && (Date.now() - _lastUploadPollAt) < UPLOAD_CACHE_FRESH_MS) {
+  if (cachedOk && _lastUploadResult) {
     return {
       ok: true,
       cached: true,
+      cachedAt: _lastUploadPollAt,
+      daemon: _uploadDaemonOk,
       activeUploads: _lastUploadResult.activeUploads,
       totalUploadedToday: _lastUploadResult.totalUploadedToday,
       distinctPeersToday: _lastUploadResult.distinctPeersToday,
       filesUploadedToday: _lastUploadResult.filesUploadedToday,
-      rows: _lastUploadRows,
+      // Rows only while the daemon is still answering. Once it stops, the last
+      // ones are a frozen picture of transfers nothing can update — progress
+      // bars that never move — and the same empty list the live path returns is
+      // the honest answer. The counters beside them stay: they are a tally of
+      // what already happened, not a claim about now.
+      rows: _uploadDaemonOk ? _lastUploadRows : [],
     }
   }
   const result = await slskUploadPollOnce()
   if (result) {
     return {
       ok: true,
+      daemon: true,
       activeUploads: result.activeUploads,
       totalUploadedToday: result.totalUploadedToday,
       distinctPeersToday: result.distinctPeersToday,
@@ -9500,6 +9520,10 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
   sideStores.slskUploadStats.set(rolled.state)
   return {
     ok: true,
+    // The counters are real, the live picture is not: nothing could be read
+    // from a daemon that did not answer. The panel says that in words rather
+    // than reporting an empty list as "nobody is taking anything".
+    daemon: false,
     activeUploads: 0,
     totalUploadedToday: rolled.totalUploadedToday,
     distinctPeersToday: rolled.distinctPeersToday,

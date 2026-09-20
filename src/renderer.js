@@ -20429,6 +20429,16 @@ function toggleQueuePanel() {
   if (state.queuePanelOpen) { state._queueJustOpened = true; renderQueuePanel() }
 }
 
+// Shutting the queue panel, from anywhere: the close button, and anything else
+// that needs the slot. It is fixed to the same right-hand slot as the sharing
+// panel, so whichever opens has to put the other away or they overlay exactly.
+function closeQueuePanel() {
+  state.queuePanelOpen = false
+  updateAriaToggles()
+  document.getElementById('queue-panel')?.classList.remove('open')
+  document.getElementById('btn-queue')?.classList.remove('active')
+}
+
 // Wires the queue panel header controls, shared by both render paths (empty and
 // populated). Idempotent per render: the header is rebuilt on every
 // renderQueuePanel(), so fresh elements always need fresh listeners.
@@ -29300,8 +29310,12 @@ function retuneDownloadsPolling() {
 // snapshot the existing downloads poll already fetched, inside that poll's own
 // callback. The sharing pill has a 60 s refresh, but it asks main with
 // { cachedOk:true }, so main answers from its last upload poll rather than
-// hitting slskd again — the sidebar costs the daemon nothing. The refresh stops
-// entirely while the window is hidden, the same rule the downloads poll follows.
+// hitting slskd again — the sidebar costs the daemon nothing. It is served that
+// snapshot whatever its age: main's upload poll drops to 5 min while nothing is
+// going out, so a count that is minutes old is the price of a free refresh, and
+// anything that actually starts moving arrives on the activity push instead.
+// The refresh stops entirely while the window is hidden, the same rule the
+// downloads poll follows.
 //
 // All the text comes from PapaTransferIndicator; this half only paints.
 const SHARING_POLL_MS = 60000
@@ -29423,9 +29437,15 @@ function _renderSharingPanel() {
   }
   const rows = window.PapaTransferIndicator.sharingRows(s.rows || [])
   // Never a blank panel: with nobody pulling, the day's tally is the answer.
+  // But an unreachable daemon also has no rows, and saying "nobody is taking
+  // anything" then would be a flat lie — main flags that case and it gets said
+  // in words instead. The day's counters below are still real either way.
+  const empty = s.daemon === false
+    ? '<div class="sharing-empty">Can’t reach the Soulseek daemon, so there is no way to tell what is going out right now.</div>'
+    : '<div class="sharing-empty">Nobody is taking anything right now.</div>'
   list.innerHTML = rows.length
     ? rows.map(_sharingRowHtml).join('')
-    : '<div class="sharing-empty">Nobody is taking anything right now.</div>'
+    : empty
   today.textContent = window.PapaTransferIndicator.todayLine(stats)
   list.querySelectorAll('.sharing-peer').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -29454,6 +29474,10 @@ function _openSharingPanel() {
   if (!el) return
   // A second click on the sidebar row closes it again, like the queue button.
   if (_sharingPanelOpen) { _closeSharingPanel(); return }
+  // Both panels are fixed to the same right-hand slot, so an open queue panel
+  // would sit exactly underneath this one, visible through nothing and still
+  // scrolling. One slot, one panel.
+  closeQueuePanel()
   _sharingPanelOpen = true
   el.classList.add('open')
   document.addEventListener('keydown', _onSharingPanelKey)
@@ -29643,7 +29667,16 @@ async function _pollAndRenderDownloadsInner() {
     // The queue while there is one, today's finishes otherwise; the tooltip
     // names the unit so it never reads as a contradiction of the page (R5).
     const nb = window.PapaDlNumbers.navBadge(_dlModel, todayDone)
-    badge.style.display = nb.show ? 'flex' : 'none'
+    // One row, one number. The badge is absolutely positioned over the same
+    // Downloads row the new pill sits on, and both show whenever there is a
+    // queue — two counts overlapping, the badge's the narrower of the two. The
+    // pill wins while it is showing (it carries active *and* queued); the badge
+    // keeps the row on days where the pill has nothing to say, which is exactly
+    // the "N finished today" case. _paintDownloadPill ran earlier in this same
+    // poll frame, so its hidden flag is current.
+    const pillEl = document.getElementById('nav-dl-pill')
+    const pillShowing = !!(pillEl && !pillEl.hidden)
+    badge.style.display = (nb.show && !pillShowing) ? 'flex' : 'none'
     badge.textContent = nb.text
     badge.title = nb.title
   }
@@ -33355,11 +33388,7 @@ function setupListeners() {
 
   // Queue panel
   document.getElementById('btn-queue')?.addEventListener('click', toggleQueuePanel)
-  document.getElementById('queue-close-btn')?.addEventListener('click', () => {
-    state.queuePanelOpen = false
-    document.getElementById('queue-panel').classList.remove('open')
-    document.getElementById('btn-queue')?.classList.remove('active')
-  })
+  document.getElementById('queue-close-btn')?.addEventListener('click', closeQueuePanel)
   initResizableQueue()
 
   // Sidebar right-click → toggle compact mode.
@@ -38842,6 +38871,20 @@ function _renderHubSharing() {
     if (state.currentPage === 'soulseek') _paintHubSharing()
   }).catch(function () {})
 }
+// The activity push is a partial: it carries the live count and the day's byte
+// and peer totals, and may or may not carry a field the last full stats read
+// did. A missing field must keep whatever was already known — overwriting
+// filesUploadedToday with nothing is how the idle pill ends up saying 0 until
+// the next 60 s tick, which reads as "you shared nothing today".
+function _mergeUploadStats(prev, next) {
+  const out = Object.assign({}, prev || {})
+  for (const k of Object.keys(next || {})) {
+    if (next[k] === undefined) continue
+    out[k] = next[k]
+  }
+  return out
+}
+
 var _slskUploadActivityBound = false
 function _slskBindUploadActivity() {
   if (_slskUploadActivityBound) return
@@ -38849,10 +38892,10 @@ function _slskBindUploadActivity() {
   _slskUploadActivityBound = true
   window.api.onSlskUploadActivity(function (s) {
     if (!s) return
-    _slskUploadStats = Object.assign({}, _slskUploadStats || {}, s)
+    _slskUploadStats = _mergeUploadStats(_slskUploadStats, s)
     // The sidebar pill rides this push too, so the live count appears the
     // moment a peer starts pulling rather than up to 60 s later.
-    _sharingStats = Object.assign({}, _sharingStats || {}, s)
+    _sharingStats = _mergeUploadStats(_sharingStats, s)
     _paintSharingPill()
     if (state.currentPage === 'soulseek') _paintHubSharing()
   })

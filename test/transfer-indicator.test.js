@@ -53,18 +53,27 @@ test('downloadPill never counts a finished transfer as in flight', () => {
 })
 
 test('sharingPill is live while peers are pulling', () => {
-  const p = TI.sharingPill({ activeUploads: 2, totalUploadedToday: 14, distinctPeersToday: 3 })
+  const p = TI.sharingPill({ activeUploads: 2, filesToday: 14, distinctPeersToday: 3 })
   assert.deepEqual(p, { text: '↑ 2', live: true })
 })
 
 test('sharingPill falls back to the day tally when idle', () => {
-  const p = TI.sharingPill({ activeUploads: 0, totalUploadedToday: 14, distinctPeersToday: 3 })
+  const p = TI.sharingPill({ activeUploads: 0, filesToday: 14, distinctPeersToday: 3 })
   assert.deepEqual(p, { text: '14 today', live: false })
 })
 
 test('sharingPill is null when nothing happened today', () => {
-  assert.equal(TI.sharingPill({ activeUploads: 0, totalUploadedToday: 0, distinctPeersToday: 0 }), null)
+  assert.equal(TI.sharingPill({ activeUploads: 0, filesToday: 0, distinctPeersToday: 0 }), null)
   assert.equal(TI.sharingPill(null), null)
+})
+
+// A byte total and a file count are the same shape and nothing like the same
+// number. The pill used to fall back to totalUploadedToday when filesToday was
+// missing, which prints two gigabytes shared as "2254857830 today".
+test('sharingPill never reads a byte total as a file count', () => {
+  assert.equal(
+    TI.sharingPill({ activeUploads: 0, totalUploadedToday: 2254857830, distinctPeersToday: 3 }),
+    null)
 })
 
 test('sharingRows extracts the file and its parent folder from a backslash path', () => {
@@ -110,19 +119,27 @@ test('sharingRows tolerates junk', () => {
 
 test('todayLine reads as a sentence, with the size when bytes are known', () => {
   assert.equal(
-    TI.todayLine({ totalUploadedToday: 14, distinctPeersToday: 3, bytesToday: 2254857830 }),
+    TI.todayLine({ filesToday: 14, distinctPeersToday: 3, bytesToday: 2254857830 }),
     '14 files to 3 people today · 2.1 GB')
 })
 
 test('todayLine is singular for one file and one person', () => {
   assert.equal(
-    TI.todayLine({ totalUploadedToday: 1, distinctPeersToday: 1 }),
+    TI.todayLine({ filesToday: 1, distinctPeersToday: 1 }),
     '1 file to 1 person today')
 })
 
 test('todayLine says so plainly when nothing has been shared', () => {
-  assert.equal(TI.todayLine({ totalUploadedToday: 0, distinctPeersToday: 0 }), 'Nothing shared today yet.')
+  assert.equal(TI.todayLine({ filesToday: 0, distinctPeersToday: 0 }), 'Nothing shared today yet.')
   assert.equal(TI.todayLine(null), 'Nothing shared today yet.')
+})
+
+// Same trap as the pill: the byte total is not a file count, and a sentence
+// reading "2254857830 files to 3 people today" would be nonsense.
+test('todayLine never reads a byte total as a file count', () => {
+  assert.equal(
+    TI.todayLine({ totalUploadedToday: 2254857830, distinctPeersToday: 3 }),
+    'Nothing shared today yet.')
 })
 
 test('the pure functions never read window', () => {

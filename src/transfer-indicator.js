@@ -132,7 +132,10 @@
   function sharingPill(stats) {
     const s = stats && typeof stats === 'object' ? stats : {}
     const active = Number(s.activeUploads) || 0
-    const today = Number(s.filesToday != null ? s.filesToday : s.totalUploadedToday) || 0
+    // filesToday only. There is no falling back to a byte total here: the two
+    // are the same shape and nothing like the same number, so a missing file
+    // count would print two gigabytes shared as "2254857830 today".
+    const today = Number(s.filesToday) || 0
     if (active > 0) return { text: '↑ ' + active, live: true }
     if (today > 0) return { text: today + ' today', live: false }
     return null
@@ -167,7 +170,8 @@
   // optional; without it the line simply omits the size rather than saying 0 B.
   function todayLine(stats) {
     const s = stats && typeof stats === 'object' ? stats : {}
-    const files = Number(s.filesToday != null ? s.filesToday : s.totalUploadedToday) || 0
+    // filesToday only, for the same reason as sharingPill: bytes are not files.
+    const files = Number(s.filesToday) || 0
     const peers = Number(s.distinctPeersToday) || 0
     if (files <= 0) return 'Nothing shared today yet.'
     const bytes = Number(s.bytesToday) || 0

@@ -77,17 +77,41 @@ test('the handler returns the day\'s delivered-file count on both paths', () => 
     'and so does the unreachable-daemon path')
 })
 
-test('a repainting caller can be served from the last poll', () => {
+test('a repainting caller is served from the last poll at any age', () => {
   const body = handlerBody()
   assert.match(body, /opts && opts\.cachedOk/,
     'the handler takes a cachedOk opt-in')
-  assert.match(body, /_lastUploadPollAt\) < UPLOAD_CACHE_FRESH_MS/,
-    'and only honours it while the cached poll is still fresh')
-  assert.match(MAIN, /const UPLOAD_CACHE_FRESH_MS = 70 \* 1000/,
-    'fresh means under 70 s — one tick longer than the 60 s active poll')
+  assert.match(body, /if \(cachedOk && _lastUploadResult\) \{/,
+    'having a snapshot is the whole condition')
+  // The freshness window was the bug: main's idle upload cadence is 5 minutes,
+  // so any window short enough to call "fresh" sent most of the sidebar's 60 s
+  // ticks through to a real /transfers/uploads fetch — the extra daemon traffic
+  // the design rules out. A sidebar count is allowed to be minutes old.
+  assert.ok(!/UPLOAD_CACHE_FRESH_MS/.test(MAIN),
+    'no freshness window survives anywhere in main')
+  assert.ok(!/_lastUploadPollAt\)? *[<>]/.test(body),
+    'the cached branch does not compare the cache age at all')
   // The cached answer must come BEFORE the poll call, or it saves nothing.
   assert.ok(body.indexOf('cachedOk') < body.indexOf('await slskUploadPollOnce'),
     'the cache is checked before slskd is asked again')
+})
+
+test('the handler says whether the daemon actually answered', () => {
+  const body = handlerBody()
+  assert.match(MAIN, /let _uploadDaemonOk = true/,
+    'main remembers the last poll outcome')
+  const poll = MAIN.slice(MAIN.indexOf('async function slskUploadPollOnce'),
+    MAIN.indexOf('function slskUploadPollStart'))
+  assert.match(poll, /_uploadDaemonOk = false/, 'a failed fetch records it')
+  assert.match(poll, /_uploadDaemonOk = true/, 'a good one clears it')
+  assert.match(body, /daemon: _uploadDaemonOk/, 'the cached path carries the flag')
+  assert.match(body, /rows: _uploadDaemonOk \? _lastUploadRows : \[\]/,
+    'and drops its cached rows once the daemon stops answering, so the panel is '
+    + 'not left with progress bars nothing can move')
+  assert.match(body, /daemon: true/, 'the live path carries it')
+  const tail = body.slice(body.indexOf('rolled'))
+  assert.match(tail, /daemon: false/,
+    'and the unreachable path says so rather than passing empty rows off as calm')
 })
 
 test('preload hands the whole handler result back, opts and all', () => {
@@ -104,6 +128,22 @@ test('preload hands the whole handler result back, opts and all', () => {
 
 const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
 const HTML = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8')
+const CSS = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+
+test('a hidden nav row is actually hidden', () => {
+  // The Sharing row is `<li class="nav-item" hidden>`, and .nav-item sets
+  // display:flex — which beats the browser's own [hidden] rule, so without
+  // this the row sits in the sidebar, empty, on every day nobody took a file.
+  // The repo already hit this one rung down with .nav-pill[hidden].
+  assert.match(CSS, /\.nav-item\[hidden\]\s*\{\s*display:\s*none\s*\}/,
+    '.nav-item[hidden] { display:none } must exist in styles.css')
+  assert.match(CSS, /\.nav-pill\[hidden\]\s*\{\s*display:\s*none\s*\}/,
+    'and the pill rule it sits beside')
+  // The class rule that makes it necessary is still there; if it ever goes,
+  // this guard stops being load-bearing and should be revisited.
+  assert.match(CSS, /\.nav-item \{\n\s*display:flex;/,
+    '.nav-item still sets display:flex')
+})
 
 test('the sidebar carries a downloads pill and a hidden Sharing row', () => {
   assert.match(HTML, /id="nav-dl-pill"[^>]*hidden/, 'the downloads pill starts hidden')
@@ -129,6 +169,17 @@ test('the sharing refresh is one 60 s timer that asks main for its cache', () =>
   assert.equal(timers.length, 1, 'exactly one sharing timer, got ' + timers.length)
   assert.match(RENDERER, /slskUploadStats\(\{ cachedOk: true \}\)/,
     'the refresh never forces a fresh slskd fetch')
+})
+
+test('the open panel still gets a real poll, unlike the sidebar', () => {
+  // The sidebar passes cachedOk and is answered from the cache whatever its
+  // age; the panel deliberately does not, so its 10 s tick keeps the progress
+  // bars moving.
+  assert.match(RENDERER, /\? window\.api\.slskUploadStats\(\{\}\)/,
+    'the fresh path sends no cachedOk')
+  const at = RENDERER.indexOf('function _openSharingPanel')
+  assert.match(RENDERER.slice(at, at + 1400), /_refreshSharingStats\(true\)/,
+    'and the panel asks for it on open')
 })
 
 test('the sharing refresh stops while the window is hidden', () => {
@@ -217,4 +268,65 @@ test('Escape closes the panel', () => {
   assert.match(body, /e\.key === 'Escape'[\s\S]*_closeSharingPanel\(\)/)
   assert.match(RENDERER, /addEventListener\('keydown', _onSharingPanelKey\)/,
     'and the handler is only bound while it is open')
+})
+
+test('the panel says it cannot reach the daemon instead of reporting calm', () => {
+  const start = RENDERER.indexOf('function _renderSharingPanel')
+  const body = RENDERER.slice(start, RENDERER.indexOf('function _onSharingPanelKey'))
+  assert.match(body, /s\.daemon === false/,
+    'the empty state reads the flag main sets on the unreachable path')
+  assert.match(body, /Can’t reach the Soulseek daemon/,
+    'and says so in words')
+  assert.ok(body.indexOf('s.daemon === false') < body.indexOf('Nobody is taking anything'),
+    'the daemon check comes first, so "nobody is taking anything" is only said when that is known')
+})
+
+test('opening the sharing panel closes the queue panel', () => {
+  // Both are fixed to the same right-hand slot: two open panels overlay exactly.
+  assert.match(RENDERER, /function closeQueuePanel\(\) \{[\s\S]*?queue-panel'\)\?\.classList\.remove\('open'\)/,
+    'there is one function that shuts the queue panel')
+  const at = RENDERER.indexOf('function _openSharingPanel')
+  const open = RENDERER.slice(at, at + 1400)
+  assert.match(open, /closeQueuePanel\(\)/, 'and opening the sharing panel calls it')
+  assert.ok(open.indexOf('closeQueuePanel()') < open.indexOf("classList.add('open')"),
+    'before this one opens')
+  assert.match(RENDERER, /'queue-close-btn'\)\?\.addEventListener\('click', closeQueuePanel\)/,
+    'the queue close button uses the same function')
+})
+
+test('the downloads badge stands down while the pill is showing', () => {
+  // Both live on the Downloads row and both appear when there is a queue; the
+  // badge is absolutely positioned, so the two counts overlap.
+  const at = RENDERER.indexOf("const badge = document.getElementById('nav-dl-badge')")
+  assert.ok(at > 0, 'the badge paint still exists')
+  const body = RENDERER.slice(at, at + 1200)
+  assert.match(body, /const pillShowing = !!\(pillEl && !pillEl\.hidden\)/,
+    'it reads the pill the poll just painted')
+  assert.match(body, /badge\.style\.display = \(nb\.show && !pillShowing\) \? 'flex' : 'none'/,
+    'and the pill wins')
+  // The badge still does the job only it does: the day's finished count, which
+  // the pill never shows.
+  assert.ok(RENDERER.indexOf('_paintDownloadPill(files)') < at,
+    'the pill is painted earlier in the same poll frame, so its flag is current')
+})
+
+test('an activity push cannot blank a counter it does not carry', () => {
+  const at = RENDERER.indexOf('function _mergeUploadStats')
+  assert.ok(at > 0, 'the merge is its own function')
+  const body = RENDERER.slice(at, at + 400)
+  assert.match(body, /if \(next\[k\] === undefined\) continue/,
+    'an absent or undefined field keeps the previous value')
+  const bind = RENDERER.slice(RENDERER.indexOf('function _slskBindUploadActivity'),
+    RENDERER.indexOf('function _slskBindUploadActivity') + 800)
+  assert.match(bind, /_sharingStats = _mergeUploadStats\(_sharingStats, s\)/,
+    'the sidebar stats go through it')
+  assert.ok(!/_sharingStats = Object\.assign/.test(RENDERER),
+    'and not through a bare Object.assign any more')
+  // main sends the day's file count along, so the first push of a session does
+  // not leave the pill with no count at all.
+  const sendAt = MAIN.indexOf("safeSend('slsk-upload-activity'")
+  assert.ok(sendAt > 0, 'the activity event still exists')
+  const payload = MAIN.slice(sendAt, MAIN.indexOf('})', sendAt))
+  assert.match(payload, /filesUploadedToday: result\.filesUploadedToday/,
+    'the activity event carries filesUploadedToday')
 })

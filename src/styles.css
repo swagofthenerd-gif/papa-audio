@@ -6757,6 +6757,11 @@ body.theme-light .sharing-bar { background:rgba(0,0,0,.08) }
   font-variant-numeric:tabular-nums;
 }
 .nav-pill[hidden] { display:none }
+/* The same trap one level up. .nav-item sets display:flex, which outranks the
+   browser's own [hidden] rule, so `<li id="nav-sharing" hidden>` would sit
+   there as an empty row on every day nobody took a file. The attribute selector
+   beats the bare class, so this is the rule that actually hides it. */
+.nav-item[hidden] { display:none }
 .nav-pill-dl { background:var(--accent-dim); color:var(--accent) }
 .nav-pill-up { background:var(--glass); color:var(--text2) }
 /* Idle sharing ("14 today") is a tally, not an event: quieter than the live
