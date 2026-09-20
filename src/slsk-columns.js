@@ -17,6 +17,51 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
+  // ── Column widths ─────────────────────────────────────────────────────────
+  // Stored per column INDEX, not per path: the point of dragging column 1 wider
+  // is that the first level of every share stays wide, whichever folder you are
+  // standing in. localStorage is user-editable, so everything read back out of
+  // it is re-clamped and anything unparseable is simply no stored width.
+  const COLS_W_KEY = 'slsk_cols_w'
+  const COL_W_MIN = 140
+  const COL_W_MAX = 480
+
+  function clampColWidth(px) {
+    const n = Math.round(Number(px))
+    if (!isFinite(n)) return COL_W_MIN
+    return Math.max(COL_W_MIN, Math.min(COL_W_MAX, n))
+  }
+
+  function parseColWidths(raw) {
+    let obj = null
+    try { obj = JSON.parse(String(raw == null ? '' : raw)) } catch (_) { return {} }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {}
+    const out = {}
+    for (const k of Object.keys(obj)) {
+      if (!/^\d+$/.test(k)) continue
+      const v = Number(obj[k])
+      if (!isFinite(v) || v <= 0) continue
+      out[k] = clampColWidth(v)
+    }
+    return out
+  }
+
+  function serializeColWidths(map) {
+    const out = {}
+    for (const k of Object.keys(map || {})) {
+      if (!/^\d+$/.test(String(k))) continue
+      const v = Number(map[k])
+      if (!isFinite(v) || v <= 0) continue
+      out[k] = clampColWidth(v)
+    }
+    return JSON.stringify(out)
+  }
+
+  // The width a drag lands on: where it started plus how far the pointer moved.
+  function nextColWidth(startPx, dx) {
+    return clampColWidth(Number(startPx) + Number(dx || 0))
+  }
+
   function columnsFor(tree, path, opts) {
     const t = T()
     const parts = String(path || '').split(SEP).filter(Boolean)
@@ -125,6 +170,12 @@
     // of `"><script>` must become 0, not markup.
     const num = n => String(Number(n) || 0)
 
+    let colWidths = {}
+    try { colWidths = parseColWidths(localStorage.getItem(COLS_W_KEY)) } catch (_) { colWidths = {} }
+    function saveColWidths() {
+      try { localStorage.setItem(COLS_W_KEY, serializeColWidths(colWidths)) } catch (_) {}
+    }
+
     let path = ''
     let sel = null
     const filters = { audioOnly: true, surroundOnly: false }
@@ -194,6 +245,60 @@
       return `<div class="slr-col slr-col-flat" role="listbox">${html}</div>`
     }
 
+    // A 6px grab strip on the right edge of every browsing column. It is a flex
+    // item with a -3px margin either side, so it straddles the column border
+    // and costs the layout nothing; an absolutely positioned one would scroll
+    // away with the column's own overflow-y. Not focusable on purpose — the
+    // columns are already fully walkable with the arrow keys and Enter, so a
+    // resize handle in the tab order would only add stops that do nothing for
+    // someone who cannot drag.
+    function armColResizers() {
+      const cols = [...colsEl.querySelectorAll('.slr-col:not(.slr-col-insp)')]
+      cols.forEach((col, i) => {
+        const stored = colWidths[String(i)]
+        if (stored) col.style.width = stored + 'px'
+        const h = document.createElement('div')
+        h.className = 'slr-col-grip'
+        h.setAttribute('aria-hidden', 'true')
+        let id = null, startX = 0, startW = 0
+        h.addEventListener('pointerdown', e => {
+          if (e.button !== 0) return
+          e.preventDefault()
+          e.stopPropagation()
+          id = e.pointerId
+          startX = e.clientX
+          startW = col.offsetWidth
+          h.classList.add('is-dragging')
+          try { h.setPointerCapture(e.pointerId) } catch (_) {}
+        })
+        h.addEventListener('pointermove', e => {
+          if (id !== e.pointerId) return
+          const w = nextColWidth(startW, e.clientX - startX)
+          col.style.width = w + 'px'
+          colWidths[String(i)] = w
+        })
+        const end = e => {
+          if (id !== e.pointerId) return
+          id = null
+          h.classList.remove('is-dragging')
+          try { h.releasePointerCapture(e.pointerId) } catch (_) {}
+          saveColWidths()
+        }
+        h.addEventListener('pointerup', end)
+        h.addEventListener('pointercancel', end)
+        // Double-click puts this column back to whatever the stylesheet says,
+        // which is also how a flat search column keeps its own wider default.
+        h.addEventListener('dblclick', e => {
+          e.preventDefault()
+          e.stopPropagation()
+          col.style.width = ''
+          delete colWidths[String(i)]
+          saveColWidths()
+        })
+        col.insertAdjacentElement('afterend', h)
+      })
+    }
+
     function render() {
       const bc = T().breadcrumbs(path)
       crumbsEl.innerHTML = bc.map((b, i) => `<button class="slr-crumb${i === bc.length - 1 ? ' is-current' : ''}" data-path="${esc(b.path)}">${esc(b.name)}</button>`)
@@ -206,6 +311,7 @@
           + '<div class="slr-col slr-col-insp">' + inspectorHtml({ kind: 'none' }) + '</div>'
         colsEl.scrollLeft = 0
         colsEl._model = { kind: 'none' }
+        armColResizers()
         return
       }
 
@@ -216,6 +322,7 @@
           + '<div class="slr-col slr-col-insp">' + inspectorHtml({ kind: 'none' }) + '</div>'
         colsEl.scrollLeft = 0
         colsEl._model = { kind: 'none' }
+        armColResizers()
         return
       }
 
@@ -232,6 +339,7 @@
       colsEl.innerHTML = html + `<div class="slr-col slr-col-insp">${inspectorHtml(m)}</div>`
       colsEl.scrollLeft = colsEl.scrollWidth
       colsEl._model = m
+      armColResizers()
     }
 
     // Navigating out of a search or the surround list is what makes the click
@@ -368,7 +476,9 @@
     }
   }
 
-  const api = { mount, columnsFor, inspectorModel, searchRows, surroundRows }
+  const api = { mount, columnsFor, inspectorModel, searchRows, surroundRows,
+    clampColWidth, parseColWidths, serializeColWidths, nextColWidth,
+    COLS_W_KEY, COL_W_MIN, COL_W_MAX }
   if (typeof window !== 'undefined') window.PapaSlskColumns = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()

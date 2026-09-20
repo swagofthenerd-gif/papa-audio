@@ -136,6 +136,11 @@ body.theme-light .slr-card:hover .slr-card-cover{box-shadow:inset 0 0 0 1px rgba
 .slr-col{flex:none;width:220px;border-right:1px solid var(--hairline);overflow-y:auto;font-size:12.5px}
 .slr-col-flat{width:340px}
 .slr-col-insp{width:320px;border-right:0;background:var(--glass)}
+/* A 6px grab strip that straddles the column border and costs the row no
+   layout width. Invisible until you reach for it. */
+.slr-col-grip{flex:none;width:6px;margin:0 -3px;z-index:3;cursor:col-resize;
+  background:transparent;transition:background .14s var(--ease);touch-action:none}
+.slr-col-grip:hover,.slr-col-grip.is-dragging{background:var(--accent);opacity:.55}
 .slr-row{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;white-space:nowrap}
 .slr-row:hover{background:var(--glass)}
 .slr-row.is-sel{background:color-mix(in srgb, var(--accent) 18%, transparent)}

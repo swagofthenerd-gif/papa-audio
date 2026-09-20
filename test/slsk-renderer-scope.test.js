@@ -126,3 +126,41 @@ test('both modules still publish their window API when run as page scripts', () 
 	assert.strictEqual(tree.fileCount, 2)
 	assert.strictEqual(ctx.window.PapaSlskShelves.extractAlbums(tree).length, 1)
 })
+
+// ── Folders column widths ────────────────────────────────────────────────────
+// Dragging a column wider is only useful if the width survives navigating, so
+// it is stored per column INDEX in localStorage. That store is a plain string a
+// user can edit by hand, which is what these guard: nothing that comes back out
+// of it may become a width outside the usable range, and nothing unparseable
+// may throw on the way in.
+test('column widths clamp, round-trip and reject junk', () => {
+	const C = require('../src/slsk-columns.js')
+	assert.strictEqual(C.COL_W_MIN, 140)
+	assert.strictEqual(C.COL_W_MAX, 480)
+
+	// Clamping is what keeps a column readable and on screen.
+	assert.strictEqual(C.clampColWidth(10), 140)
+	assert.strictEqual(C.clampColWidth(9999), 480)
+	assert.strictEqual(C.clampColWidth(301.6), 302)
+	assert.strictEqual(C.clampColWidth('not a number'), 140)
+
+	// A drag is start width plus pointer delta, clamped at both ends.
+	assert.strictEqual(C.nextColWidth(220, 60), 280)
+	assert.strictEqual(C.nextColWidth(220, -500), 140)
+	assert.strictEqual(C.nextColWidth(220, 5000), 480)
+	assert.strictEqual(C.nextColWidth(220, undefined), 220)
+
+	// Anything a hand-edited store can hold has to arrive as an empty map, not
+	// as a throw and not as a width.
+	assert.deepStrictEqual(C.parseColWidths(null), {})
+	assert.deepStrictEqual(C.parseColWidths('{oops'), {})
+	assert.deepStrictEqual(C.parseColWidths('[1,2]'), {})
+	assert.deepStrictEqual(C.parseColWidths('"420"'), {})
+	assert.deepStrictEqual(C.parseColWidths('{"a":300}'), {})
+	assert.deepStrictEqual(C.parseColWidths('{"0":-5}'), {})
+	assert.deepStrictEqual(C.parseColWidths('{"0":9999,"2":300}'), { 0: 480, 2: 300 })
+
+	// Round trip: what is written is what comes back.
+	const written = C.serializeColWidths({ 0: 260, 1: 9999, 2: 10, bad: 300 })
+	assert.deepStrictEqual(C.parseColWidths(written), { 0: 260, 1: 480, 2: 140 })
+})
