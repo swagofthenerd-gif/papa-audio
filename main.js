@@ -16397,7 +16397,8 @@ ipcMain.handle('video-pack-select', async (_, { index, cacheKey, cacheMeta } = {
     const direct = await debrid().linkForFile(held.magnet, Number(index))
     const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
     const url = await proxy.serve(direct)
-    _debridProxyStop()
+    // Retired, not stopped: mpv is reading from it this instant.
+    _debridProxyRetire()
     // The relay is standing for THIS episode, so it says which one. `want:
     // null` made every later look-up believe the relay was for "whatever the
     // pack picks by default", so pressing Play on this very episode rebuilt
@@ -16516,6 +16517,9 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       // Only now is the switch over. Everything above — the load, the seek and
       // the end-of-file a clamped seek can provoke — belongs to it.
       _videoSession.switching = false
+      // And only now can nothing still be reading the relay this switch
+      // replaced. Letting it go any earlier is what blacked the picture out.
+      _debridProxySweepRetired()
       if (streamer) {
         // Tell the new swarm where the viewer actually is, so it fetches the
         // bytes around the playhead first instead of the file head.
@@ -17214,8 +17218,52 @@ const { nodeFetch: _rdFetch } = require('./src/node-fetch-shim')
 // (measured: the 5 s budget expired and peers took over at 5,166 ms). Built
 // while the page is open, pressing Play is instant.
 let _debridReady = null   // { magnet, proxy, url, at }
+// Relays kept alive a little longer because mpv may still be reading from
+// them. See _debridProxyRetire.
+let _debridRetiring = []
+// How long a retired relay is kept before it is stopped regardless, so a
+// switch that never completes cannot leak one.
+const DEBRID_RETIRE_GRACE_MS = 90000
+
 function _debridProxyStop() {
   if (_debridReady) { try { _debridReady.proxy.stop() } catch (_) {} _debridReady = null }
+  _debridProxySweepRetired()
+}
+
+// Stop serving the CURRENT relay — later.
+//
+// This is the black screen. Building a relay for a new source stopped the
+// previous one immediately, and when the viewer switches source (or switches
+// episode inside a pack) that previous one is the relay mpv is reading from
+// right now. Its input vanished mid-frame, seconds before the replacement was
+// resolved and loaded — so the picture went black, and with up to
+// DEBRID_BUDGET_MS of resolving still to come there was nothing to fall back
+// to. Switching repeatedly did it repeatedly. Closing the player and playing
+// the same source again always worked, because a fresh play has no live relay
+// to kill.
+//
+// The old relay is cheap to keep: an idle local proxy holding one upstream
+// link. It is retired once the new file is actually playing, and swept by the
+// grace timer if that never happens.
+function _debridProxyRetire() {
+  if (!_debridReady) return
+  const old = _debridReady
+  _debridReady = null
+  old.retireTimer = setTimeout(() => {
+    _debridRetiring = _debridRetiring.filter(e => e !== old)
+    try { old.proxy.stop() } catch (_) {}
+  }, DEBRID_RETIRE_GRACE_MS)
+  _debridRetiring.push(old)
+}
+
+// The new file is playing: nothing can still be reading the old relays.
+function _debridProxySweepRetired() {
+  const list = _debridRetiring
+  _debridRetiring = []
+  for (const e of list) {
+    if (e.retireTimer) clearTimeout(e.retireTimer)
+    try { e.proxy.stop() } catch (_) {}
+  }
 }
 // A relay older than the link's own lifetime is pointing at a URL that has
 // since died, so it is rebuilt rather than trusted.
@@ -17445,7 +17493,9 @@ async function _debridPlayable(magnet, want) {
   // whole search past its IPC deadline.
   const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
   const url = await proxy.serve(direct)
-  _debridProxyStop()
+  // Retired, not stopped: when this resolve is for a SWITCH, the relay being
+  // replaced is the one feeding the picture on screen.
+  _debridProxyRetire()
   _debridReady = { magnet, proxy, url, want: want || null, at: Date.now() }
   return url
 }
