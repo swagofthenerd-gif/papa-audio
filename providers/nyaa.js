@@ -205,7 +205,16 @@ function _matchesEpisodeNumber(t, n) {
 // SxxEyy titles are single episodes, not packs, and are excluded by isPack
 // before this is consulted.
 function _packSeason(title) {
-  const m = /\b(?:season[\s._-]*0*(\d{1,3})|s0*(\d{1,3}))\b(?![\s._-]*e)/i.exec(String(title || ''))
+  const t = String(title || '')
+  // The ORDINAL form first. Measured against 225 real nyaa titles for three
+  // multi-season shows: 18 state the season as "2nd Season"/"4th Season", and
+  // read the other way round the number picked up is the one AFTER the word —
+  // which is the episode. "…Slime Datta Ken 4th Season - 21" came out as
+  // season 21, and "…3rd Season - 01" as season 1, so a later-season pack
+  // passed for a first-season request and played its own episode 1.
+  let m = /\b(\d{1,3})(?:st|nd|rd|th)[\s._-]+season\b/i.exec(t)
+  if (m) return Number(m[1])
+  m = /\b(?:season[\s._-]*0*(\d{1,3})|s0*(\d{1,3}))\b(?![\s._-]*e)/i.exec(t)
   return m ? Number(m[1] || m[2]) : null
 }
 
@@ -410,6 +419,7 @@ module.exports = {
   buildFeedUrl,
   parseFeed,
   matchesEpisode,
+  _packSeason,
   normalizeItem,
   createNyaaProvider,
   _resetMirrorHealth,
