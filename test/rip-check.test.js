@@ -779,3 +779,36 @@ test('isPcmFamily knows which codecs cannot understate their channel count', () 
     assert.equal(R.isPcmFamily(c), false, String(c))
   }
 })
+
+// ── Date guard: the taper-folder classes the first fix missed ────────────────
+// Soulseek is full of live-show folders named for a date, and an unpadded date
+// reads as "5.1" to detectSurround. Three shapes were measured returning a
+// false claim after the first rewrite; widening the guard can only ever DROP a
+// claim, never invent one, so it cannot turn a genuine rip into an accusation.
+test('a date component before the token kills the claim however it is joined', () => {
+  const dated = [
+    'Grateful Dead 1977-5-1 Barton Hall',     // original case, joined by the token's separator
+    'Grateful Dead 1977 5-1 Cornell',         // year spelled off with a SPACE
+    'Phish 1995 5-1 Albany',
+    'gd77 3-5-1 Fillmore East',               // ONE-digit component
+    'Allman Brothers 1971 3-5-1 Fillmore',
+    'Dead 9-5-1 show',
+    'Zappa 6-5-1 Roxy',
+  ]
+  for (const name of dated) {
+    assert.equal(R.accusableClaim('5.1', name), null, name)
+  }
+})
+
+test('a real surround name still claims, however the year is written', () => {
+  const real = [
+    'Pink_Floyd.Wish_You_Were_Here_50_2011_5.1_Surround_Mix.BLURAY.FLAC.2025.401',
+    'Artist.Album.2011.5.1.BluRay.FLAC',
+    'Some Album (2016) 5.1 Surround',
+    'Album 1977 5.1 Surround Mix',
+    'DSOTM 5.1 DTS',
+  ]
+  for (const name of real) {
+    assert.equal(R.accusableClaim('5.1', name), '5.1', name)
+  }
+})

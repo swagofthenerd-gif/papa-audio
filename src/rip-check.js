@@ -233,9 +233,19 @@ const SURROUND_NEAR =
 // ('..._2011_5.1_Surround_Mix...') or follow the token with a surround word
 // ('Artist.Album.2011.5.1.BluRay.FLAC').
 function dateComponentBefore(before, sep) {
-  if (/(?:^|\D)(?:\d{2}|\d{4})\/$/.test(before)) return true      // 1977/5-1
+  // Any run of 1-4 digits immediately in front counts, joined either by the
+  // token's own separator or by a space. Three measured misses drove each part:
+  //   'gd77 3-5-1 Fillmore East'       one-digit component  -> was claimed 5.1
+  //   'Grateful Dead 1977 5-1 Cornell' space-separated year -> was claimed 5.1
+  //   'Grateful Dead 1977-5-1'         the original case    -> already caught
+  // Widening this can only ever DROP a claim, never invent one, so it cannot
+  // turn a genuine rip into an accusation. A surround word after the token
+  // still overrides it at the call site, which is what keeps the real
+  // '..._2011_5.1_Surround_Mix...' and '...2011.5.1.BluRay...' names claimed.
+  if (/(?:^|\D)\d{1,4}\/$/.test(before)) return true               // 1977/5-1
+  if (/(?:^|\D)\d{1,4}[ ]$/.test(before)) return true               // 1977 5-1
   const esc = /[.\-]/.test(sep) ? '\\' + sep : sep
-  return new RegExp('(?:^|\\D)(?:\\d{2}|\\d{4})' + esc + '$').test(before)
+  return new RegExp('(?:^|\\D)\\d{1,4}' + esc + '$').test(before)
 }
 
 function accusableClaim(label, text) {
@@ -562,7 +572,14 @@ function channelVerdict({ channels, channelLayout, claim, perChannel, complete,
   // made out loud is gated, and failing the gate falls back to the neutral empty
   // text, never to a warning.
   if (ch >= 4 && claimLabel !== null) {
-    const clean = read && silent.length === 0 && wellAboveFloor
+    // `silent` counts EVERY -inf channel, LFE included, but the comment above
+    // its definition — and surroundIdx, and wellAboveFloor — all exclude the
+    // LFE, because a genuine mix can hold a digitally silent LFE for a whole
+    // track. Measured: Animals '1-05 - Pigs On The Wing (Part Two).flac' has
+    // ch4 (LFE) at -inf while all five other channels clear the floor, and the
+    // confirming sentence was being withheld from a demonstrably clean rip.
+    const silentNonLfe = silent.filter(i => i !== lfe)
+    const clean = read && silentNonLfe.length === 0 && wellAboveFloor
     return out('surround', 'good', Object.assign({}, base, {
       text: clean ? 'All ' + ch + ' channels carry sound — nothing is padded with silence.' + tracks : '',
     }))
