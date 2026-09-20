@@ -17,6 +17,14 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
+  // Same deterministic hash-to-hue recipe as slsk-dossier.js's paintCover, so
+  // the inspector cover is never a flat dark square while art loads (or if
+  // none is ever fetched for it).
+  function coverGradient(title) {
+    const hue = Math.abs([...String(title || '')].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+    return `linear-gradient(135deg,hsl(${hue},45%,20%),hsl(${(hue + 40) % 360},35%,12%))`
+  }
+
   // ── Column widths ─────────────────────────────────────────────────────────
   // Stored per column INDEX, not per path: the point of dragging column 1 wider
   // is that the first level of every share stays wide, whichever folder you are
@@ -224,7 +232,7 @@
       const q = dirQuality ? dirQuality(m.node) : ''
       const tracks = m.tracks.map((t, i) => `<div class="slr-track" data-fi="${i}"><span class="slr-n slr-mono">${i + 1}</span><span class="slr-t">${esc(String(t.name || '').replace(/\.[a-z0-9]+$/i, ''))}</span><span class="slr-q slr-mono">${esc(t.bitDepth ? num(t.bitDepth) + '/' + num(Math.round(Number(t.sampleRate) / 1000)) : '')}</span></div>`).join('')
       const ex = [m.extras.log && 'log', m.extras.cue && 'cue', m.extras.art && 'artwork'].filter(Boolean).join(' · ')
-      return `<div class="slr-insp"><div class="slr-insp-cover" data-cover="${esc(m.path)}"></div><h4>${esc(a ? a.album : m.name)}</h4>
+      return `<div class="slr-insp"><div class="slr-insp-cover" data-cover="${esc(m.path)}" style="background-image:${coverGradient(a ? a.album : m.name)}"></div><h4>${esc(a ? a.album : m.name)}</h4>
         <div class="slr-muted">${esc([a && a.artist, a && a.year, q].filter(Boolean).join(' · '))}</div>
         <dl class="slr-kv"><dt>Tracks</dt><dd class="slr-mono">${num(m.tracks.length)}</dd><dt>Size</dt><dd class="slr-mono">${esc(fmtSize(m.size))}</dd>${ex ? `<dt>Extras</dt><dd>${esc(ex)}</dd>` : ''}${a && a.upgrade ? `<dt>Yours</dt><dd class="slr-mono">${esc(a.upgrade.yours || '')}</dd><dt>Verdict</dt><dd class="slr-v-up">upgrade</dd>` : ''}</dl>
         <div class="slr-tracks">${tracks}</div>

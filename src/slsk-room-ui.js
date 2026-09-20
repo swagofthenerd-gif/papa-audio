@@ -9,6 +9,13 @@
   const SF = () => (typeof window !== 'undefined' && window.PapaSlskFilters) || null
   const CO = () => (typeof window !== 'undefined' && window.PapaSlskColumns) || null
 
+  // Same deterministic hash-to-hue recipe as slsk-dossier.js's paintCover,
+  // so a cover never renders as a flat dark square before art arrives.
+  function coverGradient(title) {
+    const hue = Math.abs([...String(title || '')].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+    return `linear-gradient(135deg,hsl(${hue},45%,20%),hsl(${(hue + 40) % 360},35%,12%))`
+  }
+
   function modeKey(username) { return 'slsk_lib_mode:' + String(username || '').toLowerCase() }
   function sortKey(username) { return 'slsk_hunt_sort:' + String(username || '').toLowerCase() }
   function audioKey(username) { return 'slsk_folders_audio:' + String(username || '').toLowerCase() }
@@ -211,7 +218,7 @@
     function cardHtml(a) {
       const tier = H().tierOf(a)
       const hint = a.upgrade ? 'upgrade' : (missingSet.has(a) ? 'not yours' : 'you have it')
-      return `<button class="slr-card" data-path="${esc(a.folderPath)}"><span class="slr-card-cover" data-art="${esc(a.artist)}|${esc(a.album)}"><i class="slr-lbl slr-lbl-${tier}"></i></span>
+      return `<button class="slr-card" data-path="${esc(a.folderPath)}"><span class="slr-card-cover" data-art="${esc(a.artist)}|${esc(a.album)}" style="background-image:${coverGradient(a.album || a.folderName)}"><i class="slr-lbl slr-lbl-${tier}"></i></span>
         <span class="slr-card-t">${esc(a.album || a.folderName)}</span><span class="slr-card-a">${esc([a.artist, a.year].filter(Boolean).join(' · '))}</span><span class="slr-card-hint slr-hint-${hint.replace(/\s/g, '-')}">${esc(hint)}${a.isHiRes ? ' · ' + esc(a.maxBitDepth) + '/' + Math.round(Number(a.maxSampleRate) / 1000) : ''}</span></button>`
     }
 
@@ -233,7 +240,7 @@
       }).join('')
       const WINDOW = 300
       const rowHtml = r => `<tr class="slr-tr slr-tr-${r.verdictKind}" data-path="${esc(r.album.folderPath)}"><td><input type="checkbox" class="slr-pick" data-path="${esc(r.album.folderPath)}" aria-label="Select"></td>
-        <td class="slr-td-title"><span class="slr-mini-cover" data-art="${esc(r.artist)}|${esc(r.title)}"></span><b>${esc(r.title)}</b><small>${esc([r.artist, r.year].filter(Boolean).join(' · '))}</small></td>
+        <td class="slr-td-title"><span class="slr-mini-cover" data-art="${esc(r.artist)}|${esc(r.title)}" style="background-image:${coverGradient(r.title)}"></span><b>${esc(r.title)}</b><small>${esc([r.artist, r.year].filter(Boolean).join(' · '))}</small></td>
         <td class="slr-mono"><i class="slr-lbl slr-lbl-${r.tier}"></i>${esc(r.theirs)}</td><td class="slr-mono">${esc(r.yours)}</td><td class="slr-verdict slr-v-${r.verdictKind}">${esc(r.verdictText)}</td><td class="slr-mono">${esc(SH().fmtSize(r.size))}</td></tr>`
       bodyEl.innerHTML = `
         <div class="slr-tiles">${tiles.map(t => `<button class="slr-tile${hunt.filter === t.id ? ' is-on' : ''}${t.id === 'upgrades' && t.n ? ' is-hot' : ''}" data-tile="${t.id}"><b>${t.n.toLocaleString()}</b><span>${esc(t.label)}</span></button>`).join('')}</div>
