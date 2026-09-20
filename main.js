@@ -9361,6 +9361,46 @@ const UPLOAD_POLL_IDLE_MS = 5 * 60 * 1000
 let _uploadTimer = null
 let _uploadPollMs = UPLOAD_POLL_IDLE_MS
 let _uploadActive = false   // last-seen active/idle, for the transition event
+// The current upload rows, slimmed, as of the last successful poll. The sharing
+// panel needs to name the files and the peers, which the counters cannot do; it
+// reads them from here so it never costs slskd an extra request. Left untouched
+// when slskd is unreachable — the handler answers [] in that case rather than
+// serving a snapshot that may be minutes stale.
+let _lastUploadRows = []
+
+// slskd's /transfers/uploads has answered in three shapes over its versions:
+// user -> directories -> files, user -> files, and an already-flat file list.
+// Keep only what the panel paints. Everything in these rows is peer-controlled,
+// so the fewer fields that cross the bridge the better.
+function slimUploadRows(raw) {
+  const out = []
+  const push = (username, f) => {
+    if (!f || typeof f !== 'object') return
+    const filename = String(f.filename || f.name || '')
+    if (!filename && !username) return
+    out.push({
+      filename: filename,
+      username: username,
+      state: String(f.state || ''),
+      percentComplete: Number(f.percentComplete) || 0,
+      averageSpeed: Number(f.averageSpeed) || 0,
+    })
+  }
+  for (const u of (Array.isArray(raw) ? raw : [])) {
+    if (!u || typeof u !== 'object') continue
+    const username = String(u.username || u.user || '')
+    if (Array.isArray(u.directories)) {
+      for (const d of u.directories) {
+        for (const f of (d && Array.isArray(d.files) ? d.files : [])) push(username, f)
+      }
+    } else if (Array.isArray(u.files)) {
+      for (const f of u.files) push(username, f)
+    } else {
+      push(username, u)
+    }
+  }
+  return out
+}
 
 async function slskUploadPollOnce() {
   let uploads = null
@@ -9375,6 +9415,7 @@ async function slskUploadPollOnce() {
   const prev = sideStores.slskUploadStats.get()
   const result = uploadStats.ingest(prev, uploads, now)
   sideStores.slskUploadStats.set(result.state)
+  _lastUploadRows = slimUploadRows(uploads)
   const nowActive = result.activeUploads > 0
   // Retune the cadence to match activity, and fire the transition event once when
   // the active/idle state actually flips.
@@ -9419,6 +9460,8 @@ ipcMain.handle('slsk-upload-stats', async () => {
       activeUploads: result.activeUploads,
       totalUploadedToday: result.totalUploadedToday,
       distinctPeersToday: result.distinctPeersToday,
+      // Who is taking what, right now — the detail the counters cannot carry.
+      rows: _lastUploadRows,
     }
   }
   // slskd unreachable: serve the last persisted counters, rolled to today so a
@@ -9430,6 +9473,9 @@ ipcMain.handle('slsk-upload-stats', async () => {
     activeUploads: 0,
     totalUploadedToday: rolled.totalUploadedToday,
     distinctPeersToday: rolled.distinctPeersToday,
+    // Nothing can be in flight through a daemon we cannot reach, and a stale
+    // row list would show progress bars that never move.
+    rows: [],
   }
 })
 
