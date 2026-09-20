@@ -122,6 +122,12 @@ function _slskRepaint(query) {
 // wraps renderer-side IPC errors as "Error invoking remote method '...': ...",
 // which is noise to the user.
 function _slskErrText(e) {
+  // He turned it off himself. That is not a failure, and the first branch,
+  // before the classifier gets anywhere near it, so "Soulseek is not
+  // connected." can never be shown for a switch he deliberately flipped.
+  if (e && (e.code === 'SLSK_OFF' || e.slskOff === true)) {
+    return 'Soulseek is off. Turn it on to search for music.'
+  }
   // Roadmap 057: the same classifier YouTube uses, so both sources describe
   // the same failure the same way. The slskd-specific lines below stay.
   var F = (typeof PapaSourceFailure !== 'undefined' && PapaSourceFailure) || null
@@ -25437,7 +25443,10 @@ function _switchMcsTab(tab) {
   document.querySelectorAll('.mcs-panel').forEach(p => p.classList.toggle('mcs-panel-hidden', !p.id.endsWith(tab)))
   if (tab === 'memory') _renderMemoryTab()
   // Poll the storage-health chip only while Settings is on screen (App #5).
-  if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics() }
+  // The Soulseek block repaints from a fresh read on every open: it used to be
+  // painted once at boot, so the sentence naming his shared folders could
+  // describe a folder he removed weeks ago.
+  if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics(); _repaintSharingSettings() }
   else _stopStorageHealthPoll()
 }
 
@@ -27178,10 +27187,437 @@ async function _initSoulseekAccountSettings() {
   }
 }
 
+// ── Settings → Soulseek: what goes out, and whether Soulseek runs at all ─────
+//
+// The three-way "Share with other people" dropdown is gone. In its place is a
+// list of folders with a tick each, and one rule that has to be true of both
+// the store and the daemon: NOTHING CHANGES UNTIL HE PRESSES APPLY. So the
+// ticks live here, in the renderer, between a fresh read and an Apply — they
+// are not written anywhere on the way past.
+
+// The rows exactly as painted: [{ path, label, source, selected, missing }].
+// `path` is always normalised and absolute; main resolved it.
+let _slskShareRows = []
+// The stored selection, so Apply knows whether it has any work to do. Compared
+// as a set: main stores his tick order, the list paints in candidate order, and
+// a difference in order alone is not a change to what is shared.
+let _slskShareSaved = []
+// Apply is mid-flight. A tick made while the daemon is restarting must not
+// un-disable the button underneath it and offer a second bounce.
+let _slskShareApplying = false
+
+// The same pure module main uses, loaded as a page script. Nothing here
+// re-implements its path rules — the UI only repeats what the module decided.
+function _slskShareModule() {
+  return (typeof PapaSlskShare !== 'undefined' && PapaSlskShare) ||
+    (window && window.PapaSlskShare) || null
+}
+
+// Which ticked folders sit inside another ticked folder, mapped to the folder
+// that actually reaches the daemon. collapse() picks the SHORTEST ancestor, so
+// a row never names a covering folder that is itself covered.
+function _slskShareCoverage() {
+  const map = Object.create(null)
+  const M = _slskShareModule()
+  if (!M) return map
+  const ticked = _slskShareRows.filter(r => r.selected).map(r => r.path)
+  for (const c of M.collapse(ticked).covered) map[c.path] = c.coveredBy
+  return map
+}
+
+// What would actually go out right now: ticked, still there, and with nested
+// folders collapsed into the parent that already covers them.
+function _slskShareLiveCount() {
+  const covered = _slskShareCoverage()
+  return _slskShareRows.filter(r => r.selected && !r.missing && !covered[r.path]).length
+}
+
+function _slskShareCountText(n) {
+  if (!n) return 'Not sharing anything'
+  return 'Sharing ' + n + ' folder' + (n === 1 ? '' : 's')
+}
+
+// The ticks, in painted order.
+function _slskShareTicked() {
+  return _slskShareRows.filter(r => r.selected).map(r => r.path)
+}
+
+// Apply is dead until something is different from what is stored.
+function _slskShareDirty() {
+  const now = _slskShareTicked().slice().sort().join('\n')
+  return now !== _slskShareSaved.slice().sort().join('\n')
+}
+
+// Both read through try/catch on purpose: they are declared further down this
+// file, and a throw here would take the whole settings paint with it.
+function _slskShareActiveDownloads() {
+  try { return (_dlLastFiles || []).filter(f => _dlCategory(f.state) === 'active').length }
+  catch (_) { return 0 }
+}
+function _slskShareActiveUploads() {
+  try { return Number(_sharingStats && _sharingStats.activeUploads) || 0 }
+  catch (_) { return 0 }
+}
+
+// Pressing Apply bounces the daemon, which stops anything downloading and
+// starts it again on its own. Said BEFORE the press, so it is never a surprise.
+function _slskShareBusyText() {
+  const n = _slskShareActiveDownloads()
+  if (!n) return ''
+  return n + (n === 1 ? ' download is' : ' downloads are') + ' running. Changing ' +
+    'this stops them and starts them again on their own — it can take a couple ' +
+    'of minutes.'
+}
+
+function _paintSlskShareList() {
+  const list = document.getElementById('slsk-share-list')
+  if (!list) return
+  const covered = _slskShareCoverage()
+  if (!_slskShareRows.length) {
+    list.innerHTML = '<div class="mcs-set-hint">No folders to choose from yet.</div>'
+  } else {
+    list.innerHTML = _slskShareRows.map((r, i) => {
+      const by = r.selected ? covered[r.path] : null
+      // A hand-picked folder gets a way off the list entirely: an unticked row
+      // for a folder nothing else in the app knows about is clutter. Music and
+      // download folders never do — they belong to other parts of the app.
+      const droppable = r.missing || r.source === 'custom'
+      const note = r.missing
+        ? "<span class=\"mcs-set-hint mcs-share-note\">can't find this folder any more</span>"
+        : by
+          ? '<span class="mcs-set-hint mcs-share-note">Already covered — this folder is inside ' +
+            esc(by) + ", which you're sharing.</span>"
+          : ''
+      return '<div class="mcs-set-row mcs-share-row' +
+        (r.missing ? ' mcs-share-row-missing' : '') +
+        (by ? ' mcs-share-row-covered' : '') + '">' +
+        '<label class="mcs-share-pick">' +
+          '<input type="checkbox" class="mcs-set-check" data-slsk-share="' + i + '"' +
+            (r.selected ? ' checked' : '') + '>' +
+          '<span class="mcs-share-main">' +
+            '<span class="mcs-share-name">' + (r.missing ? '⚠ ' : '') + esc(r.label) + '</span>' +
+            '<span class="mcs-set-hint mcs-share-path">' + esc(r.path) + '</span>' +
+            note +
+          '</span>' +
+        '</label>' +
+        (droppable
+          ? '<button type="button" class="mcs-set-refresh mcs-share-drop" ' +
+            'data-slsk-share-drop="' + i + '">' +
+            (r.missing ? 'Take it off the list' : '✕') + '</button>'
+          : '') +
+        '</div>'
+    }).join('')
+  }
+
+  const count = document.getElementById('slsk-share-count')
+  if (count) count.textContent = _slskShareCountText(_slskShareLiveCount())
+
+  const busy = document.getElementById('slsk-share-busy')
+  if (busy) {
+    const t = _slskShareBusyText()
+    busy.textContent = t
+    busy.hidden = !t
+  }
+
+  const apply = document.getElementById('slsk-share-apply-btn')
+  if (apply) apply.disabled = _slskShareApplying || !_slskShareDirty()
+}
+
+// Every paint of this block starts from a fresh read. It used to be painted
+// once at boot, so the sentence naming his shared folder could describe a
+// folder he removed weeks ago.
+async function _repaintSlskShare() {
+  const list = document.getElementById('slsk-share-list')
+  if (!list || !window.api || typeof window.api.slskShareFoldersGet !== 'function') return
+  const r = await window.api.slskShareFoldersGet().catch(() => null)
+  if (!r || !r.ok) {
+    list.innerHTML = '<div class="mcs-set-hint">Could not read which folders are shared.</div>'
+    return
+  }
+  _slskShareRows = (r.candidates || []).map(c => ({
+    path: c.path, label: c.label || c.path, source: c.source,
+    selected: !!c.selected, missing: !!c.missing,
+  }))
+  _slskShareSaved = (r.selected || []).slice()
+  const text = document.getElementById('slsk-share-text')
+  if (text) text.textContent = r.text || ''
+  _paintSlskShareList()
+}
+
+async function _slskShareApply() {
+  const btn = document.getElementById('slsk-share-apply-btn')
+  const hint = document.getElementById('slsk-share-apply-hint')
+  const folders = _slskShareTicked()
+  _slskShareApplying = true
+  if (btn) { btn.disabled = true; btn.textContent = 'Reading your folders…' }
+  if (hint) {
+    hint.textContent = 'Soulseek is reading through the folders you picked so ' +
+      "other people can find what's in them. A big library takes a few minutes. " +
+      "You don't have to wait here."
+  }
+  const r = await window.api.slskShareFoldersSet({ folders }).catch(() => null)
+  _slskShareApplying = false
+  if (btn) btn.textContent = 'Apply'
+  if (hint) hint.textContent = 'Nothing changes until you press Apply.'
+
+  if (!r) showSnackbar('Could not change what is shared')
+  else if (r.ok === false && r.dryRun) showSnackbar(r.error)
+  else if (r.ok === false) {
+    // Saved is saved — but not a green tick, because the daemon did not come
+    // back and the health supervisor is what will try again.
+    showSnackbar("Your choice is saved, but Soulseek didn't come back up. " +
+      "It'll try again on its own in a minute.", '', function () {}, 8000)
+  } else if (r.enabled === false) {
+    showSnackbar('Saved. It takes effect when you turn Soulseek back on.')
+  } else {
+    showSnackbar(_slskShareCountText((r.dirs || []).length) + '.')
+  }
+  await _repaintSlskShare()
+}
+
+async function _slskShareAdd() {
+  const r = await window.api.slskShareFolderPick().catch(() => null)
+  if (!r || r.cancelled) return
+  if (!r.ok) { showSnackbar(r.error || 'That folder cannot be shared', '', function () {}, 8000); return }
+  const M = _slskShareModule()
+  const p = M ? M.normalisePath(r.path) : r.path
+  if (!p) return
+  const existing = _slskShareRows.find(row => row.path === p)
+  // Nothing is written here. The row is added to the list ticked, and only
+  // reaches the daemon when he presses Apply.
+  if (existing) existing.selected = true
+  else {
+    _slskShareRows.push({
+      path: p, label: p.split('/').filter(Boolean).pop() || p,
+      source: 'custom', selected: true, missing: false,
+    })
+  }
+  _paintSlskShareList()
+}
+
+// ── The off switch ───────────────────────────────────────────────────────────
+// "Not sharing anything" is not this. That empties the share list and leaves
+// the daemon signed in, downloading, answering searches and holding the router
+// port open. Off means the app stops using the network.
+function _slskOffUntilClock(ms) {
+  const d = new Date(Number(ms))
+  if (!isFinite(d.getTime())) return ''
+  return String(d.getHours()).padStart(2, '0') + ':' +
+    String(d.getMinutes()).padStart(2, '0')
+}
+
+function _paintSlskEnabled(s) {
+  const box = document.getElementById('slsk-enabled')
+  if (!box) return
+  const on = !s || s.enabled !== false
+  box.checked = on
+  const until = (!on && s && s.offUntil) ? _slskOffUntilClock(s.offUntil) : ''
+  const text = document.getElementById('slsk-enabled-text')
+  if (text) {
+    text.textContent = on
+      ? 'On — you can search and download, and people can take files you share.'
+      : until
+        ? 'Off until ' + until + ' — it comes back on by itself.'
+        : 'Off — no searching, no downloading, nobody can take anything from you.'
+  }
+  // Exactly one timed option, and it is a button next to the off state rather
+  // than a menu. No countdown chips anywhere.
+  const timer = document.getElementById('slsk-enabled-timer-btn')
+  if (timer) {
+    timer.hidden = on
+    timer.textContent = until ? 'Turn it on now' : 'Back on in an hour'
+  }
+}
+
+async function _repaintSlskEnabled() {
+  if (!window.api || typeof window.api.slskEnabledGet !== 'function') return
+  _paintSlskEnabled(await window.api.slskEnabledGet().catch(() => null))
+}
+
+async function _slskEnabledApply(enabled, forMinutes) {
+  const box = document.getElementById('slsk-enabled')
+  if (box) box.disabled = true
+  const patch = forMinutes ? { enabled, forMinutes } : { enabled }
+  const r = await window.api.slskEnabledSet(patch).catch(() => null)
+  if (box) box.disabled = false
+  if (!r || r.ok === false) {
+    showSnackbar((r && r.error) || 'Could not change Soulseek', '', function () {}, 8000)
+    await _repaintSlskEnabled()
+    return
+  }
+  _paintSlskEnabled(r)
+  if (r.enabled) {
+    // A cold start reads through the shared folders before it answers anybody,
+    // so it is minutes, not the second a reconnect costs. Say which one it is.
+    showSnackbar(r.method === 'started'
+      ? 'Turning Soulseek on. It reads through your shared folders first, which takes a few minutes.'
+      : 'Soulseek is back on.')
+  } else {
+    showSnackbar(r.offUntil
+      ? "Soulseek is off. It'll come back on at " + _slskOffUntilClock(r.offUntil) + '.'
+      : 'Soulseek is off.')
+  }
+  // What is shared and what the daemon is doing are the same block; the off
+  // state changes what Apply will say.
+  await _repaintSlskShare()
+}
+
+// Turning it off is confirmed only when something is actually in flight.
+function _slskOffInFlightText() {
+  const dl = _slskShareActiveDownloads()
+  const up = _slskShareActiveUploads()
+  if (!dl && !up) return ''
+  const parts = []
+  if (dl) parts.push(dl + (dl === 1 ? ' download is' : ' downloads are') + ' running')
+  if (up) {
+    parts.push(up === 1
+      ? '1 person is taking a file from you'
+      : up + ' people are taking files from you')
+  }
+  return parts.join(' and ') + '. Turning Soulseek off stops all of it.' +
+    (dl ? ' Your downloads go back on the list and start again when you turn it back on.' : '')
+}
+
+async function _slskEnabledToggle(wantOn) {
+  if (wantOn) { await _slskEnabledApply(true); return }
+  const warn = _slskOffInFlightText()
+  if (!warn) { await _slskEnabledApply(false); return }
+  // Snap the switch back to what is still true while he decides — the change
+  // event already moved it, and nothing has happened yet.
+  _paintSlskEnabled({ enabled: true, offUntil: null })
+  _mgConfirm('Turn Soulseek off?',
+    '<p class="mg-confirm-warn">' + esc(warn) + '</p>',
+    'Turn it off',
+    () => _slskEnabledApply(false),
+    'Leave it on')
+}
+
+// ── Go easy on my connection ─────────────────────────────────────────────────
+function _paintSlskUploadLimit(r, saved) {
+  const slots = document.getElementById('slsk-upload-slots')
+  const mbps = document.getElementById('slsk-upload-mbps')
+  const text = document.getElementById('slsk-upload-text')
+  if (r && slots) slots.value = String(r.slots)
+  // Empty, not "0": the box says Unlimited in its placeholder, and a nought
+  // sitting in a speed field reads as a cap of nothing.
+  if (r && mbps) mbps.value = r.mbps > 0 ? String(r.mbps) : ''
+  if (text) {
+    text.textContent = ((r && r.text) || '') +
+      (saved ? " Saved. It's in force now." : '')
+  }
+}
+
+async function _repaintSlskUploadLimit() {
+  if (!window.api || typeof window.api.slskUploadLimitGet !== 'function') return
+  _paintSlskUploadLimit(await window.api.slskUploadLimitGet().catch(() => null), false)
+}
+
+async function _slskUploadLimitChanged() {
+  const slots = document.getElementById('slsk-upload-slots')
+  const mbps = document.getElementById('slsk-upload-mbps')
+  const raw = mbps ? String(mbps.value).trim() : ''
+  const r = await window.api.slskUploadLimitSet({
+    slots: slots ? Number(slots.value) : undefined,
+    mbps: raw === '' ? 0 : Number(raw),
+  }).catch(() => null)
+  if (!r || r.ok === false) {
+    showSnackbar((r && r.error) || 'Could not change the upload limit')
+    await _repaintSlskUploadLimit()
+    return
+  }
+  // slskd watches its own config file, so a new slot count or speed cap is in
+  // force within seconds of the rewrite — measured against the installed
+  // binary, which is why there is no "next time Soulseek starts" branch here.
+  _paintSlskUploadLimit(r, r.applied === 'live')
+}
+
+// Wiring, once. Everything below is idempotent so the repaint that runs on
+// every Settings open cannot double-bind a listener.
+function _wireSoulseekSettings() {
+  const list = document.getElementById('slsk-share-list')
+  if (list && !list._wired) {
+    list._wired = true
+    // Delegated, like #maint-list: one listener for every row, so a repaint
+    // never leaves a dead or duplicated handler behind.
+    list.addEventListener('change', ev => {
+      const box = ev.target && ev.target.closest ? ev.target.closest('[data-slsk-share]') : null
+      if (!box) return
+      const i = Number(box.getAttribute('data-slsk-share'))
+      if (!_slskShareRows[i]) return
+      _slskShareRows[i].selected = !!box.checked
+      _paintSlskShareList()
+      // The repaint replaced the row he was standing on; put the keyboard back
+      // where it was rather than dropping focus to the top of the page.
+      const again = list.querySelector('[data-slsk-share="' + i + '"]')
+      if (again && typeof again.focus === 'function') { try { again.focus() } catch (_) {} }
+    })
+    list.addEventListener('click', ev => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-slsk-share-drop]') : null
+      if (!btn) return
+      ev.preventDefault()
+      const i = Number(btn.getAttribute('data-slsk-share-drop'))
+      if (!_slskShareRows[i]) return
+      _slskShareRows.splice(i, 1)
+      _paintSlskShareList()
+    })
+  }
+
+  const add = document.getElementById('slsk-share-add-btn')
+  if (add && !add._wired && window.api && typeof window.api.slskShareFolderPick === 'function') {
+    add._wired = true
+    add.addEventListener('click', () => _slskShareAdd())
+  }
+
+  const apply = document.getElementById('slsk-share-apply-btn')
+  if (apply && !apply._wired && window.api && typeof window.api.slskShareFoldersSet === 'function') {
+    apply._wired = true
+    apply.addEventListener('click', () => _slskShareApply())
+  }
+
+  const enabled = document.getElementById('slsk-enabled')
+  if (enabled && !enabled._wired && window.api && typeof window.api.slskEnabledSet === 'function') {
+    enabled._wired = true
+    enabled.addEventListener('change', () => _slskEnabledToggle(!!enabled.checked))
+  }
+
+  const timer = document.getElementById('slsk-enabled-timer-btn')
+  if (timer && !timer._wired && window.api && typeof window.api.slskEnabledSet === 'function') {
+    timer._wired = true
+    timer.addEventListener('click', () => {
+      // One button, two jobs, decided by which off state is on screen: it says
+      // "Turn it on now" only while a timed off is already running.
+      if (timer.textContent === 'Turn it on now') return _slskEnabledApply(true)
+      return _slskEnabledApply(false, 60)
+    })
+  }
+
+  for (const id of ['slsk-upload-slots', 'slsk-upload-mbps']) {
+    const el = document.getElementById(id)
+    if (!el || el._wired || !window.api || typeof window.api.slskUploadLimitSet !== 'function') continue
+    el._wired = true
+    el.addEventListener('change', () => _slskUploadLimitChanged())
+  }
+}
+
+// Read everything this block shows, fresh. Called once at boot and again every
+// time Settings is opened, so nothing on screen is a memory of an older state.
+async function _repaintSharingSettings() {
+  // Wiring is idempotent, and Settings can be opened before boot has finished
+  // calling _initSharingSettings — without this the buttons would be dead
+  // until it caught up.
+  _wireSoulseekSettings()
+  await Promise.all([
+    _repaintSlskEnabled(),
+    _repaintSlskShare(),
+    _repaintSlskUploadLimit(),
+  ])
+}
+
 async function _initSharingSettings() {
   await _initSoulseekAccountSettings()
-  // Wired before the share-mode guard below: these two controls do not depend
-  // on the daemon being reachable, and an early return would leave them dead.
+  // Wired first, and with no early return anywhere below: this function used to
+  // end in a statement-level guard on the share control, and everything after
+  // it was dead whenever the API was missing.
   const legacy = document.getElementById('slsk-legacy-shop')
   if (legacy) {
     try { legacy.checked = localStorage.getItem('slskLegacyShop') === '1' } catch (_) {}
@@ -27194,19 +27630,8 @@ async function _initSharingSettings() {
       .then(() => showSnackbar(tok.value ? 'Discogs connected' : 'Discogs token removed'))
       .catch(() => {})
   }
-  const sel = document.getElementById('slsk-share-mode')
-  const text = document.getElementById('slsk-share-text')
-  if (!sel || !window.api || typeof window.api.slskShareModeGet !== 'function') return
-  const paint = (r) => { if (r && r.mode) sel.value = r.mode; if (text && r) text.textContent = r.text || '' }
-  paint(await window.api.slskShareModeGet().catch(() => null))
-  sel.onchange = async e => {
-    if (text) text.textContent = 'Applying…'
-    const r = await window.api.slskShareModeSet({ mode: e.target.value }).catch(() => null)
-    paint(r)
-    showSnackbar(r && r.ok
-      ? (r.mode === 'off' ? 'Sharing off' : 'Sharing: ' + (r.dirs || []).join(', ')) + (r.restarted ? ' — Soulseek restarted' : '')
-      : 'Could not change sharing')
-  }
+  _wireSoulseekSettings()
+  await _repaintSharingSettings()
 }
 
 // The interface-size setting offers four steps. A stored value that is out of
@@ -37389,7 +37814,11 @@ function _mgBaseName(p) {
 // so the leak compounded with ordinary use.
 var _mgConfirmClose = null
 
-function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
+// `cancelLabel` is optional and defaults to "Cancel". It exists because one
+// question — turning Soulseek off while transfers are running — reads far
+// better as "Leave it on" than as "Cancel", which says nothing about what
+// staying put means.
+function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm, cancelLabel) {
   if (_mgConfirmClose) { try { _mgConfirmClose() } catch (_) {} }
   // Belt and braces: if a dialog ever gets into the DOM without registering its
   // close (a throw between the two), the element still goes.
@@ -37404,7 +37833,7 @@ function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
     '</div>' +
     '<div class="mg-confirm-body">' + bodyHtml + '</div>' +
     '<div class="mg-confirm-actions">' +
-      '<button class="mg-btn" id="mg-cf-cancel">Cancel</button>' +
+      '<button class="mg-btn" id="mg-cf-cancel">' + esc(cancelLabel || 'Cancel') + '</button>' +
       '<button class="mg-btn mg-btn-danger" id="mg-cf-ok">' + esc(confirmLabel) + '</button>' +
     '</div></div>'
   document.body.appendChild(dlg)

@@ -560,9 +560,22 @@
           <div class="mcs-set-hint">Uses the loudness scan from the Stats page to level quiet and loud tracks at playback. Nothing is written to your files. Scan first, then turn this on.</div>
         </div>
         <!-- Roadmap 137: what this computer shares with Soulseek peers. The
-             daemon used to be handed the whole first music folder silently. -->
+             daemon used to be handed the whole first music folder silently, and
+             the only control was a three-way dropdown. Now every folder that
+             goes out is a tick he made, nothing reaches the daemon until he
+             presses Apply, and the switch at the top stops Soulseek using the
+             network at all. -->
         <div class="mcs-set-group" id="soulseek-settings">
           <div class="mcs-set-group-label">Soulseek</div>
+          <!-- The first row of the block, above Account, because it governs
+               everything below it: with this off, nothing else here is doing
+               anything. Setting sharing to nothing is NOT this — that leaves
+               the daemon signed in, downloading and holding the router port. -->
+          <label class="mcs-set-row">Use Soulseek
+            <input type="checkbox" class="mcs-set-check" id="slsk-enabled">
+          </label>
+          <div class="mcs-set-hint" id="slsk-enabled-text">Checking…</div>
+          <button class="mcs-set-refresh mcs-set-action mcs-set-reset" id="slsk-enabled-timer-btn" type="button" hidden>Back on in an hour</button>
           <!-- Two messages tell people to "check them in Settings → Soulseek".
                Before this block there was nothing here to check: the account
                modal was reachable only from the shop's own config button, and
@@ -574,14 +587,38 @@
           <div class="mcs-set-row">Download folder
             <button class="mcs-set-refresh mcs-set-action" id="slsk-folder-btn" type="button"><span id="slsk-folder-label">Loading…</span></button>
           </div>
-          <label class="mcs-set-row">Share with other people
-            <select class="mcs-set-select" id="slsk-share-mode">
-              <option value="library">My music library (default)</option>
-              <option value="downloads">Only my download folder</option>
-              <option value="off">Nothing</option>
-            </select>
-          </label>
+          <div class="mcs-set-row">Share with other people
+            <span class="mcs-share-count" id="slsk-share-count">Checking…</span>
+          </div>
+          <!-- One row per folder, rendered by _paintSlskShareList(): a tick, the
+               folder's own name, and its full path underneath — never truncated,
+               never hidden in a tooltip. Each row is a .mcs-set-row so the
+               settings search box finds it by its path as well as its name. -->
+          <div class="mcs-share-list" id="slsk-share-list">
+            <div class="mcs-set-hint">Loading…</div>
+          </div>
+          <!-- Only shown when something is actually downloading, and shown
+               BEFORE Apply is pressed, so a bounced daemon is never a surprise. -->
+          <div class="mcs-set-hint mcs-set-hint-warn" id="slsk-share-busy" hidden></div>
+          <div class="mcs-set-btn-row">
+            <button class="mcs-set-refresh mcs-set-action" id="slsk-share-add-btn" type="button">Add another folder…</button>
+            <button class="mcs-set-refresh mcs-set-action" id="slsk-share-apply-btn" type="button" disabled>Apply</button>
+          </div>
+          <div class="mcs-set-hint" id="slsk-share-apply-hint">Nothing changes until you press Apply.</div>
           <div class="mcs-set-hint" id="slsk-share-text">Loading…</div>
+          <!-- A cap on how fast other people can take files, and how many can do
+               it at once. The daemon's own defaults are ten slots and no speed
+               limit at all, which flattens a home upstream — and a flattened
+               upstream slows his downloads too. -->
+          <div class="mcs-set-group-label mcs-set-subhead">Go easy on my connection</div>
+          <label class="mcs-set-row">How many people can take files at once
+            <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-slots" type="number" min="1" max="20" step="1" autocomplete="off">
+          </label>
+          <label class="mcs-set-row">How fast, all together (MB/s)
+            <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-mbps" type="number" min="0" step="0.1" placeholder="Unlimited" autocomplete="off">
+          </label>
+          <div class="mcs-set-hint" id="slsk-upload-text">Loading…</div>
+          <div class="mcs-set-hint">Lower these if Soulseek is making the rest of your internet slow.</div>
           <label class="mcs-set-row">Use the old library view
             <input type="checkbox" id="slsk-legacy-shop">
           </label>
@@ -1343,6 +1380,11 @@
 <script src="slsk-art-prefetch.js"></script>
 <script src="preview-racer.js"></script>
 <script src="slsk-presence.js"></script>
+<!-- The same pure module main uses to decide what goes to the daemon. Loaded
+     here so the folder list can say "already covered" the moment a tick
+     changes, instead of round-tripping to main for an answer the module
+     already knows how to give. -->
+<script src="slsk-share.js"></script>
 <script src="library-sig.js"></script>
 <!-- smart-query must load before library-index: the index reads the shared
      PapaSmartQuery global for its tokenizer/scorer/vocabulary. -->

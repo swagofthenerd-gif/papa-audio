@@ -2513,12 +2513,16 @@ h2.section-title { font-size:18px; font-weight:700; }
    against a dark panel, which is not a focus ring, and which also fires on a
    mouse click so it says nothing about keyboard position. Eight controls were
    caught with no visible ring at all: the Playback selects (#pb-mode,
-   #pb-replaygain, #pb-channels, #pb-device-loss), Soulseek sharing
-   (#slsk-share-mode) and the Video keys and limit (#video-tmdb-key,
-   #video-opensubs-key, #video-download-limit). Same 2px accent ring as the rest
-   of the app, on :focus-visible so it only appears for keyboard users. */
+   #pb-replaygain, #pb-channels, #pb-device-loss), Soulseek sharing (then a
+   #slsk-share-mode select, now the folder list and its buttons) and the Video
+   keys and limit (#video-tmdb-key, #video-opensubs-key, #video-download-limit).
+   Same 2px accent ring as the rest of the app, on :focus-visible so it only
+   appears for keyboard users. .mcs-set-check and .mcs-set-refresh joined when
+   the Soulseek block gained a switch, an Add button and an Apply button. */
 .mcs-set-select:focus-visible,
-.mcs-set-input:focus-visible {
+.mcs-set-input:focus-visible,
+.mcs-set-check:focus-visible,
+.mcs-set-refresh:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .mcs-set-hint { font-size:10px; color:var(--text3); margin-top:2px; }
@@ -2591,7 +2595,12 @@ h2.section-title { font-size:18px; font-weight:700; }
 .mcs-set-search-wrap { padding:0 16px 4px; }
 .mcs-set-search { width:100%; }
 .mcs-set-search-empty { font-size:11px; color:var(--text3); margin-top:6px; }
-.mcs-set-input-num { width:120px; flex:0 0 auto; text-align:right; }
+/* Two class names deep on purpose. A later `.mcs-set-input { width:100% }`
+   further down this file has the same one-class weight as `.mcs-set-input-num`
+   and wins on order, so a number box that asked to be narrow took the whole
+   row and squeezed its own label to one word per line. Qualifying with the row
+   outweighs it and makes the class do what its name says. */
+.mcs-set-row .mcs-set-input-num { width:120px; flex:0 0 auto; text-align:right; }
 .mcs-set-reset {
   width:auto; height:auto; padding:6px 10px; font-size:11px; align-self:flex-start;
   margin-top:4px;
@@ -2651,6 +2660,39 @@ h2.section-title { font-size:18px; font-weight:700; }
    glance without a nested table. */
 .mcs-maint-mirrors { display:flex; flex-wrap:wrap; gap:6px 12px; margin-left:17px; margin-top:-4px; }
 .mcs-maint-mirror { display:inline-flex; align-items:center; gap:4px; font-size:10px; color:var(--text3); }
+
+/* Settings → Soulseek: the folder checklist. One row per candidate folder — a
+   tick, the folder's own name, and the full path on the line beneath. The path
+   is never truncated and never moved into a tooltip: the whole point of the
+   list is that he can see exactly which folders go out. Each row keeps the
+   .mcs-set-row class so the settings search box, which only inspects those,
+   finds a folder by its path as well as by its name. */
+.mcs-share-count { font-size:12px; color:var(--text3); flex-shrink:0; }
+.mcs-share-list { display:flex; flex-direction:column; gap:2px; margin-top:4px; }
+.mcs-share-row { align-items:flex-start; gap:8px; }
+.mcs-share-pick {
+  display:flex; align-items:flex-start; gap:8px; flex:1; min-width:0; cursor:pointer;
+}
+.mcs-share-pick input[type="checkbox"] {
+  width:16px; height:16px; margin-top:2px; accent-color:var(--accent); cursor:pointer; flex-shrink:0;
+}
+.mcs-share-main { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.mcs-share-name { font-size:12px; color:var(--text2); word-break:break-word; }
+/* overflow-wrap:anywhere, not word-break:break-all: a path long enough to widen
+   the panel must wrap rather than put a horizontal scrollbar under the whole of
+   Settings — but it should break at the slashes and spaces it already has, and
+   only split a word when there is genuinely nowhere else to go. break-all
+   chopped "Aerosmith" in half with room to spare. */
+.mcs-share-path { overflow-wrap:anywhere; word-break:normal; margin-top:0; }
+.mcs-share-note { word-break:break-word; margin-top:1px; }
+/* A folder that is inside another ticked folder: still listed, still ticked,
+   but greyed, because only the parent is what actually reaches the daemon. */
+.mcs-share-row-covered .mcs-share-name, .mcs-share-row-covered .mcs-share-path { opacity:.5; }
+.mcs-share-row-missing .mcs-share-name { color:#e0a84a; }
+.mcs-share-drop {
+  width:auto; height:auto; padding:4px 8px; font-size:11px; flex-shrink:0; align-self:center;
+}
+.mcs-set-subhead { margin-top:14px; }
 
 /* Changelog / "what's new" (App §7). Rendered from a tiny md subset — headings
    and bullets only — so the styling is intentionally minimal. Scrolls within

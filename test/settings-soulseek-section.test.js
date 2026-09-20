@@ -40,7 +40,25 @@ test('Settings has a Soulseek block, at the id the copy can link to', () => {
 	const inner = block.slice(0, end)
 	assert.ok(/id="slsk-account-btn"/.test(inner), 'the account button must be in the block')
 	assert.ok(/id="slsk-folder-btn"/.test(inner), 'the download folder must be in the block')
-	assert.ok(/id="slsk-share-mode"/.test(inner), 'sharing stays where it was')
+	assert.ok(/id="slsk-share-list"/.test(inner), 'sharing stays where it was')
+	assert.ok(/id="slsk-share-apply-btn"/.test(inner), 'and so does the Apply that commits it')
+	assert.ok(/id="slsk-upload-slots"/.test(inner), 'the upload cap lives under the folder list')
+	assert.ok(!/id="slsk-share-mode"/.test(inner), 'the three-way dropdown is gone')
+})
+
+test('the off switch is the first row, because it governs everything below it', () => {
+	// With Soulseek off, the account line, the download folder, the folder list
+	// and the upload cap all describe something that is not running. The switch
+	// has to be read first, so it has to be first.
+	const block = HTML.slice(HTML.indexOf('id="soulseek-settings"'))
+	const inner = block.slice(0, block.indexOf('id="video-settings"'))
+	const order = ['slsk-enabled', 'slsk-account-btn', 'slsk-folder-btn',
+		'slsk-share-list', 'slsk-share-apply-btn', 'slsk-upload-slots']
+	const at = order.map(id => inner.indexOf('id="' + id + '"'))
+	for (let i = 0; i < order.length; i++) {
+		assert.ok(at[i] > -1, '#' + order[i] + ' must be in the Soulseek block')
+		if (i) assert.ok(at[i] > at[i - 1], '#' + order[i] + ' must come after #' + order[i - 1])
+	}
 })
 
 function node(id) {
