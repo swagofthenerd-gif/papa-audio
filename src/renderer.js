@@ -4399,6 +4399,15 @@ function _onVideoStateTick(st) {
     _watch.lastPos = st.position
     _watch.lastPosAt = now
     _watch.stallNotified = false
+    // Stalls counted for the life of the episode and were only ever zeroed by
+    // a SUCCESSFUL switch, so one hiccup at 00:04 and another at 00:38 read as
+    // "this source is dying" and threw away a stream that had been playing
+    // perfectly for half an hour — losing the warmed swarm and the pack strip
+    // with it. A source that has since played steadily has earned its slate
+    // wiped; only stalls close together mean anything.
+    if (_watch.stallEvents && _watch.lastStallAt && now - _watch.lastStallAt > 120000) {
+      _watch.stallEvents = 0
+    }
   } else if (!_watch.stallNotified && _watch.lastPosAt && now - _watch.lastPosAt > 10000) {
     _watch.stallNotified = true
     window.api.videoOsd?.('Buffering… the source has stalled. Waiting for data.', 6000).catch?.(function () {})
@@ -4637,7 +4646,15 @@ async function _playerPickSource(key) {
   _autoSwitchInFlight = true
   // Remembered as tried, so a later stall does not swing back to a source the
   // viewer has just moved away from.
-  if (_watch && _watch.tried) _watch.tried[_sourceKey(next)] = true
+  //
+  // This used to be conditional on `_watch.tried` already existing — and no
+  // _watch constructor creates it, so on a fresh play the line did nothing at
+  // all. Pick B by hand, B dies, and _nextUntriedSource handed back A: the app
+  // put him straight back on the source he had just deliberately left.
+  if (_watch) {
+    _watch.tried = _watch.tried || {}
+    _watch.tried[_sourceKey(next)] = true
+  }
   let result = next
   if (pctx.detail && pctx.detail.type !== 'movie') {
     result = Object.assign({}, next, {
@@ -4662,7 +4679,13 @@ async function _playerPickSource(key) {
     // choosing from the hero selector is.
     _playSourceKey = _sourceKey(next)
     const rel = (window.PapaReleaseName && next.title) ? window.PapaReleaseName.parse(next.title) : null
-    _rememberPreferredSource({ source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null })
+    // A CANDIDATE, not a decision. Writing the preference here wrote it on
+    // `ok`, which means the switch STARTED — so a release that never produced
+    // a single frame became this title's remembered source, and every future
+    // episode started there. It also bypassed the app's own rule that a manual
+    // pick must play for _SOURCE_PREF_AFTER_S before it is believed. The tick
+    // in _onVideoStateTick promotes this once it has actually played.
+    _watch.sourceCandidate = { source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null }
     _syncSourcesHighlight()
     if (_player && _player.syncSources) _player.syncSources()
     // No "Switched to …" here. ok means the switch STARTED: main has torn the
@@ -4673,6 +4696,12 @@ async function _playerPickSource(key) {
     // mpv's OSD narrates the stages over the picture, and the picture
     // changing is the only honest confirmation.
   } else {
+    // A switch that never started must not cost the source its place. `tried`
+    // is written before the outcome is known, and _nextUntriedSource skips a
+    // tried source for the rest of the episode — so a transient failure (a
+    // debrid back-off, an expired budget) permanently hid a perfectly good
+    // release and the list shrank with every attempt.
+    if (_watch && _watch.tried) delete _watch.tried[_sourceKey(next)]
     showToast(_videoErrorText((res && res.error) || 'Could not switch source'))
   }
 }
@@ -4735,6 +4764,15 @@ async function _autoSwitchSource() {
     if (before.quality && next.quality && before.quality !== next.quality) changed.push(before.quality + ' → ' + next.quality)
     if (before.dub != null && next.dub != null && Boolean(before.dub) !== Boolean(next.dub)) changed.push(next.dub ? 'now dubbed' : 'now subtitled')
     showToast('Switching to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
+  } else {
+    // This branch did not exist. A stall-driven switch that failed said
+    // nothing whatsoever — "Source stalled — switching to another…" and then
+    // permanent silence over a frozen frame — while still having spent one of
+    // the two auto-switches allowed per episode and having marked the source
+    // tried. Two of those and auto-recovery was dead for that episode.
+    _watch.autoSwitches = Math.max(0, (_watch.autoSwitches || 1) - 1)
+    if (_watch.tried) delete _watch.tried[_sourceKey(next)]
+    showToast(_videoErrorText((res && res.error) || 'Could not switch to another source'))
   }
 }
 
@@ -5016,6 +5054,7 @@ function _handleVideoEvent(payload) {
     // through it: swap to the next source in place, keeping the position.
     // Capped at two swaps per episode so a bad night cannot cascade forever.
     _watch.stallEvents = (_watch.stallEvents || 0) + 1
+    _watch.lastStallAt = Date.now()
     if (_watch.stallEvents >= 2 && (_watch.autoSwitches || 0) < 2) {
       _autoSwitchSource()
     }

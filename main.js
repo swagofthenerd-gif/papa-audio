@@ -14927,6 +14927,14 @@ function _wireVideoEngine() {
   // here — the OSD is the only surface the viewer can actually see — and
   // forward it so the page can offer a way out.
   engine.on('stalled', payload => {
+    // While a switch is in flight mpv is still pointed at the OLD stream,
+    // whose server has just been torn down — so it WILL stall, every time,
+    // and those stalls are the switch's own doing. Unguarded they fed the
+    // renderer's stall counter, which fires an auto-switch at two: a switch
+    // caused the stalls that triggered another switch on top of it, until the
+    // per-episode cap was spent and the episode could never be rescued again.
+    // 'ended' has been guarded for exactly this reason since it was seen live.
+    if (_videoSession.switching) return
     try { engine.osdMessage('Buffering… the source has stalled.', 5000) } catch (_) {}
     // stallCount rides along so the renderer's auto-switch (§player 27, capped
     // at 2/episode) can count repeated stalls without a watchdog of its own.
