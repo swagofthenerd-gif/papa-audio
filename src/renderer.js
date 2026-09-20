@@ -10035,6 +10035,55 @@ function _removeFromContinueWatching(cwKey, cardEl) {
   })
 }
 
+// V121: three different promises, three different words. SAVED is yours until
+// you delete it; CACHED is on this device for now and may be evicted to make
+// room; INSTANT is a resolved debrid link, not a file.
+//
+// One definition, because the cards and the episode rows now both show it and
+// a badge that means two things on two surfaces is worse than no badge.
+function _instantWords(via) {
+  if (via === 'saved') return ['SAVED', 'Saved on this device — plays with no internet, kept until you delete it']
+  if (via === 'cached' || via === 'device') return ['CACHED', 'On this device for now — plays with no internet, but may be cleared to make room. Save it to keep it.']
+  return ['INSTANT', 'Ready on your debrid account — starts at once, needs internet']
+}
+function _instantBadgeHtml(via, extraClass) {
+  const words = _instantWords(via)
+  return '<span class="vbadge vbadge-instant vbadge-' + esc(via) +
+    (extraClass ? ' ' + extraClass : '') + '" title="' + words[1] + '">' + words[0] + '</span>'
+}
+
+// Whether ONE episode is known to start at once (instant-play B). The same map
+// the cards read, looked up by that episode's own watch key — which is what
+// the season marking in main writes when a debrid pack resolves, so a whole
+// season is answered by the one resolution the page already performed.
+function _epInstantVia(n) {
+  try {
+    if (typeof _instantKeys === 'undefined' || !_instantKeys) return null
+    if (!_videoDetail || !_videoDetail.d || _videoDetail.type === 'movie') return null
+    const key = _watchKey(_videoDetail.type, _videoDetail.d.id,
+      _videoDetail.type === 'tv' ? _videoState.season : null, n)
+    return _instantKeys[key] || null
+  } catch (_) { return null }
+}
+
+// Put the marks on the episode rows already painted, rather than repainting
+// the season: the answer lands while the viewer is reading the list, and a
+// repaint there would throw away their scroll position mid-read.
+function _syncEpisodeInstantBadges() {
+  try {
+    document.querySelectorAll('.vep-row[data-ep]').forEach(function (row) {
+      const head = row.querySelector('.vep-head')
+      if (!head) return
+      const via = _epInstantVia(Number(row.getAttribute('data-ep')))
+      const existing = head.querySelector('.vep-instant')
+      if (!via) { if (existing) existing.remove(); return }
+      const html = _instantBadgeHtml(via, 'vep-instant')
+      if (existing) existing.outerHTML = html
+      else head.insertAdjacentHTML('beforeend', html)
+    })
+  } catch (_) { /* a badge is decoration and must never break the list */ }
+}
+
 function _videoCard(item) {
   item = item || {}
   const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
@@ -10058,13 +10107,7 @@ function _videoCard(item) {
   // by several tests).
   const instant = (typeof _instantKeys !== 'undefined' && _instantKeys) ? _instantKeys[key] : null
   if (instant) {
-    // V121: three different promises, three different words. SAVED is yours
-    // until you delete it; CACHED is on this device for now and may be
-    // evicted to make room; INSTANT is a resolved debrid link, not a file.
-    const words = instant === 'saved' ? ['SAVED', 'Saved on this device — plays with no internet, kept until you delete it']
-      : (instant === 'cached' || instant === 'device') ? ['CACHED', 'On this device for now — plays with no internet, but may be cleared to make room. Save it to keep it.']
-      : ['INSTANT', 'Ready on your debrid account — starts at once, needs internet']
-    badges.push('<span class="vbadge vbadge-instant vbadge-' + esc(instant) + '" title="' + words[1] + '">' + words[0] + '</span>')
+    badges.push(_instantBadgeHtml(instant))
   }
   // A row can say something about the card ("Ep 12 · 3h ago", "Ep 5 · 19:15").
   if (item.badge) badges.push('<span class="vbadge vbadge-ep">' + esc(String(item.badge)) + '</span>')
@@ -12469,7 +12512,8 @@ function _epRowHtml(r) {
     '<div class="vep-still-wrap">' + still + '<span class="vep-num">' + r.n + '</span>' +
       (r.pct ? '<i class="vep-bar" style="width:' + r.pct + '%"></i>' : '') + '</div>' +
     '<div class="vep-body">' +
-      '<div class="vep-head">' + kicker + '<span class="vep-title">' + esc(r.title) + '</span>' + mark + '</div>' +
+      '<div class="vep-head">' + kicker + '<span class="vep-title">' + esc(r.title) + '</span>' + mark +
+        (function () { const v = _epInstantVia(r.n); return v ? _instantBadgeHtml(v, 'vep-instant') : '' })() + '</div>' +
       (meta ? '<div class="vep-meta">' + meta + '</div>' : '') +
       (r.synopsis ? (conceal
         ? '<div class="vep-synopsis vep-synopsis-hidden"><button type="button" class="vep-reveal" data-reveal="' + r.n + '" data-text="' + esc(r.synopsis) + '">Show synopsis</button></div>'
@@ -12946,7 +12990,12 @@ async function _loadVideoSources(ticket, seasonTicket) {
               // Every held candidate, so the list can mark each row that
               // will start instantly rather than only the winner.
               _debridHeld = (res && Array.isArray(res.held)) ? res.held.slice() : []
-              if (res && res.magnet) { _debridPick = res.magnet; _refreshInstantKeys(true) }
+              if (res && res.magnet) {
+                _debridPick = res.magnet
+                // The season's episodes are marked by now (the pick returns
+                // them), so the refreshed map is what the rows need to read.
+                _refreshInstantKeys(true).then(_syncEpisodeInstantBadges)
+              }
               // The badges and the selector both describe what debrid is
               // holding, so both are stale until this lands.
               if (_debridHeld.length || (res && res.magnet)) {

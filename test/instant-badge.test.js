@@ -53,7 +53,18 @@ test('the card badges from the memory, distinguishing on-device from debrid, and
   const card = RENDERER.slice(RENDERER.indexOf('function _videoCard(item)'), RENDERER.indexOf('// ── Folder management'))
   // Read tolerantly: a badge must never be able to throw a card away.
   assert.ok(/const instant = \(typeof _instantKeys !== 'undefined' && _instantKeys\) \? _instantKeys\[key\] : null/.test(card))
-  assert.ok(/'SAVED'/.test(card) && /'CACHED'/.test(card) && /'INSTANT'/.test(card), 'three different truths read differently (V121)')
+  // The three words moved into _instantWords when the episode rows started
+  // showing the same mark (instant-play B): one vocabulary, because a badge
+  // that means two things on two surfaces is worse than no badge. What the
+  // card must still do is ask for the right one rather than invent a generic.
+  assert.ok(/badges\.push\(_instantBadgeHtml\(instant\)\)/.test(card),
+    'the card defers to the shared vocabulary')
+  const words = RENDERER.slice(RENDERER.indexOf('function _instantWords(via)'),
+    RENDERER.indexOf('function _instantBadgeHtml('))
+  assert.ok(/'SAVED'/.test(words) && /'CACHED'/.test(words) && /'INSTANT'/.test(words),
+    'three different truths read differently (V121)')
+  assert.ok(/via === 'saved'/.test(words) && /via === 'cached' \|\| via === 'device'/.test(words),
+    'and they are told apart by which promise was made, not by guesswork')
   assert.ok(!/videoInstantList/.test(card), 'a card must never make its own request')
   // The map is fetched once per catalogue render, before the cards are built.
   // The ticket check that sits between the two is the guard against a tab you

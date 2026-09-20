@@ -14585,6 +14585,45 @@ function _instantMark(titleKey, via) {
 }
 // The title key a piece of watch metadata belongs to: 'anime:21' from
 // { type:'anime', id:21, season, episode }.
+// One RealDebrid resolution answers a whole season (instant-play B).
+//
+// A season pack is ONE torrent holding every episode, so the moment the page's
+// debrid pick resolves one, RealDebrid has already told us — in the info this
+// very resolution cached — which episodes it is holding. That answer used to
+// be thrown away and re-asked, one episode at a time, on the next play: three
+// more requests per episode against an account that answers a burst with
+// `too_many_requests` and a two-minute back-off.
+//
+// So this costs NOTHING extra. It reads the pack's file list out of the cache
+// the resolve above filled (packFiles only goes to the network when the info
+// is missing, which it is not here) and marks every episode in it, by the
+// renderer's own watch-key spelling, so the episode list can say which rows
+// start instantly BEFORE anything is clicked.
+//
+// A single-file torrent is not a season: one file says nothing the title key
+// did not already say, so it is left alone rather than badged as a season.
+async function _markPackEpisodesInstant(magnet, want, titleKey, season) {
+  try {
+    if (!magnet || !titleKey) return []
+    const at = String(titleKey).indexOf(':')
+    if (at < 1) return []
+    const type = titleKey.slice(0, at)
+    const id = titleKey.slice(at + 1)
+    // A film has no episodes to mark; its title key is the whole answer.
+    if (type === 'movie') return []
+    const files = await debrid().packFiles(magnet, want)
+    // The key spelling and the "fewer than two is not a season" rule both
+    // belong to watch-key, which owns every other spelling of these keys.
+    const found = watchKeys.packEpisodeKeys({ files, type, id, season })
+    for (const e of found) _instantMark(e.key, 'debrid')
+    return found.map(e => e.episode)
+  } catch (_) {
+    // A pack that cannot be listed is simply not badged. This runs while the
+    // page is being read and must never fail the pick it rides on.
+    return []
+  }
+}
+
 function _titleKeyOf(meta) {
   if (!meta || !meta.type || meta.id == null) return null
   return meta.type + ':' + meta.id
@@ -16014,7 +16053,10 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey, season, episo
         const url = await _debridPlayable(c.magnet, want)
         if (url) {
           if (titleKey) _instantMark(titleKey, 'debrid')
-          return { ok: true, magnet: c.magnet, held: heldMagnets }
+          // Free, from the info this resolve just cached: every other episode
+          // of the pack, so the list can say which ones start instantly.
+          const episodes = await _markPackEpisodesInstant(c.magnet, want, titleKey, season)
+          return { ok: true, magnet: c.magnet, held: heldMagnets, episodes }
         }
       } catch (e) {
         if (/HTTP_429/.test((e && e.code) || '')) _debridBackOff()

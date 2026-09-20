@@ -56,5 +56,41 @@
     return null
   }
 
-  return { watchKey, parseWatchKey }
+
+  // Every episode a RealDebrid season pack is holding, as watch keys
+  // (instant-play B). A pack is one torrent containing a whole season, so the
+  // single resolution the page already performs knows about every episode in
+  // it — this turns that file list into the keys the instant index and the
+  // episode list both speak.
+  //
+  // `files` is what debrid.packFiles returns: entries carrying an `episode`
+  // number parsed from the filename (null when it could not be read).
+  //
+  // Fewer than two numbered episodes is not a season. A single-file torrent
+  // says nothing the title key did not already say, and badging it as a pack
+  // would promise a season that is not there — so it yields nothing rather
+  // than a misleading one-entry answer.
+  function packEpisodeKeys(opts) {
+    opts = opts || {}
+    var type = opts.type
+    var id = opts.id
+    if (!type || id == null || id === '' || type === 'movie') return []
+    var files = Array.isArray(opts.files) ? opts.files : []
+    var seen = {}
+    var out = []
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i]
+      if (!f || f.episode == null) continue
+      var n = Number(f.episode)
+      if (!isFinite(n) || n < 0) continue
+      if (seen[n]) continue
+      seen[n] = 1
+      out.push({ episode: n, key: watchKey(type, id, opts.season, n) })
+    }
+    if (out.length < 2) return []
+    out.sort(function (a, b) { return a.episode - b.episode })
+    return out
+  }
+
+  return { watchKey, parseWatchKey, packEpisodeKeys }
 })

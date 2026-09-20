@@ -8687,6 +8687,10 @@ body.app-unfocused .vt-menu {
 .vep-title { font-size:14px; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vep-kicker { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); flex-shrink:0; }
 .vep-mark { font-size:11px; color:var(--text2); flex-shrink:0; }
+/* "This episode starts at once" on a season row (instant-play B). The row is a
+   flex line whose title is allowed to shrink, so the badge has to refuse to —
+   a squashed INSTANT reads as a rendering fault, not as a promise. */
+.vep-row .vep-instant { flex-shrink:0; font-size:9px; padding:2px 5px; }
 .vep-mark-seen { color:var(--accent); font-weight:700; }
 .vep-meta { font-size:12px; color:var(--text2); margin-top:2px; font-variant-numeric:tabular-nums; }
 .vep-synopsis {
