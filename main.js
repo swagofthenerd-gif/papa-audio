@@ -17256,6 +17256,42 @@ function _debridProxyRetire() {
   _debridRetiring.push(old)
 }
 
+// Bring a retired relay back into service.
+//
+// Switching BACK to the source that was playing a moment ago should cost
+// nothing: its relay is still running and still holds a proved upstream link.
+// Without this, returning to a row the list marks INSTANT paid the entire
+// RealDebrid flow again — "when i switch back to instant, it still doesnt
+// play instant".
+//
+// The liveness check is the whole safety of this. A stopped relay is
+// indistinguishable from a running one by inspection — same object, same
+// well-formed URL, simply nothing listening — so handing one back gives mpv
+// an address that never answers and the picture goes black with no error
+// worth the name. That is precisely what happened the first time this was
+// attempted, and it is why proxy.alive() now exists.
+//
+// The bar is deliberately the same one _debridReady reuse already meets: same
+// source, same episode, inside the link's own lifetime, and actually running.
+function _debridProxyRevive(magnet, want) {
+  for (let i = 0; i < _debridRetiring.length; i++) {
+    const e = _debridRetiring[i]
+    if (!e || e.magnet !== magnet || !_sameWant(e.want, want)) continue
+    if ((Date.now() - e.at) >= DEBRID_RELAY_TTL_MS) continue
+    let live = false
+    try { live = !!(e.proxy && typeof e.proxy.alive === 'function' && e.proxy.alive()) } catch (_) { live = false }
+    if (!live) continue
+    if (e.retireTimer) clearTimeout(e.retireTimer)
+    _debridRetiring.splice(i, 1)
+    // Whatever is current steps aside rather than being stopped — it may be
+    // feeding the picture this instant.
+    _debridProxyRetire()
+    _debridReady = { magnet: e.magnet, proxy: e.proxy, url: e.url, want: e.want, at: e.at }
+    return e.url
+  }
+  return null
+}
+
 // The new file is playing: nothing can still be reading the old relays.
 function _debridProxySweepRetired() {
   const list = _debridRetiring
@@ -17479,6 +17515,10 @@ async function _debridPlayable(magnet, want) {
       (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
     return _debridReady.url
   }
+  // The source being switched back to, whose relay is retired but still
+  // running. Free, and the difference between instant and a full re-resolve.
+  const revived = _debridProxyRevive(magnet, want)
+  if (revived) return revived
   let direct
   try {
     direct = await debrid().linkFor(magnet, want)

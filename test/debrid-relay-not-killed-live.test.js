@@ -29,6 +29,9 @@ function lift() {
     setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.unref(); return t },
     clearTimeout,
     _debridReady: null,
+    // Two requests name the same file only when they name the same episode.
+    _sameWant: (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null),
+    DEBRID_RELAY_TTL_MS: 10 * 60 * 1000,
   }
   vm.createContext(ctx)
   vm.runInContext(MAIN.slice(start, end), ctx)
@@ -119,4 +122,106 @@ test('both places that swap a relay retire it, and the switch sweeps only after 
   const pack = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-pack-select'"),
     MAIN.indexOf("ipcMain.handle('video-pack-select'") + 9000)
   assert.match(pack, /_debridProxyRetire\(\)/, 'switching episode inside a pack has the same hazard')
+})
+
+// ── switching BACK ("when i switch back to instant, it still doesnt play
+// instant") ────────────────────────────────────────────────────────────────
+const { createDebridProxy } = require('../src/debrid-proxy')
+
+// A relay that really listens, so alive() is measured rather than assumed.
+async function realRelay() {
+  const proxy = createDebridProxy({
+    fetchFn: async (url, init) => {
+      if (init && init.method === 'HEAD') {
+        return { ok: true, status: 200, headers: { get: k => (k === 'content-length' ? '1024' : null) } }
+      }
+      return {
+        ok: true, status: 206,
+        headers: { get: k => (k === 'content-range' ? 'bytes 0-0/1024' : null) },
+        body: { cancel: async () => {} },
+        arrayBuffer: async () => new ArrayBuffer(1),
+      }
+    },
+  })
+  const url = await proxy.serve('https://rd.example/file.mkv')
+  return { proxy, url }
+}
+
+test('a relay reports honestly whether it is still listening', async () => {
+  const { proxy } = await realRelay()
+  assert.strictEqual(proxy.alive(), true, 'it is serving')
+  proxy.stop()
+  assert.strictEqual(proxy.alive(), false, 'and it knows when it is not')
+})
+
+test('switching back revives the relay instead of resolving all over again', async () => {
+  const ctx = lift()
+  const { proxy, url } = await realRelay()
+  ctx._debridReady = { magnet: 'was-playing', proxy, url, want: null, at: Date.now() }
+  ctx._debridProxyRetire()
+  assert.strictEqual(ctx._debridProxyRevive('was-playing', null), url,
+    'the standing relay is handed straight back')
+  assert.strictEqual(ctx.__retiring(), 0, 'it is current again')
+  assert.strictEqual(proxy.alive(), true, 'and it was never stopped to do it')
+  proxy.stop()
+})
+
+test('a relay that has been STOPPED is never handed back', async () => {
+  // This is the black screen. A stopped relay is indistinguishable from a
+  // running one by inspection — same object, same well-formed URL, nothing
+  // listening — so reusing one gives mpv an address that never answers.
+  const ctx = lift()
+  const { proxy, url } = await realRelay()
+  ctx._debridReady = { magnet: 'dead', proxy, url, want: null, at: Date.now() }
+  ctx._debridProxyRetire()
+  proxy.stop()
+  assert.strictEqual(ctx._debridProxyRevive('dead', null), null,
+    'a dead relay must be re-minted, never reused')
+})
+
+test('reviving retires whatever is current rather than killing it', async () => {
+  const stopped = []
+  const ctx = lift()
+  const first = await realRelay()
+  ctx._debridReady = { magnet: 'first', proxy: first.proxy, url: first.url, want: null, at: Date.now() }
+  ctx._debridProxyRetire()
+  ctx._debridReady = relay('second-live', stopped)
+  ctx._debridReady.at = Date.now()
+  assert.strictEqual(ctx._debridProxyRevive('first', null), first.url)
+  assert.deepEqual(stopped, [], 'the one feeding the picture must not be stopped')
+  assert.strictEqual(ctx.__retiring(), 1, 'it stepped aside instead')
+  first.proxy.stop()
+})
+
+test('a different source, a different episode, or an expired link is not revived', async () => {
+  const ctx = lift()
+  const { proxy, url } = await realRelay()
+  ctx._debridReady = { magnet: 'mine', proxy, url, want: { season: null, episode: 5 }, at: Date.now() }
+  ctx._debridProxyRetire()
+  assert.strictEqual(ctx._debridProxyRevive('other', { season: null, episode: 5 }), null)
+  assert.strictEqual(ctx._debridProxyRevive('mine', { season: null, episode: 6 }), null,
+    'episode 5 must never be handed back for episode 6')
+  assert.strictEqual(ctx.__retiring(), 1, 'a refused revive leaves it retired')
+  proxy.stop()
+})
+
+test('an expired link is re-minted however recently it was retired', async () => {
+  const ctx = lift()
+  const { proxy, url } = await realRelay()
+  ctx._debridReady = { magnet: 'old', proxy, url, want: null, at: Date.now() - (11 * 60 * 1000) }
+  ctx._debridProxyRetire()
+  assert.strictEqual(ctx._debridProxyRevive('old', null), null,
+    'an unrestricted RealDebrid link does not last')
+  proxy.stop()
+})
+
+test('the resolve path consults the revive before paying for a new link', () => {
+  const at = MAIN.indexOf('async function _debridPlayable(magnet, want)')
+  assert.ok(at > 0)
+  const body = MAIN.slice(at, at + 1200)
+  assert.match(body, /const revived = _debridProxyRevive\(magnet, want\)/)
+  assert.match(body, /if \(revived\) return revived/)
+  // And the guard that makes it safe is in the revive itself.
+  const rev = MAIN.slice(MAIN.indexOf('function _debridProxyRevive('), MAIN.indexOf('\n}\n', MAIN.indexOf('function _debridProxyRevive(')))
+  assert.match(rev, /e\.proxy\.alive\(\)/, 'a relay is only reused while it is genuinely listening')
 })
