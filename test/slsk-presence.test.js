@@ -333,6 +333,10 @@ function pollHarness(source) {
     },
     _saved: [{ username: 'sherrybaaz' }, { username: 'doperst13' }],
     _server: { isLoggedIn: false },
+    // Whether the user has Soulseek switched on. Every test below describes a
+    // connection he wants used, so it starts on; the off case is its own test.
+    _enabled: true,
+    _slskEnabled: () => ctx._enabled,
   }
   ctx.globalThis = ctx
   vm.createContext(ctx)
@@ -381,8 +385,8 @@ test('MUTATION: dropping connected from main leaves the renderer nothing to read
     const path = require('path')
     const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
     const broken = MAIN.replace(
-      '  return { statuses: presenceSnapshot(), connected: presenceConnected }',
-      '  return { statuses: presenceSnapshot() }')
+      '  return { statuses: presenceSnapshot(), connected: presenceConnected, off: !_slskEnabled() }',
+      '  return { statuses: presenceSnapshot(), off: !_slskEnabled() }')
     assert.notEqual(broken, MAIN, 'the mutation applied')
     const h = pollHarness(broken)
     const res = await h.ctx.pollPresenceOnce()
@@ -392,3 +396,17 @@ test('MUTATION: dropping connected from main leaves the renderer nothing to read
     f.ctx._slskFriendsApplyStatuses(res)
     assert.equal(f.rows()[0].presenceText, 'Checking…')
   })
+
+// A deliberate off is not an outage. `connected: false` is what paints every
+// saved peer as unreachable and the footer red; over a connection the user
+// switched off, nothing was asked, so nothing is known — and that is a third
+// answer, not the failing one.
+test('Soulseek switched off gets no verdict at all, and nobody is probed', async () => {
+  const h = pollHarness()
+  h.ctx._enabled = false
+  const res = await h.ctx.pollPresenceOnce()
+  assert.equal(res.connected, null, 'not false — false means it was asked and said no')
+  assert.equal(res.off, true, 'and the list is told which of the two it is')
+  assert.deepEqual(h.fetched, [], 'nothing is asked of a daemon he disconnected')
+  assert.deepEqual(h.sent, [], 'and nothing is broadcast as an outage')
+})

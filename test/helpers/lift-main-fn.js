@@ -62,13 +62,39 @@ function skipRegex(s, i) {
   return i
 }
 
+// Walk the parameter list from its opening `(` to the matching `)`, then answer
+// the index of the `{` that opens the function body.
+function bodyBraceAfterParams(source, open, name) {
+  let i = open
+  let depth = 0
+  let prev = ''
+  while (i < source.length) {
+    const c = source[i]
+    const two = c + source[i + 1]
+    if (two === '//') { i = source.indexOf('\n', i); continue }
+    if (two === '/*') { i = source.indexOf('*/', i) + 2; continue }
+    if (c === '"' || c === "'" || c === '`') { i = skipString(source, i); continue }
+    if (c === '/' && regexCanStart(prev)) { i = skipRegex(source, i); continue }
+    if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) return source.indexOf('{', i) }
+    if (!/\s/.test(c)) prev = c
+    i++
+  }
+  throw new Error('unbalanced parameter list for ' + name)
+}
+
 // The source text of one top-level `function name(...) { ... }` declaration.
 function fnSource(name, source = MAIN) {
   const re = new RegExp('^(?:async )?function ' + name + '\\s*\\(', 'm')
   const m = re.exec(source)
   if (!m) throw new Error('no top-level function ' + name + ' in main.js')
   const start = m.index
-  let i = source.indexOf('{', source.indexOf('(', start))
+  // The body's `{`, not the first one after the name. A destructured parameter
+  // list — `function writeSlskdConfig({ username = '' } = {})` — opens a brace
+  // inside the parentheses, and taking that one as the body made the slice end
+  // at the parameter list's own closing brace: a one-line "function" that then
+  // failed to parse in the sandbox. Balance the parens first.
+  let i = bodyBraceAfterParams(source, source.indexOf('(', start), name)
   let depth = 0
   let prev = ''
   while (i < source.length) {

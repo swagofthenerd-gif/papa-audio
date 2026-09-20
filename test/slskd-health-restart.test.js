@@ -38,13 +38,16 @@ function fakeProc(pid, { exitsOnTerm = true } = {}) {
 // NOT on whatever object was passed in — liftFns copies. So the stubs are bound
 // to that backing object after lifting, or they would be reading and writing a
 // second, dead copy of slskdProc while the real code used another.
-function harness({ proc = null, sessionFails = true, spawnPid = null, startThrows = false } = {}) {
+function harness({ proc = null, sessionFails = true, spawnPid = null, startThrows = false, enabled = true } = {}) {
   const log = { restarted: [], warned: [], errored: [], status: [] }
   const lifted = liftFns(['stopSlskdAndWait', 'slskdHealthCheck', 'stopSlskd'], {
     _slskdFailures: 0,
     slskdProc: proc,
     slskdReady: true,
     startSlskdCalls: 0,
+    // Whether the user has Soulseek switched on. Every other test in this file
+    // describes a daemon that is meant to be running, so it defaults to true.
+    _slskEnabled: () => enabled,
     upnpUnmap() {},
     safeSend(_ch, payload) { log.status.push(payload) },
     console: {
@@ -183,4 +186,46 @@ test('the health monitor interval delegates to slskdHealthCheck', () => {
   assert.ok(block.includes('slskdHealthCheck()'), 'the timer calls the real decision')
   assert.ok(!block.includes('_slskdFailures'),
     'and does not keep a second copy of the failure counting')
+})
+
+// ── The off switch, against the one path that would undo it ─────────────────
+// This monitor runs every 60 seconds and restarts the daemon after three
+// failures. A deliberately-off Soulseek fails every one of those pings, so
+// without a gate here the app turns itself back on within three minutes and
+// logs "slskd reconnected" while doing it. Nothing else in the seven restart
+// paths is as fast or as certain to undo him.
+
+test('a switched-off Soulseek is left alone by the health monitor', async () => {
+  const child = fakeProc(4242)
+  const h = harness({ proc: child, enabled: false })
+
+  const verdict = await h.fns.slskdHealthCheck()
+
+  assert.strictEqual(verdict, 'off', 'off is its own answer, not a failure')
+  assert.strictEqual(h.env.startSlskdCalls, 0, 'nothing may be started')
+  assert.deepStrictEqual(child.killed, [], 'and nothing may be killed')
+})
+
+test('a switched-off Soulseek is not pinged, and no failure is counted against it', async () => {
+  const h = harness({ proc: fakeProc(4242), enabled: false })
+  let pinged = 0
+  h.env.slskdFetch = async () => { pinged++; throw new Error('ECONNREFUSED') }
+
+  // Four cycles: more than the three that trigger a restart.
+  for (let i = 0; i < 4; i++) assert.strictEqual(await h.fns.slskdHealthCheck(), 'off')
+
+  assert.strictEqual(pinged, 0, 'a daemon we disconnected on purpose is not probed')
+  // Read directly, not through a helper that might report a copy: the counter
+  // is the thing that decides whether a restart happens.
+  assert.strictEqual(h.env._slskdFailures, 0, 'the failure count must not climb')
+  assert.deepStrictEqual(h.log.status, [], 'and nothing is pushed to the UI as an outage')
+  assert.strictEqual(h.env.startSlskdCalls, 0)
+})
+
+test('the same monitor still restarts a wedged daemon when Soulseek is on', async () => {
+  // The control for the two tests above: the gate must stop an off daemon being
+  // restarted without stopping a broken one being fixed.
+  const h = harness({ proc: fakeProc(4242), spawnPid: 9999, enabled: true })
+  assert.strictEqual(await failThreeTimes(h), 'restarted')
+  assert.strictEqual(h.env.startSlskdCalls, 1)
 })

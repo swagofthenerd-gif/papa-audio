@@ -85,10 +85,20 @@ test('#51 the schedule is re-applied on every download tick', () => {
   assert.match(tick, /_applyBandwidthSchedule\(now\)/)
 })
 
-test('#51 slsk-schedule-set reports that slskd needs a restart', () => {
-  const handler = MAIN.slice(MAIN.indexOf("ipcMain.handle('slsk-schedule-set'"),
-    MAIN.indexOf("ipcMain.handle('slsk-schedule-set'") + 900)
-  assert.match(handler, /slskdNeedsRestart:\s*true/)
+// This used to assert the opposite, and the opposite was a lie. The day/night
+// schedule throttles video downloads and has never written one byte for
+// Soulseek in either direction, so telling the user a Soulseek change needed a
+// restart offered him a bounce that would have achieved nothing. Soulseek has
+// its own limit now, in Settings -> Soulseek, and the daemon reads that one
+// live — measured against slskd 0.26.0.0, not assumed.
+test('#51 slsk-schedule-set no longer claims a Soulseek restart it does not need', () => {
+  const at = MAIN.indexOf("ipcMain.handle('slsk-schedule-set'")
+  const handler = MAIN.slice(at, at + 1400)
+  assert.match(handler, /slskdNeedsRestart:\s*false/)
+  assert.ok(!/slskdNeedsRestart:\s*true/.test(handler))
+  // And nothing in it touches slskd, which is why.
+  assert.ok(!/writeSlskdConfig|startSlskd|stopSlskd/.test(handler),
+    'if this handler ever does write for Soulseek, the flag has to be revisited')
 })
 
 // --- #54 upload awareness -------------------------------------------------

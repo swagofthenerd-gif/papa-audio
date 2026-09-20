@@ -29,9 +29,16 @@ const CSS = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8')
 const HTML = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8')
 
 // The controls the audit found with no ring, and nothing else.
+//
+// #slsk-share-mode left with the three-way dropdown. The five controls that
+// replaced it — the off switch, the two folder-list buttons and the two
+// upload-cap boxes — stand in its place, so the block that grew cannot quietly
+// lose the ring the dropdown had.
 const CONTROLS = [
   'pb-mode', 'pb-replaygain', 'pb-channels', 'pb-device-loss',
-  'slsk-share-mode', 'video-tmdb-key', 'video-opensubs-key', 'video-download-limit',
+  'video-tmdb-key', 'video-opensubs-key', 'video-download-limit',
+  'slsk-enabled', 'slsk-share-apply-btn', 'slsk-share-add-btn',
+  'slsk-upload-slots', 'slsk-upload-mbps',
 ]
 
 // The opening tag of an element by id, from the real page.
@@ -103,7 +110,7 @@ test('it is :focus-visible, so a mouse click does not draw it', () => {
   }
 })
 
-test('all eight are still really in Settings, and are really controls', () => {
+test('all of them are still really in Settings, and are really controls', () => {
   // Otherwise this file could go green by the controls being deleted.
   const panel = HTML.slice(HTML.indexOf('id="playback-settings"'))
   assert.ok(panel.length > 0)

@@ -84,10 +84,27 @@ test('the slskd config shares what the setting says, and the setting is in the p
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
   assert.ok(M.includes("const slskShare = _lazyNs(() => require('./src/slsk-share'))"))
-  assert.ok(M.includes("slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)"))
+  // The three-way mode no longer decides what goes out; the ticked folder list
+  // does, and the mode is read exactly once more by the migration behind
+  // _slskShareSelection().
+  assert.ok(M.includes('const shareDirs = _slskShareDirs(musicFolders, downloadDir)'))
+  assert.ok(!M.includes("slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)"),
+    'the three-way mode no longer picks the folders')
   assert.ok(!M.includes('const shareDir = musicFolders[0] || path.dirname(downloadDir)'), 'the silent whole-library share is gone')
-  assert.ok(M.includes("ipcMain.handle('slsk-share-mode-set'"))
-  assert.ok(H.includes('id="slsk-share-mode"') && H.includes('<option value="off">Nothing</option>'))
+  assert.ok(M.includes("ipcMain.handle('slsk-share-folders-set'"))
+  // Both three-way-mode handlers are deleted. They were dead in the UI and
+  // live over IPC, and slsk-share-mode-set overwrote the whole ticked list
+  // from the old key — a way for what he shares to change without him.
+  assert.ok(!M.includes("ipcMain.handle('slsk-share-mode-set'"))
+  assert.ok(!M.includes("ipcMain.handle('slsk-share-mode-get'"))
+  // The dropdown is gone from the panel. In its place: the folder list, the
+  // Apply that is the only thing which commits, and the switch that stops
+  // Soulseek using the network at all.
+  assert.ok(!H.includes('id="slsk-share-mode"'), 'the three-way dropdown is gone from the panel')
+  assert.ok(!H.includes('<option value="off">Nothing</option>'), 'and so is its "Nothing" option')
+  assert.ok(H.includes('id="slsk-share-list"'))
+  assert.ok(H.includes('id="slsk-share-apply-btn"'))
+  assert.ok(H.includes('id="slsk-enabled"'))
   assert.ok(renderer.includes('async function _initSharingSettings()'))
 })
 

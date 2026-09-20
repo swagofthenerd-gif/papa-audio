@@ -4,9 +4,16 @@
 // the shop's own config button, and only while the daemon was unconfigured.
 // The advice named a place that did not exist.
 //
-// This checks the markup carries the block, and lifts the real init function
-// so the account button genuinely reaches the existing modal and the folder
-// button genuinely reaches the existing picker -- no new IPC.
+// What that block keeps is now only the two rows that are about the account
+// and the library rather than about sharing: signing in, and the folder
+// downloads land in. Everything to do with what goes OUT moved to the Sharing
+// panel, and must not be duplicated back here -- two copies of one stateful
+// control drift apart.
+//
+// This checks the markup carries the block, that it does NOT carry a second
+// copy of the sharing controls, and lifts the real init function so the
+// account button genuinely reaches the existing modal and the folder button
+// genuinely reaches the existing picker -- no new IPC.
 
 const test = require('node:test')
 const assert = require('node:assert')
@@ -32,15 +39,47 @@ function liftFn(decl) {
 
 const INIT = liftFn('async function _initSoulseekAccountSettings() {')
 
-test('Settings has a Soulseek block, at the id the copy can link to', () => {
-	assert.ok(/id="soulseek-settings"/.test(HTML),
-		'openSettings("soulseek") resolves to #soulseek-settings')
-	const block = HTML.slice(HTML.indexOf('id="soulseek-settings"'))
-	const end = block.indexOf('id="video-settings"')
-	const inner = block.slice(0, end)
+function soulseekBlock() {
+	const at = HTML.indexOf('id="soulseek-settings"')
+	assert.ok(at > -1, 'openSettings("soulseek") resolves to #soulseek-settings')
+	const block = HTML.slice(at)
+	return block.slice(0, block.indexOf('id="video-settings"'))
+}
+
+test('Settings keeps the account and the download folder, at the id the copy can link to', () => {
+	const inner = soulseekBlock()
 	assert.ok(/id="slsk-account-btn"/.test(inner), 'the account button must be in the block')
 	assert.ok(/id="slsk-folder-btn"/.test(inner), 'the download folder must be in the block')
-	assert.ok(/id="slsk-share-mode"/.test(inner), 'sharing stays where it was')
+	assert.ok(!/id="slsk-share-mode"/.test(inner), 'the three-way dropdown is gone')
+})
+
+test('what goes out is not duplicated here — Settings points at the Sharing panel', () => {
+	// Sharing is managed in the place named after it. A second copy of any of
+	// these controls in Settings would let the two disagree about the same
+	// stored state, so there is exactly one of each and it is not here.
+	const inner = soulseekBlock()
+	for (const id of ['slsk-enabled', 'slsk-enabled-text', 'slsk-enabled-timer-btn',
+		'slsk-share-count', 'slsk-share-list', 'slsk-share-add-btn',
+		'slsk-share-apply-btn', 'slsk-share-apply-hint', 'slsk-share-text',
+		'slsk-share-busy', 'slsk-upload-slots', 'slsk-upload-mbps', 'slsk-upload-text']) {
+		assert.ok(!inner.includes('id="' + id + '"'),
+			'#' + id + ' must not be in Settings any more — it lives in the Sharing panel')
+	}
+	assert.ok(/id="slsk-sharing-pointer"/.test(inner), 'one line says where they went')
+	assert.ok(/id="slsk-open-sharing-btn"/.test(inner), 'and one button goes there')
+	const line = /id="slsk-sharing-pointer"[^>]*>([^<]*)</.exec(inner)
+	assert.match(line[1], /what you share/i, 'the line names what he shares')
+	assert.match(line[1], /\bSharing\b/, 'and names where it is: ' + line[1])
+})
+
+test('the Open Sharing button reuses the panel opener rather than a second one', () => {
+	const at = INIT.indexOf("getElementById('slsk-open-sharing-btn')")
+	assert.ok(at > -1, 'the button is wired in _initSoulseekAccountSettings')
+	const tail = INIT.slice(at)
+	// That opener toggles, so an unguarded call would let a button labelled
+	// "Open Sharing" shut a panel that is already open.
+	assert.match(tail, /if \(!_sharingPanelOpen\) _openSharingPanel\(\)/,
+		'it calls the panel\'s own opener, and only when the panel is not up')
 })
 
 function node(id) {

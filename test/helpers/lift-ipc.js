@@ -19,6 +19,10 @@ const vm = require('vm')
 const MAIN_PATH = path.join(__dirname, '..', '..', 'main.js')
 const MAIN = fs.readFileSync(MAIN_PATH, 'utf8')
 
+// The function-slicer already exists next door, comments, strings, regexes and
+// destructured parameter lists and all. One copy, not two.
+const { fnSource } = require('./lift-main-fn.js')
+
 // ── Finding the call ────────────────────────────────────────────────────────
 // A paren-balancing scan that knows about comments, the three string forms and
 // regex literals, so a `/(a|b)/` or a `// )` inside a handler body cannot end
@@ -111,11 +115,18 @@ function makeStub(name, calls) {
 // ── Running one handler ─────────────────────────────────────────────────────
 // Returns { result, calls, error }. `calls` is every stubbed function the body
 // actually reached, in order.
+// `opts.alsoLift` names top-level functions in main.js to evaluate alongside
+// the handler. Without it a handler that delegates its real work to a helper —
+// building the candidate list, reading the share selection — runs against a
+// recording stub, and the test then asserts against a Proxy instead of against
+// the code. Named explicitly rather than lifted automatically, so a test still
+// says which real code it is running.
 async function runHandler(channel, opts = {}) {
   const src = callSource(MAIN, channel)
   const refusalSrc = MAIN.slice(
     MAIN.indexOf('function _dryRunRefusal(what) {'),
     MAIN.indexOf('\n}', MAIN.indexOf('function _dryRunRefusal(what) {')) + 2)
+  const helperSrc = (opts.alsoLift || []).map(n => fnSource(n)).join('\n')
 
   const calls = []
   let captured = null
@@ -140,7 +151,7 @@ async function runHandler(channel, opts = {}) {
   })
 
   const ctx = vm.createContext(sandbox)
-  vm.runInContext(refusalSrc + '\n' + src, ctx, { filename: 'main.js:' + channel })
+  vm.runInContext(refusalSrc + '\n' + helperSrc + '\n' + src, ctx, { filename: 'main.js:' + channel })
   if (typeof captured !== 'function') throw new Error('handler not captured: ' + channel)
 
   // A live body walking into stubs can hang for good (library-set-artwork
@@ -177,7 +188,7 @@ const GATED_CHANNELS = [
   'video-cache-delete', 'video-keep-delete', 'video-cache-sweep-watched',
   'slsk-enqueue-downloads', 'slsk-retry-transfer', 'slsk-cancel-transfer',
   'slsk-respread-backlog', 'slsk-configure', 'slsk-set-download-dir',
-  'slsk-share-mode-set', 'yt-download',
+  'yt-download',
   // The four slskd write paths found ungated on 2026-09-19. slskdFetch refuses
   // them all at the choke point now, but a twin's user should be told what did
   // not happen rather than shown a thrown error, so each one carries its own
@@ -191,6 +202,10 @@ const GATED_CHANNELS = [
   // as `error`, because {ok, reason} is the shape the dossier reads on every
   // other exit this handler has.
   'slsk-verify-rip',
+  // The folder list, the off switch and the upload cap. Without these a dry-run
+  // QA twin rewrites the real slskd.yml and disconnects his real daemon — the
+  // twin shares port 5030 with the live app.
+  'slsk-share-folders-set', 'slsk-enabled-set', 'slsk-upload-limit-set',
 ]
 
 module.exports = { runHandler, callSource, GATED_CHANNELS, MAIN_PATH }
