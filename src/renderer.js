@@ -4722,7 +4722,19 @@ function _resolveSwitchOnPlaying(payload) {
   if (!p) return
   const want = (p.next && (p.next.magnet || p.next.url)) || null
   const got = (payload && payload.switchedTo) || null
-  if (want && got && want === got) _commitSwitch(p)
+  // Only a POSITIVE mismatch means this switch was superseded.
+  //
+  // Six other places in main send a plain `playing` carrying no identity at
+  // all — both ordinary play paths, the trailer, the pack-episode load. Any
+  // one of those landing while a switch was pending was read as "something
+  // else took over", so the switch was abandoned even though it was about to
+  // succeed: the new source played while the list went on naming the old one,
+  // and its row stayed unpickable. Reported as "list shows the wrong source".
+  //
+  // An unidentified `playing` is simply not this switch's answer. Wait for one
+  // that is, or for the error, or for the timer.
+  if (!got) return
+  if (want && want === got) _commitSwitch(p)
   else _abandonSwitch(p, null)
 }
 
