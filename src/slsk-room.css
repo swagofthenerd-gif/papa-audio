@@ -5,6 +5,7 @@
 .slsk-room{
   --slr-hires:#e0b04a; --slr-surround:#b57bdc; --slr-lossless:#3ddc7a; --slr-lossy:#8b8a86;
   --slr-mono:var(--font-mono, ui-monospace, monospace);
+  --slr-card-w:132px;
   --slr-muted:var(--text2, #a9a7a1);
   display:flex; flex-direction:column; height:100%; min-height:0; color:var(--text);
   /* The dossier is position:absolute inset:0 against this box. */
@@ -13,13 +14,20 @@
 /* Light mode is body.theme-light in this app; the fills above are tuned for a
    near-black ground and collapse on paper, so darken each one. */
 body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-lossless:#137a3a; --slr-lossy:#6b6a66 }
+/* Anything this file adds in rgba-white has to be re-stated in rgba-black for
+   paper, or it simply vanishes there. */
+body.theme-light .slr-insp-cover,
+body.theme-light .slr-dossier-cover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.10)}
+body.theme-light .slr-card-cover .slr-lbl{box-shadow:0 0 0 2px rgba(255,255,255,.7)}
 
 /* Head */
 .slr-head{display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;padding:18px 24px 12px;border-bottom:1px solid var(--hairline)}
 .slr-ring{width:84px;height:84px;border-radius:50%;position:relative;flex:none}
 .slr-ring::after{content:"";position:absolute;inset:12px;border-radius:50%;background:var(--bg)}
 .slr-ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:17px;z-index:1;font-variant-numeric:tabular-nums}
-.slr-name{font-size:22px;font-weight:600;margin:0 0 2px;letter-spacing:-.01em}
+.slr-name{font-size:24px;font-weight:600;margin:0 0 1px;letter-spacing:-.022em;line-height:1.1}
+.slr-char{font-size:13px;color:var(--text);margin-bottom:1px}
+.slr-char:empty{display:none}
 .slr-muted{color:var(--slr-muted);font-size:12.5px}
 .slr-modes{display:inline-flex;border:1px solid var(--hairline);border-radius:var(--radius-pill,100px);padding:3px;margin-top:8px}
 .slr-mode{background:none;border:0;color:var(--slr-muted);padding:5px 14px;border-radius:var(--radius-pill,100px);font-size:12.5px;cursor:pointer;transition:background .18s var(--ease),color .18s var(--ease)}
@@ -56,7 +64,13 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 .slr-tile{text-align:left;background:var(--glass);border:1px solid transparent;border-radius:8px;padding:10px 12px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .slr-tile b{font-size:24px;line-height:1;font-weight:600;font-variant-numeric:tabular-nums}
 .slr-tile span{font-size:11.5px;color:var(--slr-muted)}
-.slr-tile.is-hot{box-shadow:inset 3px 0 var(--slr-hires)}
+.slr-tile{transition:background .16s var(--ease),border-color .16s var(--ease)}
+.slr-tile:hover{background:var(--glass-hi)}
+.slr-tile[data-tile="upgrades"]{box-shadow:inset 3px 0 var(--slr-hires)}
+.slr-tile[data-tile="missing"]{box-shadow:inset 3px 0 var(--slr-lossless)}
+.slr-tile[data-tile="surround"]{box-shadow:inset 3px 0 var(--slr-surround)}
+.slr-tile[data-tile="new"]{box-shadow:inset 3px 0 var(--accent)}
+.slr-tile.is-hot b{color:var(--slr-hires)}
 .slr-tile.is-on{border-color:var(--accent)}
 .slr-ledger-tools{display:flex;gap:8px;align-items:center;margin-bottom:8px}
 .slr-ledger-wrap{overflow-x:auto}
@@ -74,18 +88,42 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 
 /* Wander */
 .slr-shelf{margin-bottom:18px}
-.slr-shelf-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
-.slr-shelf-h b{font-size:14px;font-weight:600}.slr-shelf-h small{color:var(--slr-muted);font-family:var(--slr-mono);font-size:10.5px}
-.slr-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x proximity}
-.slr-card{width:128px;flex:none;background:none;border:0;padding:0;text-align:left;color:var(--text);cursor:pointer;scroll-snap-align:start;display:flex;flex-direction:column;gap:3px}
-.slr-card-cover{display:block;aspect-ratio:1;border-radius:5px;background:var(--glass-hi) center/cover;position:relative;transition:transform .2s var(--ease)}
-.slr-card:hover .slr-card-cover{transform:translateY(-2px)}
+.slr-shelf-h{display:flex;justify-content:space-between;align-items:baseline;gap:16px;
+  margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid var(--hairline)}
+.slr-shelf-h b{font-size:14.5px;font-weight:600;letter-spacing:-.008em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slr-shelf-h small{color:var(--slr-muted);font-family:var(--slr-mono);font-size:10.5px;
+  font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;flex:none}
+/* The tier shelves — and only those — carry the label colour as a spine, so a
+   colour on a heading always means the same thing it means on a card. */
+.slr-shelf[data-shelf="hires"] .slr-shelf-h b,
+.slr-shelf[data-shelf="surround"] .slr-shelf-h b{display:flex;align-items:center;gap:9px}
+.slr-shelf[data-shelf="hires"] .slr-shelf-h b::before,
+.slr-shelf[data-shelf="surround"] .slr-shelf-h b::before{content:"";flex:none;width:3px;height:15px;border-radius:2px}
+.slr-shelf[data-shelf="hires"] .slr-shelf-h b::before{background:var(--slr-hires)}
+.slr-shelf[data-shelf="surround"] .slr-shelf-h b::before{background:var(--slr-surround)}
+.slr-strip{display:flex;gap:9px;overflow-x:auto;padding:2px 0 8px;scroll-snap-type:x proximity;
+  -webkit-mask-image:linear-gradient(to right,transparent 0,#000 14px,#000 calc(100% - 34px),transparent 100%);
+  mask-image:linear-gradient(to right,transparent 0,#000 14px,#000 calc(100% - 34px),transparent 100%)}
+.slr-card{width:var(--slr-card-w);flex:none;background:none;border:0;padding:0;text-align:left;color:var(--text);cursor:pointer;scroll-snap-align:start;display:flex;flex-direction:column;gap:3px}
+.slr-card-cover{display:block;width:100%;aspect-ratio:1;border-radius:6px;background:var(--glass-hi) center/cover;position:relative;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);
+  transition:transform .2s var(--ease),box-shadow .2s var(--ease)}
+.slr-card:hover .slr-card-cover{transform:translateY(-3px);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.16), 0 10px 22px -10px rgba(0,0,0,.72)}
+body.theme-light .slr-card-cover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.10)}
+body.theme-light .slr-card:hover .slr-card-cover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.18), 0 10px 22px -12px rgba(0,0,0,.30)}
 .slr-card-cover .slr-lbl{position:absolute;top:6px;left:6px;margin:0;box-shadow:0 0 0 2px rgba(0,0,0,.5)}
-.slr-card-t{font-size:12px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slr-card>*{min-width:0;max-width:100%}
+.slr-card-t{font-size:12px;font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .slr-card-a{font-size:10.5px;color:var(--slr-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.slr-card-hint{font-family:var(--slr-mono);font-size:10px}
+.slr-card-hint{font-family:var(--slr-mono);font-size:10px;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .slr-hint-not-yours{color:var(--slr-lossless)}.slr-hint-upgrade{color:var(--slr-hires)}.slr-hint-you-have-it{color:var(--slr-muted)}
-.slr-card-more{align-items:center;justify-content:center;color:var(--slr-muted);border:1px dashed var(--hairline);border-radius:5px;aspect-ratio:1}
+/* NOT width:100% — unlike the other three covers this element IS the flex
+   item (it also carries .slr-card), so a percentage width would resolve
+   against the strip and blow the card out. It already has a definite width
+   from .slr-card; the square comes from an explicit height, no aspect-ratio. */
+.slr-card-more{height:var(--slr-card-w);align-items:center;justify-content:center;color:var(--slr-muted);border:1px dashed var(--hairline);border-radius:6px;font-size:11.5px}
+.slr-card-more:hover{color:var(--text);border-color:var(--slr-muted)}
 .slr-story{border-top:1px solid var(--hairline);padding-top:12px;margin-top:6px;font-size:13px;color:var(--slr-muted);max-width:70ch}
 .slr-story b{color:var(--text)}
 .slr-note{margin-top:10px}
@@ -108,7 +146,7 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 .slr-col-empty{padding:12px}
 .slr-insp{padding:14px;font-size:12.5px}
 .slr-insp h4{margin:0 0 2px;font-size:14px;font-weight:600}
-.slr-insp-cover{aspect-ratio:1;border-radius:6px;background:var(--glass-hi) center/cover;margin-bottom:10px}
+.slr-insp-cover{width:100%;aspect-ratio:1;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);border-radius:6px;background:var(--glass-hi) center/cover;margin-bottom:10px}
 .slr-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;margin:8px 0}
 .slr-kv dt{color:var(--slr-muted)}.slr-kv dd{margin:0}
 .slr-tracks{margin-top:8px;font-size:12px}
@@ -130,7 +168,7 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 .slr-dossier.is-open .slr-dossier-panel{transform:none;opacity:1}
 .slr-x{position:absolute;top:12px;right:14px;background:none;border:0;color:var(--slr-muted);font-size:22px;cursor:pointer}
 .slr-dossier-head{display:grid;grid-template-columns:130px 1fr;gap:14px;margin-bottom:12px}
-.slr-dossier-cover{aspect-ratio:1;border-radius:6px;overflow:hidden;background:var(--glass-hi)}
+.slr-dossier-cover{width:100%;aspect-ratio:1;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);border-radius:6px;overflow:hidden;background:var(--glass-hi)}
 .slr-dossier-cover img{width:100%;height:100%;object-fit:cover;display:block}
 .slr-dossier-title{font-size:19px;font-weight:600;margin:0;line-height:1.2;text-wrap:balance}
 .slr-facts{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 6px}

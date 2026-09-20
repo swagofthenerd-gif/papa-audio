@@ -42,6 +42,25 @@
     return { ring, line: line || '', status: bits.join(' · '), losslessPct: st.losslessPct || 0, stats: st }
   }
 
+  // characterLine() has no genre to work with on some shares and falls back to
+  // a bare album count ("5276 albums"). The header then adds its own, properly
+  // grouped, count — which is how "5276 albums · 5,276 albums" reached the
+  // screen. The two lines say the same thing, so when the character line IS
+  // that fallback it is dropped and only the header's count survives.
+  function isCountFallback(line) {
+    return /^\s*[\d.,  ]+\s+albums?\s*$/i.test(String(line || ''))
+  }
+
+  // The hero is two lines, not one: the character in full ink, the counting in
+  // the muted line under it.
+  function headLines(hm) {
+    const raw = (hm && hm.line) || ''
+    const character = isCountFallback(raw) ? '' : raw
+    const albums = ((hm && hm.stats && hm.stats.albums) || 0).toLocaleString()
+    const counts = [albums + ' albums', hm && hm.status].filter(Boolean).join(' · ')
+    return { character, counts }
+  }
+
   // Wander's shelf order is editorial, not data-driven: people first, then
   // what's new, then the connections, then the format rooms. Empty drops out.
   function wanderShelves(parts) {
@@ -96,9 +115,7 @@
     function ringGradient(hm) {
       return 'conic-gradient(' + hm.ring.reduce((acc, x) => { const from = acc.at; acc.at += x.pct; acc.s.push(`var(--slr-${x.tier}) ${from}% ${acc.at}%`); return acc }, { at: 0, s: [] }).s.join(',') + ')'
     }
-    function headLine(hm) {
-      return [hm.line, ((hm.stats && hm.stats.albums) || 0).toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · ')
-    }
+
 
     // Update only the mutable text nodes and styles. Safe to call at any time,
     // including from the background-refresh handler while the user is typing.
@@ -111,8 +128,11 @@
         const b = ring.querySelector('b')
         if (b) b.textContent = hm.losslessPct + '%'
       }
+      const hl = headLines(hm)
+      const ch = headEl.querySelector('#slr-char')
+      if (ch) ch.textContent = hl.character
       const line = headEl.querySelector('#slr-headline')
-      if (line) line.textContent = headLine(hm)
+      if (line) line.textContent = hl.counts
     }
 
     function paintHead(hm) {
@@ -121,7 +141,8 @@
         <div class="slr-ring" id="slr-ring" style="background:${grad}" title="${esc(hm.ring.map(x => x.tier + ' ' + x.pct + '%').join(', '))}"><b>${hm.losslessPct}%</b></div>
         <div class="slr-head-text">
           <h1 class="slr-name">${esc(username)}</h1>
-          <div class="slr-muted"><span id="slr-headline">${esc(headLine(hm))}</span><span id="slr-cache" class="slr-cache"></span></div>
+          <div class="slr-char" id="slr-char">${esc(headLines(hm).character)}</div>
+          <div class="slr-muted"><span id="slr-headline">${esc(headLines(hm).counts)}</span><span id="slr-cache" class="slr-cache"></span></div>
           <div class="slr-modes" role="tablist">${['hunt', 'wander', 'folders'].map(m => `<button role="tab" class="slr-mode${m === mode ? ' is-on' : ''}" data-mode="${m}" aria-selected="${m === mode}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
         </div>
         <div class="slr-head-tools"><span class="slr-folder-filters" id="slr-folder-filters"${mode === 'folders' ? '' : ' hidden'}>
@@ -584,7 +605,7 @@
     }
   }
 
-  const api = { show, headerModel, modeKey, wanderShelves }
+  const api = { show, headerModel, modeKey, wanderShelves, isCountFallback, headLines }
   if (typeof window !== 'undefined') window.PapaSlskRoomUI = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()
