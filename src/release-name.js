@@ -131,15 +131,16 @@
           // Television: the seasons live under one title, so the numbers must
           // simply agree.
           if (decl !== reqSeason) return false
-        } else if (decl >= 2) {
-          // Anime is catalogued one entry per season, so the request carries
-          // no season at all. A release announcing a SECOND or later season is
-          // therefore a different entry — unless the requested title says as
-          // much itself ("Show 2nd Season"). Season one is never a sequel
-          // marker, which is why only >= 2 counts.
-          const titleSaysSo = variants.some(function (v) { return declaredSeason(v) === decl })
-          if (!titleSaysSo) return false
         }
+        // NOTHING for anime. Treating "the request names no season" as
+        // "season one" was tried and reverted the same day it shipped: most
+        // anime season-two entries are catalogued under a title that states no
+        // season, so every correctly-labelled "2nd Season" release was marked
+        // unlikely and the source list collapsed to whatever stray release
+        // named no season — which was then from the wrong season anyway.
+        // Reported as: "whatever source i select, its playing only one source".
+        // A guess about the season is worse than no guess, because it hides
+        // the right answers.
       }
     }
     for (const v of variants) {

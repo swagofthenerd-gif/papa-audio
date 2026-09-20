@@ -43,19 +43,25 @@ test('a letter-run is not a season', () => {
   assert.strictEqual(RN.declaredSeason('[Grp] Show - 01 [DTS5.1][1080p]'), null)
 })
 
-// ── anime: one catalogue entry per season, so the request carries none ─────
-test('a later-season pack is refused for a first-season request', () => {
-  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show' }, '[Grp] Show 3rd Season - 01'), false)
-  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show' }, 'Show.S03E01.1080p'), false)
+// ── anime: NOT judged on the season, deliberately ─────────────────────────
+// Refusing anime releases that declare a later season was tried and reverted
+// the same day it shipped. Most anime season-two entries are catalogued under
+// a title that states no season, so every correctly-labelled "2nd Season"
+// release was marked unlikely and the source list collapsed to whatever stray
+// release happened to name none — which was then from the wrong season anyway.
+// Reported as "whatever source i select, its playing only one source".
+//
+// A guess about the season is worse than no guess, because it hides the right
+// answers. The accurate season PARSER is still worth having (the provider uses
+// it, and television compares real numbers with it); the guess is not.
+test('an anime release is not refused for naming a later season', () => {
+  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Bungo Stray Dogs' },
+    '[Grp] Bungo Stray Dogs 2nd Season - 01'), true)
+  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show' }, '[Grp] Show 3rd Season - 01'), true)
 })
 
-test('a pack that names no season, or names the first, is still offered', () => {
+test('and an anime release naming no season is offered as it always was', () => {
   assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show' }, '[Grp] Show - 01 [1080p]'), true)
-  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show' }, '[Grp] Show 1st Season - 01'), true)
-})
-
-test('asking for a later season by name gets that season', () => {
-  assert.strictEqual(RN.plausible({ type: 'anime', title: 'Show 3rd Season' }, '[Grp] Show 3rd Season - 01'), true)
 })
 
 // ── television: the seasons live under one title, so the numbers must agree ─
