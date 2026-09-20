@@ -178,10 +178,11 @@ function extractConst(name) {
 }
 
 test('a hidden nav row is actually hidden', () => {
-  // The Sharing row is `<li class="nav-item" hidden>`, and .nav-item sets
-  // display:flex — which beats the browser's own [hidden] rule, so without
-  // this the row sits in the sidebar, empty, on every day nobody took a file.
-  // The repo already hit this one rung down with .nav-pill[hidden].
+  // .nav-item sets display:flex, which beats the browser's own [hidden] rule,
+  // so a nav row given `hidden` would sit in the sidebar anyway. No row ships
+  // hidden today — the Sharing row stopped, because it is a destination now —
+  // but the rule stays: the next row that hides itself must actually go, and
+  // the repo already hit this exact trap one rung down with .nav-pill[hidden].
   assert.match(CSS, /\.nav-item\[hidden\]\s*\{\s*display:\s*none\s*\}/,
     '.nav-item[hidden] { display:none } must exist in styles.css')
   assert.match(CSS, /\.nav-pill\[hidden\]\s*\{\s*display:\s*none\s*\}/,
@@ -192,11 +193,18 @@ test('a hidden nav row is actually hidden', () => {
     '.nav-item still sets display:flex')
 })
 
-test('the sidebar carries a downloads pill and a hidden Sharing row', () => {
+test('the sidebar carries a downloads pill and a Sharing row that is always there', () => {
+  // The rule changed: the Sharing row used to be an alert, hidden until a peer
+  // was taking something or had taken something today. It is now the one place
+  // the Soulseek switch, the shared folders and the upload caps live, so it has
+  // to be reachable on a day when nothing at all is happening. Only the pill
+  // still comes and goes.
   assert.match(HTML, /id="nav-dl-pill"[^>]*hidden/, 'the downloads pill starts hidden')
-  assert.match(HTML, /<li class="nav-item" data-page="sharing" id="nav-sharing" hidden/,
-    'the Sharing row exists and starts hidden')
-  assert.match(HTML, /id="nav-sharing-pill"/, 'with its own pill')
+  const row = /<li class="nav-item" data-page="sharing" id="nav-sharing"[^>]*>/.exec(HTML)
+  assert.ok(row, 'the Sharing row exists')
+  assert.ok(!/\bhidden\b/.test(row[0]),
+    'and it does not ship hidden: ' + row[0])
+  assert.match(HTML, /id="nav-sharing-pill"[^>]*hidden/, 'its pill still starts hidden')
   assert.match(HTML, /<script src="transfer-indicator\.js"><\/script>/,
     'the pure model is loaded as a page script')
 })
@@ -238,13 +246,14 @@ test('the sharing refresh stops while the window is hidden', () => {
     'and the visibility handler retunes it alongside the downloads poll')
 })
 
-test('the Sharing row only appears when the pill model says so', () => {
+test('only the Sharing pill appears and disappears — the row stays put', () => {
   const start = RENDERER.indexOf('function _paintSharingPill')
   const body = RENDERER.slice(start, RENDERER.indexOf('async function _refreshSharingStats'))
-  assert.match(body, /PapaTransferIndicator\.sharingPill/, 'the model decides')
-  assert.match(body, /if \(!pill\) \{[\s\S]*row\.hidden = true/,
-    'no pill means the whole row is hidden')
-  assert.match(body, /row\.hidden = false/, 'and a pill unhides it')
+  assert.match(body, /PapaTransferIndicator\.sharingPill/, 'the model decides the pill')
+  assert.ok(!/row\.hidden = true/.test(body),
+    'nothing may hide the row: it is the way in to the sharing controls')
+  assert.match(body, /if \(!pill\) \{[\s\S]*el\.hidden = true/,
+    'no pill still empties and hides the pill itself')
   assert.match(body, /el\.textContent = pill\.text/, 'text, never innerHTML')
 })
 
@@ -254,7 +263,9 @@ test('the Sharing row only appears when the pill model says so', () => {
 // the model is caught even if the surrounding text still looks right.
 
 function sharingPillCtx(stats) {
-  const rowEl = { hidden: false, title: '' }
+  // Starts hidden on purpose, so "the row is visible" is something the paint
+  // had to do rather than something the fixture handed it.
+  const rowEl = { hidden: true, title: '' }
   const pillEl = { hidden: false, textContent: '', classList: { toggle() {} }, setAttribute() {} }
   const ctx = {
     document: {
@@ -275,8 +286,9 @@ test('the sidebar pill hides rather than showing a frozen live count once the da
   // Nothing given away today, but the last snapshot before the outage still
   // says 7 active — without the fix this reads as "↑ 7" forever.
   const { rowEl, pillEl } = sharingPillCtx({ daemon: false, activeUploads: 7, filesUploadedToday: 0 })
-  assert.equal(rowEl.hidden, true, 'no live activity and nothing shared today hides the whole row')
-  assert.equal(pillEl.hidden, true)
+  assert.equal(pillEl.hidden, true, 'the frozen count never reaches the pill')
+  assert.equal(rowEl.hidden, false,
+    'and the row stays in the sidebar: the sharing controls have to stay reachable')
   assert.match(rowEl.title, /Can.t reach the Soulseek daemon/, 'the row explains why in a tooltip')
 })
 

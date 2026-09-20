@@ -1,6 +1,8 @@
 'use strict'
-// The Soulseek folder checklist, the off switch and the upload cap, as the
-// settings panel actually paints them.
+// The Soulseek folder checklist, the off switch and the upload cap, as they
+// are actually painted. They live in the Sharing panel now — which surface
+// holds them is pinned in test/sharing-panel-controls.test.js; what is pinned
+// here is the paint and the wiring, which are the same either way.
 //
 // The three-way "Share with other people" dropdown is gone. What replaced it
 // has one rule that has to hold in the markup, in the paint and in the wiring:
@@ -21,7 +23,7 @@ const SHARE = require(path.join(root, 'src', 'slsk-share.js'))
 
 // ── the markup ───────────────────────────────────────────────────────────────
 
-test('the panel carries the folder list, its buttons and the off switch', () => {
+test('the page carries the folder list, its buttons and the off switch', () => {
 	for (const id of ['slsk-enabled', 'slsk-enabled-text', 'slsk-enabled-timer-btn',
 		'slsk-share-list', 'slsk-share-add-btn', 'slsk-share-apply-btn',
 		'slsk-share-count', 'slsk-share-text',

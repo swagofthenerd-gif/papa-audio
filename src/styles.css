@@ -6745,10 +6745,20 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 /* Download badge in sidebar */
 .nav-dl-badge { position:absolute;top:6px;right:8px;min-width:16px;height:16px;padding:0 4px;background:var(--accent);color:#000;border-radius:8px;font-size:10px;font-weight:700;display:none;align-items:center;justify-content:center;line-height:1 }
 
-/* Sharing panel — who is taking what, right now.
-   The shell is the queue panel's; these are the rows. Everything in them is
-   peer-controlled text, so the layout has to survive a very long file name:
-   hence the ellipsis on the name and the fixed-width speed column. */
+/* Sharing panel — what goes out, and who is taking it.
+   The shell is the queue panel's. .sharing-body is the single scroller: the
+   panel is a settings surface now, so a long folder list has to push the whole
+   surface rather than scroll inside a box of its own. .sharing-today stays
+   outside it, pinned to the bottom. */
+.sharing-body { flex:1; min-height:0; overflow-y:auto }
+.sharing-controls { padding:10px 14px 14px }
+.sharing-divider { height:1px; background:var(--glass-border) }
+.sharing-live { padding:10px 6px 4px }
+.sharing-live-label { padding:0 8px 2px }
+
+/* Everything in a transfer row is peer-controlled text, so the layout has to
+   survive a very long file name: hence the ellipsis on the name and the
+   fixed-width speed column. */
 .sharing-list { padding:6px 8px }
 .sharing-row {
   display:grid; grid-template-columns:1fr auto;

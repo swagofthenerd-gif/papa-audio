@@ -100,11 +100,12 @@
         <span class="nav-dl-badge" id="nav-dl-badge" style="display:none">0</span>
         <span class="nav-pill nav-pill-dl" id="nav-dl-pill" hidden></span>
       </li>
-      <!-- Sharing: the outgoing half of the transfer indicator. Hidden until a
-           peer is actually taking something or took something today, so an
-           idle day costs no sidebar room. Clicking it opens the sharing panel
-           rather than navigating — there is no "sharing" page. -->
-      <li class="nav-item" data-page="sharing" id="nav-sharing" hidden title="Who is taking files from you">
+      <!-- Sharing: where he decides what goes out, with the live transfers
+           under it. Always in the sidebar — it is a destination he has to be
+           able to reach on a completely quiet day, not an alert. Only the pill
+           comes and goes. Clicking it opens the sharing panel rather than
+           navigating — there is no "sharing" page. -->
+      <li class="nav-item" data-page="sharing" id="nav-sharing" title="What you share, and who is taking it">
         <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
         <span>Sharing</span>
         <span class="nav-pill nav-pill-up" id="nav-sharing-pill" hidden></span>
@@ -559,23 +560,14 @@
           </label>
           <div class="mcs-set-hint">Uses the loudness scan from the Stats page to level quiet and loud tracks at playback. Nothing is written to your files. Scan first, then turn this on.</div>
         </div>
-        <!-- Roadmap 137: what this computer shares with Soulseek peers. The
-             daemon used to be handed the whole first music folder silently, and
-             the only control was a three-way dropdown. Now every folder that
-             goes out is a tick he made, nothing reaches the daemon until he
-             presses Apply, and the switch at the top stops Soulseek using the
-             network at all. -->
+        <!-- Roadmap 137: the Soulseek account and the folder downloads land in.
+             What he SHARES is not here any more — the switch, the folder ticks
+             and the upload caps all live in the Sharing panel, because that is
+             the place named after the thing they control. Keeping a second copy
+             of a stateful control here would only let the two drift apart, so
+             this block points at the panel instead of repeating it. -->
         <div class="mcs-set-group" id="soulseek-settings">
           <div class="mcs-set-group-label">Soulseek</div>
-          <!-- The first row of the block, above Account, because it governs
-               everything below it: with this off, nothing else here is doing
-               anything. Setting sharing to nothing is NOT this — that leaves
-               the daemon signed in, downloading and holding the router port. -->
-          <label class="mcs-set-row">Use Soulseek
-            <input type="checkbox" class="mcs-set-check" id="slsk-enabled">
-          </label>
-          <div class="mcs-set-hint" id="slsk-enabled-text">Checking…</div>
-          <button class="mcs-set-refresh mcs-set-action mcs-set-reset" id="slsk-enabled-timer-btn" type="button" hidden>Back on in an hour</button>
           <!-- Two messages tell people to "check them in Settings → Soulseek".
                Before this block there was nothing here to check: the account
                modal was reachable only from the shop's own config button, and
@@ -587,38 +579,8 @@
           <div class="mcs-set-row">Download folder
             <button class="mcs-set-refresh mcs-set-action" id="slsk-folder-btn" type="button"><span id="slsk-folder-label">Loading…</span></button>
           </div>
-          <div class="mcs-set-row">Share with other people
-            <span class="mcs-share-count" id="slsk-share-count">Checking…</span>
-          </div>
-          <!-- One row per folder, rendered by _paintSlskShareList(): a tick, the
-               folder's own name, and its full path underneath — never truncated,
-               never hidden in a tooltip. Each row is a .mcs-set-row so the
-               settings search box finds it by its path as well as its name. -->
-          <div class="mcs-share-list" id="slsk-share-list">
-            <div class="mcs-set-hint">Loading…</div>
-          </div>
-          <!-- Only shown when something is actually downloading, and shown
-               BEFORE Apply is pressed, so a bounced daemon is never a surprise. -->
-          <div class="mcs-set-hint mcs-set-hint-warn" id="slsk-share-busy" hidden></div>
-          <div class="mcs-set-btn-row">
-            <button class="mcs-set-refresh mcs-set-action" id="slsk-share-add-btn" type="button">Add another folder…</button>
-            <button class="mcs-set-refresh mcs-set-action" id="slsk-share-apply-btn" type="button" disabled>Apply</button>
-          </div>
-          <div class="mcs-set-hint" id="slsk-share-apply-hint">Nothing changes until you press Apply.</div>
-          <div class="mcs-set-hint" id="slsk-share-text">Loading…</div>
-          <!-- A cap on how fast other people can take files, and how many can do
-               it at once. The daemon's own defaults are ten slots and no speed
-               limit at all, which flattens a home upstream — and a flattened
-               upstream slows his downloads too. -->
-          <div class="mcs-set-group-label mcs-set-subhead">Go easy on my connection</div>
-          <label class="mcs-set-row">How many people can take files at once
-            <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-slots" type="number" min="1" max="20" step="1" autocomplete="off">
-          </label>
-          <label class="mcs-set-row">How fast, all together (MB/s)
-            <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-mbps" type="number" min="0" max="100" step="0.1" placeholder="Unlimited" autocomplete="off">
-          </label>
-          <div class="mcs-set-hint" id="slsk-upload-text">Loading…</div>
-          <div class="mcs-set-hint">Lower these if Soulseek is making the rest of your internet slow. At most 20 people and 100 MB/s; leave the speed box empty for no limit.</div>
+          <div class="mcs-set-hint" id="slsk-sharing-pointer">What you share, turning Soulseek off, and how fast other people can take files are all in Sharing.</div>
+          <button class="mcs-set-refresh mcs-set-action" id="slsk-open-sharing-btn" type="button">Open Sharing</button>
           <label class="mcs-set-row">Use the old library view
             <input type="checkbox" id="slsk-legacy-shop">
           </label>
@@ -1007,10 +969,17 @@
   <div class="queue-list" id="queue-list"></div>
 </div>
 
-<!-- Sharing panel — the outgoing half of the transfer indicator, opened from
-     the Sharing row in the sidebar. Same slide-over shell as the queue panel
-     (.queue-panel gives it the frame and the open/closed rule); the rows and
-     the "today" line underneath are its own. -->
+<!-- Sharing panel — everything to do with what this computer gives out, in the
+     one place named after it. Same slide-over shell as the queue panel
+     (.queue-panel gives it the frame and the open/closed rule).
+     Top half: the controls — the Soulseek switch, the folders he ticks, and
+     the caps on how much of his connection goes to other people. These used to
+     sit in Settings → Soulseek and are NOT duplicated there; two copies of a
+     stateful control drift apart.
+     Bottom half, under the divider: what is actually happening — a row per
+     upload, and the day's tally pinned underneath.
+     #sharing-body is the only scroller, so a long folder list scrolls the whole
+     surface instead of trapping itself in a box. -->
 <div class="queue-panel sharing-panel" id="sharing-panel" role="region" aria-label="Sharing">
   <div class="queue-header">
     <span class="queue-title">Sharing</span>
@@ -1018,7 +987,61 @@
       <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
     </button>
   </div>
-  <div class="queue-list sharing-list" id="sharing-list"></div>
+  <div class="sharing-body" id="sharing-body">
+    <div class="sharing-controls" id="sharing-controls">
+      <!-- First, because it governs everything below it: with this off,
+           nothing else in this panel is doing anything. Sharing no folders is
+           NOT this — that leaves the daemon signed in, downloading and holding
+           the router port. -->
+      <label class="mcs-set-row">Use Soulseek
+        <input type="checkbox" class="mcs-set-check" id="slsk-enabled">
+      </label>
+      <div class="mcs-set-hint" id="slsk-enabled-text">Checking…</div>
+      <button class="mcs-set-refresh mcs-set-action mcs-set-reset" id="slsk-enabled-timer-btn" type="button" hidden>Back on in an hour</button>
+
+      <div class="mcs-set-group-label mcs-set-subhead">What you share</div>
+      <div class="mcs-set-row">Folders other people can take from
+        <span class="mcs-share-count" id="slsk-share-count">Checking…</span>
+      </div>
+      <!-- One row per folder, rendered by _paintSlskShareList(): a tick, the
+           folder's own name, and its full path underneath — never truncated,
+           never hidden in a tooltip. -->
+      <div class="mcs-share-list" id="slsk-share-list">
+        <div class="mcs-set-hint">Loading…</div>
+      </div>
+      <!-- Only shown when something is actually downloading, and shown
+           BEFORE Apply is pressed, so a bounced daemon is never a surprise. -->
+      <div class="mcs-set-hint mcs-set-hint-warn" id="slsk-share-busy" hidden></div>
+      <div class="mcs-set-btn-row">
+        <button class="mcs-set-refresh mcs-set-action" id="slsk-share-add-btn" type="button">Add another folder…</button>
+        <button class="mcs-set-refresh mcs-set-action" id="slsk-share-apply-btn" type="button" disabled>Apply</button>
+      </div>
+      <div class="mcs-set-hint" id="slsk-share-apply-hint">Nothing changes until you press Apply.</div>
+      <div class="mcs-set-hint" id="slsk-share-text">Loading…</div>
+
+      <!-- A cap on how fast other people can take files, and how many can do
+           it at once. The daemon's own defaults are ten slots and no speed
+           limit at all, which flattens a home upstream — and a flattened
+           upstream slows his downloads too. -->
+      <div class="mcs-set-group-label mcs-set-subhead">Go easy on my connection</div>
+      <label class="mcs-set-row">How many people can take files at once
+        <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-slots" type="number" min="1" max="20" step="1" autocomplete="off">
+      </label>
+      <label class="mcs-set-row">How fast, all together (MB/s)
+        <input class="mcs-set-input mcs-set-input-num" id="slsk-upload-mbps" type="number" min="0" max="100" step="0.1" placeholder="Unlimited" autocomplete="off">
+      </label>
+      <div class="mcs-set-hint" id="slsk-upload-text">Loading…</div>
+      <div class="mcs-set-hint">Lower these if Soulseek is making the rest of your internet slow. At most 20 people and 100 MB/s; leave the speed box empty for no limit.</div>
+    </div>
+    <div class="sharing-divider"></div>
+    <div class="sharing-live">
+      <div class="mcs-set-group-label sharing-live-label">Happening now</div>
+      <!-- Repainted every 10 s by _renderSharingPanel(). It writes here and to
+           #sharing-today and nowhere else, so a tick he has made above and not
+           yet applied is never stamped over by the refresh. -->
+      <div class="sharing-list" id="sharing-list"></div>
+    </div>
+  </div>
   <div class="sharing-today" id="sharing-today"></div>
 </div>
 

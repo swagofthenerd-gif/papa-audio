@@ -25443,10 +25443,11 @@ function _switchMcsTab(tab) {
   document.querySelectorAll('.mcs-panel').forEach(p => p.classList.toggle('mcs-panel-hidden', !p.id.endsWith(tab)))
   if (tab === 'memory') _renderMemoryTab()
   // Poll the storage-health chip only while Settings is on screen (App #5).
-  // The Soulseek block repaints from a fresh read on every open: it used to be
-  // painted once at boot, so the sentence naming his shared folders could
-  // describe a folder he removed weeks ago.
-  if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics(); _repaintSharingSettings() }
+  // The Soulseek switch, the folder ticks and the upload caps are NOT repainted
+  // here any more: they moved to the Sharing panel, which does its own fresh
+  // read on every open. Re-reading them from here would also throw away a tick
+  // he had made in that panel and not yet applied.
+  if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics() }
   else _stopStorageHealthPoll()
 }
 
@@ -27154,12 +27155,17 @@ async function initPlaybackSettings() {
   await _initSharingSettings()
 }
 
-// Roadmap 137: the sharing choice, with a sentence that says exactly what is
-// exposed for the chosen mode.
-// Settings → Soulseek: the account, the download folder and what is shared.
-// Two messages point people here ("check them in Settings → Soulseek"), so
-// this block has to exist and has to reach the same modal and the same folder
-// picker the shop and the Downloads tab already use — no new IPC.
+// Roadmap 137: Settings → Soulseek keeps the two rows that are about the
+// account and the library rather than about sharing — signing in, and the
+// folder downloads land in. Two messages point people here ("check them in
+// Settings → Soulseek"), so this block has to exist and has to reach the same
+// modal and the same folder picker the shop and the Downloads tab already use
+// — no new IPC.
+//
+// Everything about what goes OUT lives in the Sharing panel, and there is
+// exactly one copy of each of those controls. The button wired at the bottom
+// of this function is the way across; it calls the panel's own opener rather
+// than a second one written here.
 async function _initSoulseekAccountSettings() {
   const accBtn = document.getElementById('slsk-account-btn')
   const accText = document.getElementById('slsk-account-text')
@@ -27186,9 +27192,21 @@ async function _initSoulseekAccountSettings() {
       else if (res && res.error) showSnackbar(res.error)
     })
   }
+  // One way in, and it is the panel's own opener. That opener toggles, so an
+  // already-open panel is left alone rather than shut by a button saying Open.
+  const toSharing = document.getElementById('slsk-open-sharing-btn')
+  if (toSharing) {
+    toSharing.addEventListener('click', () => {
+      if (!_sharingPanelOpen) _openSharingPanel()
+    })
+  }
 }
 
-// ── Settings → Soulseek: what goes out, and whether Soulseek runs at all ─────
+// ── The Sharing panel's controls: what goes out, and whether Soulseek runs ───
+//
+// These paint into #sharing-panel, not into Settings. There is one copy of each
+// of them and it is there, because the panel is the place named after what they
+// control — and because two copies of a stateful control drift apart.
 //
 // The three-way "Share with other people" dropdown is gone. In its place is a
 // list of folders with a tick each, and one rule that has to be true of both
@@ -27604,10 +27622,11 @@ function _wireSoulseekSettings() {
   }
 }
 
-// Read everything this block shows, fresh. Called once at boot and again every
-// time Settings is opened, so nothing on screen is a memory of an older state.
+// Read everything these controls show, fresh. Called once at boot and again
+// every time the Sharing panel is opened, so nothing on screen is a memory of
+// an older state.
 async function _repaintSharingSettings() {
-  // Wiring is idempotent, and Settings can be opened before boot has finished
+  // Wiring is idempotent, and the panel can be opened before boot has finished
   // calling _initSharingSettings — without this the buttons would be dead
   // until it caught up.
   _wireSoulseekSettings()
@@ -29782,7 +29801,8 @@ function retuneDownloadsPolling() {
 
 // ── Sidebar transfer indicator ───────────────────────────────────────────────
 // Two pills on the tab bar: what is coming in (on Downloads) and what is going
-// out (on a Sharing row that only exists while there is something to say).
+// out (on the Sharing row, which is always there — only its pill comes and
+// goes).
 //
 // Neither pill owns a poll of its own. The download pill is painted from the
 // snapshot the existing downloads poll already fetched, inside that poll's own
@@ -29799,7 +29819,7 @@ function retuneDownloadsPolling() {
 const SHARING_POLL_MS = 60000
 // index.html's static default for #nav-sharing's title; kept here so the
 // daemon-down message can be swapped back out for it rather than erased.
-const SHARING_ROW_DEFAULT_TITLE = 'Who is taking files from you'
+const SHARING_ROW_DEFAULT_TITLE = 'What you share, and who is taking it'
 let _sharingPollTimer = null
 let _sharingStats = null
 // Declared here rather than with the panel: this refresh has to know whether
@@ -29844,15 +29864,19 @@ function _paintSharingPill() {
   row.title = daemonDown
     ? 'Can’t reach the Soulseek daemon right now — showing today’s total only.'
     : SHARING_ROW_DEFAULT_TITLE
-  // Nothing in flight and nothing given away today: the whole row goes, rather
-  // than sitting there saying zero.
+  // The row itself never goes away. It used to hide on a quiet day, back when
+  // it was only an alert about uploads in flight; now it is the way in to the
+  // Soulseek switch, the folders he shares and the upload caps, and a
+  // destination you cannot find when nothing is happening is no destination.
+  row.hidden = false
+  // The pill still keeps the old rule: a live count while people are taking
+  // things, the day's tally when it is quiet, and nothing at all when both are
+  // zero — a badge saying "0" is noise.
   if (!pill) {
-    row.hidden = true
     el.hidden = true
     el.textContent = ''
     return
   }
-  row.hidden = false
   el.hidden = false
   el.textContent = pill.text
   el.classList.toggle('is-idle', !pill.live)
@@ -29917,6 +29941,10 @@ function _sharingRowHtml(r) {
     + '</div>'
 }
 
+// The live half only. It writes #sharing-list and #sharing-today and nothing
+// else — in particular it never touches #slsk-share-list, which sits in the
+// same panel and holds ticks he has made and not yet applied. A refresh that
+// redrew the whole panel would throw those away every ten seconds.
 function _renderSharingPanel() {
   const list = document.getElementById('sharing-list')
   const today = document.getElementById('sharing-today')
@@ -29975,6 +30003,11 @@ function _openSharingPanel() {
   document.addEventListener('keydown', _onSharingPanelKey)
   // Navigating away must not leave it floating over the next page.
   _registerNavDismiss(_closeSharingPanel)
+  // The controls are a settings surface, so they are read fresh every time it
+  // opens rather than remembered from the last one: a tick, the off switch or
+  // an upload cap changed anywhere else must never show here as it used to be.
+  // Wiring inside is idempotent, so this is safe to call on every open.
+  _repaintSharingSettings().catch(function () {})
   // Paint from what the sidebar already knows, then replace it with a fresh
   // poll, so the panel is never blank while the request is in flight.
   _renderSharingPanel()
