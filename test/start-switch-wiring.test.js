@@ -49,7 +49,13 @@ test('the switch takes the next untried source and remembers it; a start failure
 
 test("main drops the old stream's end-of-file while a switch is in flight", () => {
   assert.match(M, /if \(_videoSession\.switching\) \{ console\.log\('\[papa-video\] end of the old stream during a switch, ignored'\); return \}/)
-  assert.match(M, /_videoSession\.switching = true\n\s+const fail = e => \{ _videoSession\.switching = false;/)
+  // `fail` grew a body: a failed switch used to show nothing but a 3.2 s toast,
+  // because the renderer paints switch errors on the HTML stage, which sits
+  // UNDER mpv's window and is invisible in purist mode. It now also says it
+  // over the OSD. What must not change is that failing clears the flag.
+  assert.match(M, /_videoSession\.switching = true\n[\s\S]{0,400}const fail = e => \{\n\s+_videoSession\.switching = false/)
+  assert.match(M, /say\('Could not switch source — ' \+ msg, 8000\)/,
+    'and says it where it can actually be seen')
   // The switch resolves debrid before the swarm, so the load is shared by both
   // paths in one async helper rather than written inline in the torrent
   // callback. WHEN the flag clears turned out to matter more than first
@@ -58,7 +64,9 @@ test("main drops the old stream's end-of-file while a switch is in flight", () =
   // end-of-file — which the renderer reads as a finished episode. It now
   // clears only after the seek has settled, so everything the switch causes
   // stays suppressed.
-  assert.match(M, /await videoEngine\(\)\.seek\(target, 'absolute'\)[\s\S]{0,400}_videoSession\.switching = false/)
+  // The window covers the seek's own error handling, which exists because a
+  // swallowed seek failure is why a lost position was never diagnosable.
+  assert.match(M, /await videoEngine\(\)\.seek\(target, 'absolute'\)[\s\S]{0,900}_videoSession\.switching = false/)
   assert.doesNotMatch(M, /await videoEngine\(\)\.load\(url\)\n\s+_videoSession\.switching = false/,
     'clearing it at the load is the bug')
   assert.match(M, /const loadInto = async \(url, streamer\) => \{/,

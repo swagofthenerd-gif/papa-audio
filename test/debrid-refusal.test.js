@@ -100,9 +100,12 @@ test('a debrid miss is explained to the viewer, with the reason', () => {
     assert.ok(new RegExp("'" + r + "'").test(fn), 'classifies ' + r)
   }
   // Both play paths report the miss before the swarm takes over.
-  // Three, since video-switch-stream started asking RealDebrid too: a switch
-  // that falls back to peers in silence is the same unexplained wait.
-  assert.strictEqual((MAINSRC.match(/_sendDebridMiss\(current, e\)/g) || []).length, 3)
+  // Four. Three paths START a source (video-play's two halves and
+  // video-switch-stream), and the switch reports a miss twice: once for the
+  // look-up race, and once in the final catch — a race that resolved with no
+  // link, or a link mpv could not open, threw PAST the first one and fell to
+  // peers with nothing said at all.
+  assert.strictEqual((MAINSRC.match(/_sendDebridMiss\(current, e\)/g) || []).length, 4)
   // And the renderer turns each reason into words a person can act on.
   const handler = R.slice(R.indexOf("if (payload.kind === 'debrid')"), R.indexOf("if (payload.kind === 'pack')"))
   assert.ok(/does not carry this title/.test(handler), 'blocked reads as coverage, not breakage')

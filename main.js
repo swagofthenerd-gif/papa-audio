@@ -16363,25 +16363,48 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       try { _videoSession.streamer.stop() } catch (_) {}
       _videoSession.streamer = null
     }
+    // The OLD release's debrid state is not the new one's. Left standing, its
+    // background next-episode pull kept eating the connection while the viewer
+    // waited, the pack-chain tick could start another one for the abandoned
+    // release (it fires whenever there is no streamer — the whole of the
+    // switch's own window), and a stale magnet made later warms believe a
+    // debrid stream was playing when it was not. _debridPlayableAny writes the
+    // new value when debrid serves the new pick.
+    try { _debridCacheAheadStop() } catch (_) {}
+    _videoSession.debrid = null
 
     // A fresh play token: a late 'ready' from the OLD streamer must not load
     // itself over the new one, exactly as in video-play.
     const token = ++_videoSession.token
     const current = () => _videoSession.token === token
     _videoSession.switching = true
-    const fail = e => { _videoSession.switching = false; if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+    // The renderer paints switch errors on the HTML stage, which sits UNDER
+    // mpv's window and is invisible in purist mode — so a failed switch showed
+    // nothing but a 3.2 s toast. Say it where it can actually be seen.
+    const fail = e => {
+      _videoSession.switching = false
+      const msg = (e && e.message) || String(e)
+      say('Could not switch source — ' + msg, 8000)
+      if (current()) safeSend('video-event', { kind: 'error', message: msg })
+    }
 
     // The HTML stage renders UNDER mpv's surface, so while a switch is in
     // flight the viewer is looking at the old frozen frame with nothing at all
     // to say the app is working. mpv's own OSD is the only thing visible over
     // the picture — which is why video-osd exists — so the switch narrates
     // there. Silence is most of what "it just sits there" actually was.
-    const say = text => { try { videoEngine().osdMessage(String(text), 4000) } catch (_) {} }
+    // The OSD is the only surface visible over mpv's own window, so it has to
+    // outlast the wait it describes: at four seconds "Checking RealDebrid…"
+    // was gone ten seconds before that phase ended, leaving silence.
+    const say = (text, ms) => { try { videoEngine().osdMessage(String(text), ms || 6000) } catch (_) {} }
 
     // Point mpv at whatever was resolved, and put the viewer back where they
     // were. `streamer` is null on the debrid path: there is no swarm to
     // prioritise and no pack list to read from a torrent that was never made.
     const loadInto = async (url, streamer) => {
+      // Registered BEFORE the load, or the open can be reported in the gap
+      // between the command being accepted and this listener existing.
+      const opened = _awaitFileLoaded(videoEngine(), SWITCH_OPEN_TIMEOUT_MS)
       await videoEngine().load(url)
       // Deliberately NOT clearing `switching` here. A newer token owns the
       // session now and sets its own flag; clearing it would clear theirs.
@@ -16393,13 +16416,23 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       // was no longer suppressed: the app declared the episode watched and
       // jumped to the next one, on a switch the viewer had just asked for.
       if (resumeAt > 0) {
+        // mpv has accepted the file but may not have opened it yet, and
+        // seeking into that window simply fails.
+        await opened
         let target = resumeAt
         try {
           const dur = Number(videoEngine().state && videoEngine().state.duration) || 0
           if (dur > 0 && target > dur - SWITCH_SEEK_TAIL_S) target = Math.max(0, dur - SWITCH_SEEK_TAIL_S)
         } catch (_) {}
-        if (target < resumeAt - 1) say('This copy is a different cut — starting a little earlier.')
-        try { await videoEngine().seek(target, 'absolute') } catch (_) {}
+        if (target < resumeAt - 1) say('This copy is a different cut — starting a little earlier.', 8000)
+        try {
+          await videoEngine().seek(target, 'absolute')
+        } catch (e) {
+          // Never swallowed again: a lost position is this feature's most
+          // visible failure, and this catch is why it was never diagnosable.
+          console.warn('[papa-video] switch could not restore the position:', (e && e.message) || e)
+          say('Could not restore your place in this copy.', 8000)
+        }
       }
       // Only now is the switch over. Everything above — the load, the seek and
       // the end-of-file a clamped seek can provoke — belongs to it.
@@ -16419,7 +16452,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     }
 
     const startTorrent = () => {
-      say('Connecting to peers…')
+      say('Connecting to peers…', 20000)
       _startTorrentStream(result, {
         current, fail,
         onReady: (url, streamer) => { loadInto(url, streamer).catch(fail) },
@@ -16436,7 +16469,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // it just sits there" (2026-09-20). A badge the app then ignores is worse
     // than no badge, because it sends people at the slowest path on purpose.
     if (_debridAnyWorthTrying(result)) {
-      say('Checking RealDebrid…')
+      say('Checking RealDebrid…', DEBRID_BUDGET_MS)
       const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
       Promise.race([_debridPlayableAny(result), budget])
         .catch(e => { _sendDebridMiss(current, e); throw e })
@@ -16448,7 +16481,13 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
             _startPackChainTick()
           })
         })
-        .catch(() => { if (current()) startTorrent() })
+        .catch(e => {
+          // The miss above is attached only to the race. A race that resolved
+          // with no link, or a link mpv could not open, threw past it and
+          // started peers with nothing said at all.
+          _sendDebridMiss(current, e)
+          if (current()) startTorrent()
+        })
     } else {
       // Configured but nothing worth asking about: say so rather than falling
       // to peers in silence, which is what made a paid account look ignored.
@@ -17353,6 +17392,32 @@ const DEBRID_BUDGET_MS = 14000
 // release of the same episode is routinely a different cut; seeking to the old
 // playhead can be past its end.
 const SWITCH_SEEK_TAIL_S = 5
+// How long to wait for mpv to actually OPEN the newly loaded file before
+// giving up on restoring the position.
+const SWITCH_OPEN_TIMEOUT_MS = 20000
+// mpv's loadfile is accepted long before the file is open — the engine says so
+// itself ("distinct from 'loaded', which only says the loadfile command was
+// sent and accepted") and emits 'fileLoaded' separately when it really is. A
+// seek issued the moment load() resolved landed in that window and failed, and
+// the catch around it threw the failure away — so switching source silently
+// restarted the episode from zero, which is the commonest way a switch
+// "loses my place".
+function _awaitFileLoaded(engine, ms) {
+  return new Promise(resolve => {
+    let settled = false
+    let timer = null
+    const done = ok => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      try { engine.removeListener('fileLoaded', onLoaded) } catch (_) {}
+      resolve(ok)
+    }
+    const onLoaded = () => done(true)
+    try { engine.once('fileLoaded', onLoaded) } catch (_) { return done(false) }
+    timer = setTimeout(() => done(false), ms)
+  })
+}
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the
 // on-device view. Missing files self-heal out of the index.

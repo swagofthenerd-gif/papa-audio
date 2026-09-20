@@ -13,6 +13,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const { runHandler } = require('./helpers/lift-ipc')
+const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
 
 const MAGNET = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567'
 
@@ -135,4 +136,94 @@ test('a non-torrent or magnet-less source is refused plainly, not started', asyn
   })
   assert.equal(b.result.ok, false)
   assert.equal(seen.torrents.length, 0)
+})
+
+// ── restoring the position (2026-09-20 audit) ──────────────────────────────
+// mpv's loadfile is accepted long before the file is open — the engine emits
+// 'fileLoaded' separately for the real thing. A seek issued the moment load()
+// resolved landed in that gap and failed, and the catch threw the failure
+// away, so a switch silently restarted the episode from zero.
+test('the position is restored only once mpv has really opened the file', async () => {
+  let openFile = null
+  const opened = new Promise(r => { openFile = r })
+  const { seen, globals } = rig({
+    _awaitFileLoaded: () => opened,
+    videoEngine: () => ({
+      state: { position: 300, duration: 1400 },
+      load: async url => { seen.loaded.push(url) },
+      seek: async (pos, mode) => { seen.seeks.push([pos, mode]) },
+      osdMessage: (t) => { seen.osd.push(String(t)) },
+    }),
+  })
+  await run(globals)
+  assert.deepEqual(seen.seeks, [], 'no seek may be issued while the file is still opening')
+  openFile(true)
+  await new Promise(r => setTimeout(r, 60))
+  assert.deepEqual(seen.seeks, [[300, 'absolute']], 'and it happens once the file is open')
+})
+
+test('the seek is clamped inside a shorter cut, and says so', async () => {
+  const { seen, globals } = rig({
+    _awaitFileLoaded: async () => true,
+    SWITCH_SEEK_TAIL_S: 5,
+    videoEngine: () => ({
+      // The new release is a different, shorter cut: 600 s against a 1200 s
+      // playhead. Seeking there makes mpv report end-of-file, which the
+      // renderer reads as a finished episode.
+      state: { position: 1200, duration: 600 },
+      load: async url => { seen.loaded.push(url) },
+      seek: async (pos, mode) => { seen.seeks.push([pos, mode]) },
+      osdMessage: (t) => { seen.osd.push(String(t)) },
+    }),
+  })
+  await run(globals)
+  assert.equal(seen.seeks.length, 1)
+  assert.ok(seen.seeks[0][0] <= 595, 'must land inside the file; got ' + seen.seeks[0][0])
+  assert.ok(seen.osd.some(t => /different cut/i.test(t)), 'and say why: ' + JSON.stringify(seen.osd))
+})
+
+test('a seek that fails is reported, not swallowed', async () => {
+  const { seen, globals } = rig({
+    _awaitFileLoaded: async () => true,
+    videoEngine: () => ({
+      state: { position: 300, duration: 1400 },
+      load: async url => { seen.loaded.push(url) },
+      seek: async () => { throw new Error('mpv refused the seek') },
+      osdMessage: (t) => { seen.osd.push(String(t)) },
+    }),
+  })
+  await run(globals)
+  assert.ok(seen.osd.some(t => /could not restore your place/i.test(t)),
+    'the empty catch is why a lost position was never diagnosable: ' + JSON.stringify(seen.osd))
+})
+
+test('a failed switch is announced where it can actually be seen', async () => {
+  // The renderer paints switch errors on the HTML stage, which sits UNDER
+  // mpv's window and is invisible in purist mode.
+  const { seen, globals } = rig({
+    _debridAnyWorthTrying: () => false,
+    _startTorrentStream: (result, opts) => { opts.fail(new Error('Nobody is sharing this')) },
+  })
+  await run(globals)
+  assert.ok(seen.osd.some(t => /could not switch source/i.test(t)),
+    'got: ' + JSON.stringify(seen.osd))
+  assert.ok(seen.sent.some(p => p && p.kind === 'error'), 'and the page is told too')
+})
+
+test('the old release stops downloading the moment the switch begins', async () => {
+  // Its background next-episode pull kept eating the connection while the
+  // viewer waited, and a stale magnet made later warms believe a debrid
+  // stream was playing when it was not.
+  const body = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-switch-stream'"),
+    MAIN.indexOf("ipcMain.handle('video-stop'"))
+  assert.match(body, /_debridCacheAheadStop\(\)/)
+  assert.match(body, /_videoSession\.debrid = null/)
+})
+
+test('the on-screen narration outlasts the wait it describes', async () => {
+  const body = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-switch-stream'"),
+    MAIN.indexOf("ipcMain.handle('video-stop'"))
+  assert.match(body, /say\('Checking RealDebrid…', DEBRID_BUDGET_MS\)/,
+    'four seconds left ten seconds of silence inside a fourteen-second phase')
+  assert.match(body, /say\('Connecting to peers…', 20000\)/)
 })
