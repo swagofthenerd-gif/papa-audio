@@ -190,6 +190,47 @@
     return extract || null
   }
 
+  // The keyless full-intro endpoint. The REST summary above returns a lead
+  // ABSTRACT by design — 424 characters for Pink Floyd, against 2,736 here —
+  // which is why the dossier was cutting a sentence four characters from its
+  // end. Same one request, no key, no new IPC.
+  function _wikiExtractUrl(title) {
+    return 'https://en.wikipedia.org/w/api.php?action=query&format=json' +
+      '&prop=extracts&explaintext=1&exintro=1&redirects=1&titles=' +
+      encodeURIComponent(String(title || ''))
+  }
+
+  // The plain-text intro out of an action=query&prop=extracts response, or
+  // null. Shape is { query: { pages: { "<pageid>": { extract } } } }; a pageid
+  // of -1 (or a `missing` marker) is the API saying there is no such article.
+  // Those two skips are belt-and-braces — a missing page carries no extract
+  // either — and are spelled out because the shape is the contract here.
+  //
+  // A NEW parser beside bioFromWikiSummary rather than a change to it: the
+  // summary one is unit-tested against a different contract and still serves
+  // the `artist-bio` handler, which needs the thumbnail and description this
+  // endpoint does not carry.
+  function bioFromQueryExtract(json) {
+    const pages = json && json.query && json.query.pages && typeof json.query.pages === 'object'
+      ? json.query.pages : null
+    if (!pages) return null
+    for (const id of Object.keys(pages)) {
+      if (String(id) === '-1') continue
+      const page = pages[id]
+      if (!page || page.missing !== undefined) continue
+      // This endpoint carries no `type: 'disambiguation'`, so the same text
+      // test the artist-bio handler uses is the only guard available: "Dummy",
+      // "Air", "Bush" and "Muse" all resolve to a disambiguation page.
+      const raw = typeof page.extract === 'string' ? page.extract : ''
+      const extract = raw.replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n').trim()
+      if (!extract) continue
+      if (/may refer to|disambiguation/i.test(extract.slice(0, 120))) return null
+      return extract
+    }
+    return null
+  }
+
   // Resolve an artist to { bio, similar } using injected async fetchers:
   //   fetchers.mb(url)   -> parsed JSON | null   (MusicBrainz)
   //   fetchers.wd(url)   -> parsed JSON | null   (Wikidata EntityData; optional)
@@ -237,6 +278,12 @@
     // name — the latter is what the renderer used before and works for the many
     // artists whose Wikipedia page title is just their name.
     for (const title of [wikiTitle, name].filter(Boolean)) {
+      // The full intro first, the REST summary as the fallback when the extract
+      // is missing or empty. Both go through the same injected `wiki` fetcher.
+      try {
+        const bio = bioFromQueryExtract(await wiki(_wikiExtractUrl(title)))
+        if (bio) return { bio, similar: [] }
+      } catch (_) { /* fall through to the summary */ }
       try {
         const summary = await wiki(_wikiSummaryUrl(title))
         const bio = bioFromWikiSummary(summary)
@@ -259,6 +306,7 @@
     wikidataIdFromMb,
     wikipediaTitleFromWikidata,
     bioFromWikiSummary,
+    bioFromQueryExtract,
     resolve,
   }
 })

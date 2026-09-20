@@ -333,7 +333,14 @@
       if (top && window.api && window.api.artistInfo) {
         window.api.artistInfo({ artist: top.artist }).then(r => {
           const el = bodyEl.querySelector('#slr-story')
-          if (el && r && r.bio) el.innerHTML = `<b>${esc(top.artist)}</b> — ${esc(String(r.bio).slice(0, 300))}… This peer holds ${top.count} of their albums.`
+          // One line on a shelf header, with no expander behind it: one whole
+          // sentence, and no ellipsis. The old hard slice(0,300) cut mid-word
+          // and then promised more text there was no way to reach.
+          const D = (typeof window !== 'undefined' && window.PapaSlskDossier) || null
+          const line = D && D.firstSentence
+            ? D.firstSentence(String(r && r.bio || ''), 300)
+            : String(r && r.bio || '').slice(0, 300)
+          if (el && line) el.innerHTML = `<b>${esc(top.artist)}</b> — ${esc(line)} This peer holds ${top.count} of their albums.`
         }).catch(() => {})
       }
       armArt()

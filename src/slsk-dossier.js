@@ -52,7 +52,84 @@
       },
       verdict: album.upgrade ? 'Upgrade over yours' : (mine ? 'You have this' : 'Not yours'),
       rip: null, reception: null, about: null, siblings: [],
+      // The expander's open flag lives HERE, not in the DOM: repaintBody()
+      // re-serialises the whole body on every async arrival, so a flag read off
+      // the markup would be thrown away by the next reply that lands.
+      bioOpen: false,
     }
+  }
+
+  // The sentence the lookup didn't finish. Written into a slot by the .catch of
+  // every lookup and by the else of every `if (window.api…)` guard, so `null`
+  // keeps its one meaning: a live promise is still out.
+  const NO_ANSWER = "The lookup didn't answer. Close and reopen the panel to try again."
+
+  // Where a sentence really ends: `.`, `!` or `?`, then a space, then an
+  // uppercase LETTER, and the word before the punctuation longer than two
+  // characters. That last clause is what keeps "St. Petersburg", "Jr. Walker"
+  // and "U.S. Army" whole, and the uppercase-letter test is what keeps
+  // "No. 1 hit" whole.
+  function isSentenceEnd(s, i) {
+    const ch = s[i]
+    if (ch !== '.' && ch !== '!' && ch !== '?') return false
+    if (s[i + 1] !== ' ') return false
+    const next = s[i + 2]
+    if (!next || next !== next.toUpperCase() || next === next.toLowerCase()) return false
+    let j = i - 1, len = 0
+    while (j >= 0 && !/[\s.!?]/.test(s[j])) { len++; j-- }
+    return len > 2
+  }
+
+  // Normalise the newline runs Wikipedia's intro endpoint emits, without
+  // destroying the blank lines that separate its paragraphs.
+  function tidyText(text) {
+    return String(text == null ? '' : text)
+      .replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  }
+
+  // The preview cut. Pure: takes raw text, returns { text, truncated }. The
+  // slice happens on the RAW string and esc() is applied to the result by the
+  // caller — escaping first and slicing after can cut an HTML entity in half.
+  function bioPreview(text, limit) {
+    const lim = Number(limit) > 0 ? Math.floor(Number(limit)) : 420
+    const s = tidyText(text)
+    if (s.length <= lim) return { text: s, truncated: false }
+    // The author's own paragraph break beats any sentence we pick.
+    const breaks = /\n[ \t]*\n/g
+    let br
+    while ((br = breaks.exec(s))) {
+      if (br.index > 600) break
+      if (br.index >= 200) return { text: s.slice(0, br.index).trim() + '…', truncated: true }
+    }
+    for (let i = Math.min(lim, s.length - 3); i >= 200; i--) {
+      if (isSentenceEnd(s, i)) return { text: s.slice(0, i + 1) + '…', truncated: true }
+    }
+    const sp = s.lastIndexOf(' ', lim)
+    return { text: s.slice(0, sp > 200 ? sp : lim).trim() + '…', truncated: true }
+  }
+
+  // One sentence and no ellipsis, for a caption that has no expander behind it.
+  // Same sentence-end rule as bioPreview, so the abbreviations it protects are
+  // protected here too. An ellipsis is deliberately absent: on a shelf header it
+  // promises more text with no way to reach it.
+  function firstSentence(text, max) {
+    const cap = Number(max) > 0 ? Math.floor(Number(max)) : 300
+    const s = tidyText(text)
+    for (let i = 0; i < Math.min(s.length, cap); i++) {
+      if (isSentenceEnd(s, i)) return s.slice(0, i + 1)
+    }
+    if (s.length <= cap) return s
+    const sp = s.lastIndexOf(' ', cap)
+    return s.slice(0, sp > 0 ? sp : cap).trim()
+  }
+
+  // Blank-line-separated prose into stacked divs, so a 2,700-character intro
+  // reads as paragraphs rather than one wall. Split on the RAW text, escape
+  // each paragraph after.
+  function paragraphsHtml(text, esc) {
+    return String(text == null ? '' : text).split(/\n[ \t]*\n/)
+      .map(p => p.trim()).filter(Boolean)
+      .map(p => `<div>${esc(p)}</div>`).join('')
   }
 
   function labelDot(tier) { return `<i class="slr-lbl slr-lbl-${tier}"></i>` }
@@ -139,6 +216,28 @@
       <div class="slr-chips">${chips}</div>`
   }
 
+  // Three states, not two. `null` means STILL ASKING — and only a live promise
+  // is allowed to hold the slot at null, which is why every lookup writes a
+  // failure shape from its .catch and from the else of its bridge guard. The
+  // old code printed "Nothing written about this artist yet." the instant the
+  // panel opened, before Wikipedia had been asked anything.
+  function aboutHtml(m, esc) {
+    if (!m.artist) return `<div class="slr-muted">This folder's name doesn't say who the artist is, so I can't look the record up.</div>`
+    const a = m.about
+    if (a == null) return `<div class="slr-muted">Looking up…</div>`
+    if (a.ok === false) return `<div class="slr-muted">${esc(a.reason || NO_ANSWER)}</div>`
+    const bio = a.bio ? String(a.bio) : ''
+    if (!bio) return `<div class="slr-muted">Wikipedia has nothing on ${esc(m.artist)}.</div>`
+    const cut = bioPreview(bio, 420)
+    const shown = m.bioOpen ? tidyText(bio) : cut.text
+    // The control is rendered from `truncated`, which is a fact about the text
+    // and not about the open flag, so "Show less" survives being open.
+    const more = cut.truncated
+      ? `<button class="slr-btn slr-btn-quiet" data-act="bio-more">${m.bioOpen ? 'Show less' : 'Show more'}</button>`
+      : ''
+    return `<div class="slr-muted">${paragraphsHtml(shown, esc)}</div>${more}`
+  }
+
   function sectionsHtml(m, esc) {
     // A contradiction is worth nothing further down the panel: the Download
     // button is in the header, so the pill leads the row directly beneath it.
@@ -152,7 +251,7 @@
       `<span class="slr-pill slr-pill-verdict">${esc(m.verdict)}</span>`,
     ].filter(Boolean).join('')
     const sibs = (m.siblings || []).map(s => `<button class="slr-chip slr-chip-btn" data-sibling="${esc(s.folderPath)}">${esc(s.album)}${s.isHiRes ? ' · hi-res' : ''}${s.surround ? ' · surround' : ''}</button>`).join('')
-    const about = m.about && m.about.bio ? `<div class="slr-muted">${esc(String(m.about.bio).slice(0, 420))}${m.about.bio.length > 420 ? '…' : ''}</div>` : `<div class="slr-muted">Nothing written about this artist yet.</div>`
+    const about = aboutHtml(m, esc)
     const tracks = m.tracks.map((t, i) => {
       const name = String(t.name || t.filename || '')
       const n = (name.match(/^\s*(\d{1,3})/) || [])[1] || (i + 1)
@@ -256,9 +355,17 @@
       repaintBody()
     }
 
+    // Scroll lives on .slr-dossier-panel, not on the body being replaced, so
+    // swapping the body cannot move him — except that collapsing the bio makes
+    // the page shorter and the browser clamps scrollTop on the spot. Capturing
+    // and restoring here fixes it once for every late-arriving section.
     function repaintBody() {
       const b = root.querySelector('.slr-dossier-body')
-      if (b) b.innerHTML = sectionsHtml(m, esc)
+      if (!b) return
+      const panel = root.querySelector('.slr-dossier-panel')
+      const top = panel ? panel.scrollTop : 0
+      b.innerHTML = sectionsHtml(m, esc)
+      if (panel && top) panel.scrollTop = top
     }
 
     root.addEventListener('click', async e => {
@@ -270,6 +377,9 @@
       switch (t.dataset.act) {
         case 'close': close(); break
         case 'verify': verify(); break
+        // Delegated, never an id + addEventListener: repaintBody() destroys
+        // directly-bound listeners on every async arrival.
+        case 'bio-more': m.bioOpen = !m.bioOpen; repaintBody(); break
         case 'download': {
           if (!deps._slskEnqueue) { showSnackbar('Downloads are not wired up'); break }
           const items = m.tracks.map(x => ({ username, filename: x.fullPath || x.filename || x.name, size: x.size || 0 }))
@@ -308,7 +418,19 @@
     // Async sections: cached rip verdict, reception, about. Each paints when it lands.
     try { const c = localStorage.getItem('slr_rip:' + username + ':' + album.folderPath); if (c) { const r = JSON.parse(c); if (r && r.at && Date.now() - r.at < 30 * 86400e3) { m.rip = r; repaintBody() } } } catch (_) {}
     if (window.api && window.api.discogsAlbum) window.api.discogsAlbum({ artist: m.artist, album: m.title }).then(r => { m.reception = r; if (root.isConnected) repaintBody() }).catch(() => {})
-    if (window.api && window.api.artistInfo && m.artist) window.api.artistInfo({ artist: m.artist }).then(r => { m.about = r; if (root.isConnected) repaintBody() }).catch(() => {})
+    // m.about stays null only while this promise is out. A rejection, a reply
+    // that never came back, or a missing bridge each write the failure shape —
+    // a bare .catch(() => {}) would leave "Looking up…" on screen for good.
+    if (m.artist) {
+      if (window.api && window.api.artistInfo) {
+        window.api.artistInfo({ artist: m.artist })
+          .then(r => { m.about = r || { ok: false, reason: NO_ANSWER }; if (root.isConnected) repaintBody() })
+          .catch(() => { m.about = { ok: false, reason: NO_ANSWER }; if (root.isConnected) repaintBody() })
+      } else {
+        m.about = { ok: false, reason: NO_ANSWER }
+        repaintBody()
+      }
+    }
     requestAnimationFrame(() => {
       root.classList.add('is-open')
       // "Verify this rip" opens the dossier and starts the check in one go;
@@ -318,7 +440,7 @@
     return { close }
   }
 
-  const api = { open, model, sectionsHtml, editionOf, fmtDur }
+  const api = { open, model, sectionsHtml, aboutHtml, bioPreview, firstSentence, editionOf, fmtDur }
   if (typeof window !== 'undefined') window.PapaSlskDossier = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()

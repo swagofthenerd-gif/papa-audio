@@ -144,3 +144,139 @@ test('sectionsHtml escapes a hostile track name and channel fragment', () => {
   // rather than inventing a sentence for the pill.
   assert.ok(html.includes('slr-pill-warn">listed 7.1 · &lt;img'))
 })
+
+// --- bioPreview -----------------------------------------------------------
+// The cut the panel makes before it has a Show more button to back it up.
+// Pure, so every rule is checked here rather than through the DOM.
+
+test('bioPreview returns the whole text and no truncation under the limit', () => {
+  const out = D.bioPreview('A short life story.', 420)
+  assert.deepEqual(out, { text: 'A short life story.', truncated: false })
+})
+
+test("bioPreview cuts at the author's own paragraph break when it falls in range", () => {
+  const text = 'x'.repeat(250) + '\n\n' + 'y'.repeat(300)
+  const out = D.bioPreview(text, 420)
+  assert.equal(out.truncated, true)
+  assert.equal(out.text, 'x'.repeat(250) + '…')
+})
+
+// The abbreviation rules. Every period below is followed by a space and would
+// be a sentence end without them, and all of them sit past the one real
+// sentence end, so the backwards scan has to walk over each in turn.
+const ABBREV_A = 'The band toured widely and recorded often, which made them famous. '.repeat(4)
+const ABBREV_B = 'They then moved to St. Petersburg, cut a track for Vol. 2 of a label sampler, ' +
+  'met Jr. Walker and the U.S. Army band, and carried on working for many more years.'
+
+test('bioPreview does not mistake St., Jr., U.S. or Vol. 2 for a sentence end', () => {
+  const out = D.bioPreview(ABBREV_A + ABBREV_B, 420)
+  assert.equal(out.truncated, true)
+  assert.equal(out.text, ABBREV_A.trim() + '…')
+  assert.ok(!out.text.includes('Petersburg'))
+  assert.ok(!out.text.includes('Vol.'))
+})
+
+test('bioPreview falls back to the last space when no sentence ends past 200', () => {
+  const out = D.bioPreview('word '.repeat(200), 420)
+  assert.equal(out.truncated, true)
+  assert.ok(out.text.endsWith('d…'), 'cut on a word boundary, not mid-word')
+  assert.ok(out.text.length <= 421)
+})
+
+// --- firstSentence (the Wander shelf caption) -----------------------------
+
+test('firstSentence keeps one sentence and adds no ellipsis', () => {
+  const bio = 'Pink Floyd were an English rock band formed in London in 1965. They gained an early following. They toured.'
+  assert.equal(D.firstSentence(bio, 300), 'Pink Floyd were an English rock band formed in London in 1965.')
+  assert.ok(!D.firstSentence(bio, 300).includes('…'))
+})
+
+test('firstSentence obeys the same abbreviation rules', () => {
+  assert.equal(D.firstSentence('They met in St. Petersburg in 1965. Then they toured.', 300),
+    'They met in St. Petersburg in 1965.')
+})
+
+// --- the About section's three states -------------------------------------
+// The body of a section is never allowed to be empty: a headed blank reads as
+// the app having broken.
+function aboutBody(html) {
+  const i = html.indexOf('<b>About ')
+  assert.ok(i >= 0, 'the About section is always rendered')
+  const rest = html.slice(html.indexOf('</b>', i) + 4)
+  const end = rest.indexOf('<div class="slr-sec"')
+  return (end >= 0 ? rest.slice(0, end) : rest).replace(/<[^>]*>/g, '').trim()
+}
+
+test('About says it is still asking while the lookup is in flight', () => {
+  const html = D.sectionsHtml(D.model(album, 'u', null), s => s)
+  assert.equal(aboutBody(html), 'Looking up…')
+  assert.ok(!html.includes('Nothing written about this artist yet.'))
+})
+
+test('About names the failure when the lookup did not answer', () => {
+  const m = { ...D.model(album, 'u', null), about: { ok: false, reason: "The lookup didn't answer. Close and reopen the panel to try again." } }
+  const html = D.sectionsHtml(m, s => s)
+  assert.equal(aboutBody(html), "The lookup didn't answer. Close and reopen the panel to try again.")
+})
+
+test('About says Wikipedia has nothing once the lookup answers empty', () => {
+  const m = { ...D.model(album, 'u', null), about: { bio: null, similar: [] } }
+  const html = D.sectionsHtml(m, s => s)
+  assert.equal(aboutBody(html), 'Wikipedia has nothing on Pink Floyd.')
+})
+
+test('About refuses the lookup outright when the folder names no artist', () => {
+  const m = D.model({ ...album, artist: '' }, 'u', null)
+  const html = D.sectionsHtml(m, s => s)
+  assert.equal(aboutBody(html), "This folder's name doesn't say who the artist is, so I can't look the record up.")
+})
+
+// --- the Show more control ------------------------------------------------
+
+const LONG_BIO = ABBREV_A + ABBREV_B
+
+test('a long bio renders the preview and a Show more button', () => {
+  const m = { ...D.model(album, 'u', null), about: { bio: LONG_BIO, similar: [] } }
+  const html = D.sectionsHtml(m, s => s)
+  assert.ok(html.includes('data-act="bio-more">Show more</button>'))
+  assert.ok(html.includes(ABBREV_A.trim() + '…'))
+  assert.ok(!html.includes('Petersburg'))
+})
+
+test('bioOpen renders the whole bio and flips the label to Show less', () => {
+  const m = { ...D.model(album, 'u', null), about: { bio: LONG_BIO, similar: [] }, bioOpen: true }
+  const html = D.sectionsHtml(m, s => s)
+  assert.ok(html.includes('data-act="bio-more">Show less</button>'))
+  assert.ok(html.includes('Petersburg'))
+  assert.ok(!aboutBody(html).includes('…'), 'the whole bio, with no preview ellipsis left behind')
+})
+
+test('a bio under the limit gets no button at all', () => {
+  const m = { ...D.model(album, 'u', null), about: { bio: 'They formed in London in 1965.', similar: [] } }
+  const html = D.sectionsHtml(m, s => s)
+  assert.ok(!html.includes('bio-more'))
+  assert.ok(html.includes('They formed in London in 1965.'))
+})
+
+test('a blank-line bio renders as stacked paragraphs, not one wall', () => {
+  const m = { ...D.model(album, 'u', null), about: { bio: 'First para.\n\nSecond para.', similar: [] } }
+  const html = D.sectionsHtml(m, s => s)
+  assert.ok(html.includes('<div>First para.</div><div>Second para.</div>'))
+})
+
+// The bio is a stranger's Wikipedia text arriving through IPC; the slice runs
+// on the raw string and esc() on the result, so a half-cut entity is the
+// failure this guards.
+test('sectionsHtml escapes a hostile artist bio', () => {
+  const payload = '<img src=x onerror=1>'
+  const m = { ...D.model(album, 'u', null), about: { bio: payload, similar: [] } }
+  const html = D.sectionsHtml(m, realEsc)
+  assert.ok(!html.includes('<img'))
+  assert.ok(html.includes('&lt;img src=x onerror=1&gt;'))
+})
+
+test('sectionsHtml escapes a hostile failure reason', () => {
+  const m = { ...D.model(album, 'u', null), about: { ok: false, reason: '<img src=x onerror=1>' } }
+  const html = D.sectionsHtml(m, realEsc)
+  assert.ok(!html.includes('<img'))
+})

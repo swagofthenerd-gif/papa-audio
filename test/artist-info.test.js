@@ -4,7 +4,7 @@ const assert = require('node:assert')
 const {
   CACHE_CAP, CACHE_TTL_MS, degraded, cacheKey, normalize, cacheGet, cacheSet,
   wikipediaTitleFromMb, wikidataIdFromMb, wikipediaTitleFromWikidata,
-  bioFromWikiSummary, resolve,
+  bioFromWikiSummary, bioFromQueryExtract, resolve,
 } = require('../src/artist-info')
 
 // --- shape / normalisation ------------------------------------------------
@@ -112,10 +112,13 @@ test('resolve returns a bio via MusicBrainz→Wikipedia and similar:[] by design
       if (/\/artist\?/.test(url)) return { artists: [{ id: 'mbid-1', name: 'Aphex Twin' }] }
       return { relations: [{ type: 'wikipedia', url: { resource: 'https://en.wikipedia.org/wiki/Aphex_Twin' } }] }
     },
+    // The full-intro endpoint answers first now; the REST summary is only the
+    // fallback, so a hit here still costs exactly one wiki call.
     wiki: async (url) => {
       calls.push('wiki')
       assert.match(url, /Aphex_Twin/)   // used the MB-resolved title
-      return wikiSummary('Richard David James, known as Aphex Twin.')
+      assert.match(url, /action=query/)
+      return { query: { pages: { 27669: { pageid: 27669, extract: 'Richard David James, known as Aphex Twin.' } } } }
     },
   })
   assert.strictEqual(info.bio, 'Richard David James, known as Aphex Twin.')
@@ -178,4 +181,45 @@ test('resolve treats a disambiguation page as no bio, then degrades', async () =
     wiki: async () => ({ type: 'disambiguation', extract: 'Could mean several things.' }),
   })
   assert.deepStrictEqual(info, { bio: null, similar: [] })
+})
+
+// --- bioFromQueryExtract (the full-intro endpoint) ------------------------
+
+test('bioFromQueryExtract reads query.pages[<pageid>].extract', () => {
+  const json = { query: { pages: { 24425: { pageid: 24425, title: 'Pink Floyd',
+    extract: 'Pink Floyd were an English rock band formed in London in 1965.\n\n\nThey gained an early following.\n' } } } }
+  assert.strictEqual(bioFromQueryExtract(json),
+    'Pink Floyd were an English rock band formed in London in 1965.\n\nThey gained an early following.')
+})
+
+test('bioFromQueryExtract treats pageid -1 and a missing page as no article', () => {
+  assert.strictEqual(bioFromQueryExtract({ query: { pages: { '-1': { ns: 0, title: 'Nope', missing: '' } } } }), null)
+  assert.strictEqual(bioFromQueryExtract({ query: { pages: { 7: { pageid: 7, missing: '' } } } }), null)
+  assert.strictEqual(bioFromQueryExtract({ query: { pages: {} } }), null)
+  assert.strictEqual(bioFromQueryExtract(null), null)
+})
+
+// This endpoint carries no type:'disambiguation' field, so the text test is
+// the only guard there is.
+test('bioFromQueryExtract rejects a disambiguation intro', () => {
+  const json = { query: { pages: { 9: { pageid: 9,
+    extract: 'Dummy may refer to: a mannequin, a 1994 album by Portishead, or a 2008 film.' } } } }
+  assert.strictEqual(bioFromQueryExtract(json), null)
+})
+
+test('resolve prefers the full intro and falls back to the REST summary', async () => {
+  const urls = []
+  const info = await resolve('Portishead', {
+    mb: async () => ({ artists: [] }),   // straight to the name lookup
+    wiki: async (url) => {
+      urls.push(url)
+      // The intro endpoint has nothing; the summary does.
+      if (/action=query/.test(url)) return { query: { pages: { '-1': { missing: '' } } } }
+      return wikiSummary('An English band from Bristol.')
+    },
+  })
+  assert.strictEqual(info.bio, 'An English band from Bristol.')
+  assert.strictEqual(urls.length, 2)
+  assert.match(urls[0], /action=query&format=json&prop=extracts&explaintext=1&exintro=1&redirects=1/)
+  assert.match(urls[1], /rest_v1\/page\/summary/)
 })

@@ -4955,7 +4955,12 @@ async function _artistInfoFetchJson(url) {
 ipcMain.handle('artist-info', async (_, { artist } = {}) => {
   const name = String(artist == null ? '' : artist).trim()
   if (!name) return artistInfo.degraded()
-  const key = artistInfo.cacheKey(name)
+  // Versioned at the CALL SITE, not inside cacheKey: that helper is an
+  // exported, unit-tested pure function and the version belongs to the caller.
+  // v2 is the switch from Wikipedia's REST summary (a lead abstract, ~420
+  // characters) to the full intro; without the bump, up to 100 short bios sit
+  // in artist-info-cache.json for another 30 days.
+  const key = 'v2:' + artistInfo.cacheKey(name)
   try {
     const store = sideStores.artistInfoCache.get() || {}
     const hit = artistInfo.cacheGet(store, key)
