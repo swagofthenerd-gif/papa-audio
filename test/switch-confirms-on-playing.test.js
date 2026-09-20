@@ -104,12 +104,29 @@ test('the picture arriving is what commits it', async () => {
   assert.ok(ctx._watch.sourceCandidate, 'the preference is a candidate, earned by playing on')
 })
 
-test('a picture from something else abandons it rather than crediting it', async () => {
+test('a picture that NAMES a different source abandons it rather than crediting it', async () => {
   const { ctx } = harness({ ctx: { _videoStreams: [NEXT] } })
   await ctx._playerPickSource('magnet:new')
-  // An ordinary play — the next episode, say — superseded the switch.
-  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: null })
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:somethingelse' })
   assert.strictEqual(ctx._watch.pick.magnet, 'magnet:old', 'nothing is credited to the switch')
+  assert.strictEqual(ctx._switchPending, null)
+  assert.strictEqual(ctx._autoSwitchInFlight, false)
+})
+
+test('an UNIDENTIFIED picture neither commits nor abandons it', async () => {
+  // The rule this test used to assert — that any `playing` supersedes — IS the
+  // bug. Six other places in main send a plain `playing` with no identity on
+  // it, and reading one of those as supersession abandoned a switch that was
+  // about to succeed: the new source played while the list went on naming the
+  // old one. Reported as "list shows the wrong source".
+  const { ctx } = harness({ ctx: { _videoStreams: [NEXT] } })
+  await ctx._playerPickSource('magnet:new')
+  ctx._resolveSwitchOnPlaying({ kind: 'playing' })
+  assert.ok(ctx._switchPending, 'the switch must still be waiting for its own answer')
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:old', 'and nothing is committed early')
+  // Its real answer still lands, and still commits.
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:new' })
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:new')
   assert.strictEqual(ctx._switchPending, null)
   assert.strictEqual(ctx._autoSwitchInFlight, false)
 })
