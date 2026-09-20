@@ -9779,6 +9779,13 @@ let _uploadDaemonOk = true
 // user -> directories -> files, user -> files, and an already-flat file list.
 // Keep only what the panel paints. Everything in these rows is peer-controlled,
 // so the fewer fields that cross the bridge the better.
+//
+// bytesTransferred and size are two of those fields, not a leak of the whole
+// row: the panel shows a live rate, and a live rate is the change in
+// bytesTransferred between two polls. averageSpeed alone cannot give one — it
+// is the transfer's running average and stops moving once the transfer settles
+// — and size is what turns the bar into a real fraction rather than slskd's
+// rounded percentComplete.
 function slimUploadRows(raw) {
   const out = []
   const push = (username, f) => {
@@ -9791,6 +9798,8 @@ function slimUploadRows(raw) {
       state: String(f.state || ''),
       percentComplete: Number(f.percentComplete) || 0,
       averageSpeed: Number(f.averageSpeed) || 0,
+      bytesTransferred: Number(f.bytesTransferred) || 0,
+      size: Number(f.size) || 0,
     })
   }
   for (const u of (Array.isArray(raw) ? raw : [])) {
@@ -9902,6 +9911,12 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
     return {
       ok: true,
       daemon: true,
+      // The clock reading this snapshot belongs to, on every path, not just the
+      // cached one. Two callers race here — the sidebar's 60 s tick asking for
+      // the cache and the open panel's fast tick asking for a real poll — and
+      // without a date on both answers the renderer cannot tell which of the
+      // two that just landed is the older picture.
+      cachedAt: _lastUploadPollAt,
       activeUploads: result.activeUploads,
       totalUploadedToday: result.totalUploadedToday,
       distinctPeersToday: result.distinctPeersToday,
@@ -9922,6 +9937,10 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
     // from a daemon that did not answer. The panel says that in words rather
     // than reporting an empty list as "nobody is taking anything".
     daemon: false,
+    // Dated now, not at the last good poll: this answer is a current fact
+    // ("the daemon is not answering"), so it must not be discarded as older
+    // than the snapshot it replaces.
+    cachedAt: Date.now(),
     activeUploads: 0,
     totalUploadedToday: rolled.totalUploadedToday,
     distinctPeersToday: rolled.distinctPeersToday,
