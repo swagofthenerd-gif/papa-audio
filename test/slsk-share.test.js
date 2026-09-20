@@ -156,3 +156,46 @@ test('sharing nothing says so, and says what it costs', () => {
   assert.match(none, /won't let you download from them if you share nothing back/)
   assert.equal(S.describe(undefined), none, 'no list reads the same as no folders')
 })
+
+// ── The gate that decides what strangers actually get ───────────────────────
+// Three routes were found that could put an unjudged path into the stored
+// selection: the download-folder chooser, the one-time migration reading the
+// first music folder verbatim, and anything writing the store directly. A
+// seeded selection of ["/", "/etc"] reached the daemon. Entry points should
+// still refuse, but this is the gate that must hold.
+test('the share read path refuses a dangerous folder even when one is stored', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const body = MAIN.slice(MAIN.indexOf('function _slskShareDirs('),
+                           MAIN.indexOf('function _slskShareLive('))
+  assert.match(body, /_slskShareRefusal\(dir\)/,
+    'every directory handed to the daemon is judged here, not only at entry')
+  const refuseIdx = body.indexOf('_slskShareRefusal(dir)')
+  const pushIdx = body.indexOf('out.push(dir)')
+  assert.ok(refuseIdx > 0 && refuseIdx < pushIdx,
+    'the refusal is checked before the directory can be added')
+})
+
+test('the download-folder chooser judges the folder it was given', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const start = MAIN.indexOf("ipcMain.handle('slsk-set-download-dir'")
+  const body = MAIN.slice(start, start + 2200)
+  assert.match(body, /_slskShareRefusal\(downloadDir\)/, 'the chosen folder is judged')
+  assert.ok(body.indexOf('_slskShareRefusal(downloadDir)') < body.indexOf("store.set('slskConfig'"),
+    'and judged before anything is stored')
+})
+
+test('the transfers poll does not call out while Soulseek is off', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const start = MAIN.indexOf("ipcMain.handle('slsk-get-transfers'")
+  const body = MAIN.slice(start, start + 900)
+  assert.match(body, /if \(!_slskEnabled\(\)\) return \{ off: true \}/,
+    'off answers without touching the daemon')
+  assert.ok(body.indexOf('_slskEnabled()') < body.indexOf('slskdFetch'),
+    'and the gate comes before the request')
+})

@@ -1463,6 +1463,18 @@ function _slskShareDirs(musicFolders, downloadDir) {
   const wanted = slskShare.shareDirs(_slskShareSelection(), musicFolders, downloadDir)
   const out = []
   for (const dir of wanted) {
+    // Judged HERE, at the point of use, not only where it was entered. Three
+    // separate routes were found that could put an unjudged path into the
+    // stored selection — the download-folder chooser, the one-time migration
+    // reading musicFolders[0] verbatim, and anything that wrote the store
+    // directly. A seeded selection of ["/", "/etc"] went all the way to the
+    // daemon. Every entry point should still refuse, but this is the gate that
+    // decides what strangers actually get, so it is the one that must hold.
+    const refusal = _slskShareRefusal(dir)
+    if (refusal) {
+      console.warn('[papa] not sharing ' + dir + ': ' + refusal.reason)
+      continue
+    }
     let there = false
     try { there = fs.existsSync(dir) } catch (_) { there = false }
     if (there) out.push(dir)
@@ -1564,7 +1576,9 @@ async function _slskUnshareFolder(folderPath, before) {
 // kibibytes per second, so the conversion happens here, at the edge, once.
 const SLSK_UPLOAD_SLOTS_MIN = 1
 const SLSK_UPLOAD_SLOTS_MAX = 20
-const SLSK_UPLOAD_SLOTS_DEFAULT = 4
+// slskd's own default is 10. Shipping a lower number would quietly halve
+// how many people he can serve at once without him asking for that.
+const SLSK_UPLOAD_SLOTS_DEFAULT = 10
 // The speed box had no ceiling at all while the slots box had one, so a
 // mistyped 100000 went through as a real number and slskd's speed_limit came
 // out at 97,656,250 KiB/s — a cap so far above any line that it is the same as
@@ -10772,6 +10786,11 @@ async function dlBackfillPositions(slim) {
 }
 
 ipcMain.handle('slsk-get-transfers', async () => {
+  // Off is meant to be inert. Without this the downloads poll keeps calling a
+  // daemon that is deliberately stopped, the fetch throws, and the page tells
+  // him it "can't reach the Soulseek daemon" with a Retry button — his own
+  // choice reported back to him as a fault.
+  if (!_slskEnabled()) return { off: true }
   // Was `catch (_) { return [] }`. The renderer detects an unreachable daemon by
   // this promise REJECTING, so swallowing made that impossible: a dead slskd
   // rendered as "No active downloads", the tab badges zeroed, the list blanked,
@@ -10944,6 +10963,11 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   })
   if (result.canceled || !result.filePaths.length) return { ok: false }
   const downloadDir = result.filePaths[0]
+  // The download folder becomes a tickable row, and if the folder it replaces
+  // was ticked the tick follows it here — so an unjudged answer from this
+  // dialog is a second way into the share list. Judge it like any other.
+  const dlRefusal = _slskShareRefusal(downloadDir)
+  if (dlRefusal) return { ok: false, refused: true, reason: dlRefusal.reason, error: dlRefusal.error }
   // Read (and migrate, if it never has been) the ticked list while the OLD
   // download folder is still the stored one. His real stored mode is
   // 'downloads', so migrating after the move would freeze the selection on a

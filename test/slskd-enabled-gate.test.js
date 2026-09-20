@@ -164,6 +164,12 @@ test('changing the download folder while Soulseek is off writes the config and s
         set: (k, v) => { data[k] = v },
       },
       _downloadDir: () => data.slskConfig.downloadDir,
+      // The handler now judges the folder the dialog returned, because that
+      // folder can become a ticked share row. The real predicate, so this
+      // exercises the same gate the app does.
+      _slskShareRefusal: (dir) => require('../src/slsk-share.js').pickRefusal(dir, {
+        home: '/home/tester', slskdDir: '/home/tester/.config/papa-audio/slskd',
+      }),
     }
   }
   const off = await runHandler('slsk-set-download-dir', {

@@ -27170,6 +27170,7 @@ async function _initSoulseekAccountSettings() {
     const st = await window.api.slskStatus().catch(() => null)
     accText.textContent = !st ? 'Could not reach the Soulseek daemon.'
       : st.connected ? 'Connected' + (st.username ? ' as ' + st.username : '') + '.'
+      : st.enabled === false ? 'Soulseek is off. Turn it on above when you want it.'
       : st.configured ? 'Signed in details are saved, but the daemon is not connected right now.'
       : 'No Soulseek account is set up yet.'
   }
@@ -29519,6 +29520,39 @@ function _dlRenderUnauthorized() {
   }
 }
 
+// Soulseek off on purpose. Same banner slot as the daemon-down one, opposite
+// meaning: no Retry (there is nothing to retry — it is doing what he asked),
+// no talk of reaching anything, and a button that turns it back on.
+function _dlRenderSoulseekOff() {
+  var list = document.getElementById('dl2-list')
+  if (!list || !list.parentNode) return
+  var id = 'dl2-daemon-banner'
+  var el = document.getElementById(id)
+  if (!el) {
+    el = document.createElement('div')
+    el.id = id
+    el.className = 'dl2-daemon-banner'
+    list.parentNode.insertBefore(el, list)
+  }
+  el.dataset.reason = 'off'
+  el.textContent = 'Soulseek is off, so nothing is moving right now. '
+  var on = document.createElement('button')
+  on.className = 'dl2-action-btn'
+  on.textContent = 'Turn Soulseek on'
+  on.addEventListener('click', function () {
+    if (!window.api || typeof window.api.slskEnabledSet !== 'function') return
+    window.api.slskEnabledSet({ enabled: true })
+      .then(function () { _pollAndRenderDownloads() })
+      .catch(function () { showSnackbar('Could not turn Soulseek on') })
+  })
+  el.appendChild(on)
+  if (!_dlLastFiles.length) {
+    list.innerHTML = '<div class="dl2-empty">' +
+      '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>' +
+      '<p>Turn Soulseek on to start downloading again.</p></div>'
+  }
+}
+
 function _dlClearDaemonBanner() {
   var el = document.getElementById('dl2-daemon-banner')
   if (el && el.parentNode) el.parentNode.removeChild(el)
@@ -30003,6 +30037,15 @@ async function _pollAndRenderDownloadsInner() {
   // Bad credentials are not an outage: slskd answered, it just would not let
   // us in. Saying "can't reach the daemon" sent people to restart a daemon
   // that was running, and the poll said it every two seconds.
+  // Soulseek switched off on purpose is not an outage and must never paint the
+  // "can't reach the daemon" banner with its Retry button. main answers this
+  // poll with { off: true } instead of calling out, so say the true thing.
+  if (raw && raw.off) {
+    _dlDaemonDown = false
+    if (typeof _dlRenderSoulseekOff === 'function') _dlRenderSoulseekOff()
+    else _dlRenderDaemonDown()
+    return
+  }
   if (raw && raw.unauthorized) {
     _dlDaemonDown = false
     _dlRenderUnauthorized()

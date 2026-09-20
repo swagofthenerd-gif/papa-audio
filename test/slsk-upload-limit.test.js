@@ -34,9 +34,11 @@ function limits(stored) {
 
 // ── The defaults ────────────────────────────────────────────────────────────
 
-test('the shipped default is four slots and no speed cap', () => {
+test("the shipped default matches slskd's own ten slots, with no speed cap", () => {
+  // Ten is slskd's own default. Shipping a smaller number would quietly halve
+  // how many people he can serve at once without him ever asking for that.
   const f = limits(undefined)
-  assert.deepStrictEqual(f.limit(), { slots: 4, mbps: 0 })
+  assert.deepStrictEqual(f.limit(), { slots: 10, mbps: 0 })
 })
 
 test('no cap means no speed_limit key at all, not a limit of zero', () => {
@@ -98,7 +100,7 @@ test('a slot count that is not a number falls back to the default rather than to
   // off switch he never asked for.
   const f = limits(null)
   for (const bad of [NaN, 'lots', null, undefined, {}]) {
-    assert.strictEqual(f.limit({ slots: bad }).slots, 4, String(bad))
+    assert.strictEqual(f.limit({ slots: bad }).slots, 10, String(bad))
   }
 })
 

@@ -66,6 +66,13 @@ function writer(seed, { existing = new Set([...MUSIC, DOWNLOADS]) } = {}) {
       SLSKD_CFG,
       SLSKD_PORT: 5030,
       _downloadDir: () => DOWNLOADS,
+      // The read path now judges every folder at the point of use, because
+      // three separate routes were found that could put an unjudged path into
+      // the stored selection. The harness supplies the real predicate so this
+      // suite exercises the same gate the app does.
+      _slskShareRefusal: (dir) => slskShare.pickRefusal(dir, {
+        home: '/home/tester', slskdDir: SLSKD_DIR,
+      }),
       _mintSlskdApiCreds: () => ({ username: 'papa', password: 'fixed-for-the-test' }),
       fs: {
         mkdirSync() {},
@@ -290,7 +297,7 @@ test('a folder inside another ticked folder is only handed over once', () => {
 test('the upload block is written, and the speed key is absent when there is no cap', () => {
   const w = writer({ musicFolders: MUSIC, slskShareFolders: [DOWNLOADS] })
   const yml = w.write({ downloadDir: DOWNLOADS })
-  assert.match(yml, /\ntransfers:\n {2}upload:\n {4}slots: 4\n/,
+  assert.match(yml, /\ntransfers:\n {2}upload:\n {4}slots: 10\n/,
     'four slots ship by default, down from the ten slskd uses on its own')
   assert.ok(!yml.includes('speed_limit'),
     'no cap means the key is left out entirely, not written as a number that means something else')
