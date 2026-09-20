@@ -1,0 +1,235 @@
+{
+ "pagination": {
+  "page": 1,
+  "pages": 5,
+  "per_page": 5,
+  "items": 22,
+  "urls": {
+   "last": "https://api.discogs.com/database/search?type=master&artist=Mike+Oldfield&release_title=Tubular+Bells&per_page=5&page=5",
+   "next": "https://api.discogs.com/database/search?type=master&artist=Mike+Oldfield&release_title=Tubular+Bells&per_page=5&page=2"
+  }
+ },
+ "results": [
+  {
+   "country": "Spain",
+   "year": "1993",
+   "format": [
+    "CD",
+    "Single",
+    "Promo"
+   ],
+   "label": [
+    "Virgin"
+   ],
+   "type": "master",
+   "genre": [
+    "Rock"
+   ],
+   "style": [
+    "Symphonic Rock"
+   ],
+   "id": 3385861,
+   "barcode": [
+    "7243 8 92121 2 9",
+    "892121 1"
+   ],
+   "master_id": 3385861,
+   "master_url": "https://api.discogs.com/masters/3385861",
+   "uri": "/master/3385861-Mike-Oldfield-Tubular-Bells",
+   "catno": "SPOLD 1",
+   "title": "Mike Oldfield - Tubular Bells",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/3385861",
+   "community": {
+    "want": 49,
+    "have": 32
+   }
+  },
+  {
+   "country": "UK",
+   "year": "1973",
+   "format": [
+    "Vinyl",
+    "LP",
+    "Album",
+    "Stereo"
+   ],
+   "label": [
+    "Virgin",
+    "The Manor",
+    "Virgin Records",
+    "EMI",
+    "Island",
+    "Virgin Music Ltd.",
+    "Robor Ltd."
+   ],
+   "type": "master",
+   "genre": [
+    "Rock"
+   ],
+   "style": [
+    "Prog Rock"
+   ],
+   "id": 15016,
+   "barcode": [
+    "V-2001-A",
+    "V-2001-B"
+   ],
+   "master_id": 15016,
+   "master_url": "https://api.discogs.com/masters/15016",
+   "uri": "/master/15016-Mike-Oldfield-Tubular-Bells",
+   "catno": "V2001",
+   "title": "Mike Oldfield - Tubular Bells",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/15016",
+   "community": {
+    "want": 70735,
+    "have": 152375
+   }
+  },
+  {
+   "country": "Europe",
+   "year": "2008",
+   "format": [
+    "CD",
+    "Album",
+    "Reissue",
+    "CD",
+    "Album",
+    "Reissue",
+    "All Media",
+    "Compilation"
+   ],
+   "label": [
+    "Warner Music International",
+    "Rhino Records",
+    "2in1",
+    "Warner Music International",
+    "Warner Music International",
+    "Warner Music UK Ltd.",
+    "Oldfield Music Overseas Ltd.",
+    "Warner Music Manufacturing Europe"
+   ],
+   "type": "master",
+   "genre": [
+    "Electronic",
+    "Rock"
+   ],
+   "style": [
+    "Alternative Rock",
+    "Prog Rock",
+    "New Age",
+    "Art Rock",
+    "Ambient",
+    "Synth-pop",
+    "Experimental"
+   ],
+   "id": 937480,
+   "barcode": [
+    "8 25646 94604 4",
+    "LC 14666",
+    "[warner logo] 450990618-2.2 07/99",
+    "IFPI L011",
+    "IFPI 05M9",
+    "[warner logo] 398424349-2.3 07/99",
+    "IFPI L012",
+    "IFPI 05M9",
+    "LC 4281"
+   ],
+   "master_id": 937480,
+   "master_url": "https://api.discogs.com/masters/937480",
+   "uri": "/master/937480-Mike-Oldfield-Tubular-Bells-II-Tubular-Bells-III",
+   "catno": "2564-69460-4",
+   "title": "Mike Oldfield - Tubular Bells II / Tubular Bells III",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/937480",
+   "community": {
+    "want": 16,
+    "have": 165
+   }
+  },
+  {
+   "country": "Italy",
+   "year": "1995",
+   "format": [
+    "CD",
+    "Album",
+    "Unofficial Release"
+   ],
+   "label": [
+    "Alegra",
+    "Sarabandas srl"
+   ],
+   "type": "master",
+   "genre": [
+    "Rock",
+    "Folk, World, & Country"
+   ],
+   "style": [
+    "Prog Rock",
+    "Folk Rock"
+   ],
+   "id": 1679851,
+   "barcode": [
+    "8004883090278",
+    "CD 9027 3027",
+    "IFPI  L211",
+    "IFPI 3701"
+   ],
+   "master_id": 1679851,
+   "master_url": "https://api.discogs.com/masters/1679851",
+   "uri": "/master/1679851-Mike-Oldfield-Tubular-Bells",
+   "catno": "CD 9027",
+   "title": "Mike Oldfield - Tubular Bells",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/1679851",
+   "community": {
+    "want": 17,
+    "have": 61
+   }
+  },
+  {
+   "country": "Unknown",
+   "genre": [
+    "Rock"
+   ],
+   "format": [
+    "CD",
+    "Album",
+    "Unofficial Release"
+   ],
+   "style": [
+    "Folk Rock",
+    "Prog Rock",
+    "Classic Rock"
+   ],
+   "id": 2919217,
+   "label": [
+    "Not On Label (Mike Oldfield)",
+    "Queen Elizabeth Hall"
+   ],
+   "type": "master",
+   "barcode": [
+    "MOTB-62573 23748X",
+    "IFPI L602",
+    "IFPI IC95"
+   ],
+   "master_id": 2919217,
+   "master_url": "https://api.discogs.com/masters/2919217",
+   "uri": "/master/2919217-Mike-Oldfield-Tubular-Bells-Live",
+   "catno": "MOTB-62573",
+   "title": "Mike Oldfield - Tubular Bells Live",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/2919217",
+   "community": {
+    "want": 43,
+    "have": 181
+   }
+  }
+ ]
+}

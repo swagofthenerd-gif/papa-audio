@@ -1,0 +1,560 @@
+{
+ "id": 5542,
+ "main_release": 13239116,
+ "most_recent_release": 36989619,
+ "resource_url": "https://api.discogs.com/masters/5542",
+ "uri": "https://www.discogs.com/master/5542-Portishead-Dummy",
+ "versions_url": "https://api.discogs.com/masters/5542/versions",
+ "main_release_url": "https://api.discogs.com/releases/13239116",
+ "most_recent_release_url": "https://api.discogs.com/releases/36989619",
+ "num_for_sale": 1095,
+ "lowest_price": 1.07,
+ "images": [
+  {
+   "type": "primary",
+   "uri": "https://i.discogs.com/Mi3GFDEziuGDcohp4VFKmwaRYSSmRZHq6hEq7EX73Ts/rs:fit/g:sm/q:90/h:591/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE2MTI4NjMz/NTMtNTA5My5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/Mi3GFDEziuGDcohp4VFKmwaRYSSmRZHq6hEq7EX73Ts/rs:fit/g:sm/q:90/h:591/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE2MTI4NjMz/NTMtNTA5My5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/U1eVciy3YIIRWZMBKxxPDKTO5bnfibAS5nW-RI839Sg/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE2MTI4NjMz/NTMtNTA5My5qcGVn.jpeg",
+   "width": 600,
+   "height": 591
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/ssZZR_R0XqOEwUn17GxWm0-OhMkMhApBwcizr-wE3W4/rs:fit/g:sm/q:90/h:600/w:597/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNDc0NS5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/ssZZR_R0XqOEwUn17GxWm0-OhMkMhApBwcizr-wE3W4/rs:fit/g:sm/q:90/h:600/w:597/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNDc0NS5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/83y77ReVFeEVWBDxLRmG3yyDNDpiXHecuNrsYVll92k/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNDc0NS5qcGVn.jpeg",
+   "width": 597,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/T8jUOOckUu9IStcVKIqPYuA2GIX4PZsQx8LTKW3RB0M/rs:fit/g:sm/q:90/h:600/w:599/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNzM0Ni5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/T8jUOOckUu9IStcVKIqPYuA2GIX4PZsQx8LTKW3RB0M/rs:fit/g:sm/q:90/h:600/w:599/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNzM0Ni5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/FfurBZc_qGlqJCgSx-J5jJErcrBkgdrCqq8GKftT_cI/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNzM0Ni5qcGVn.jpeg",
+   "width": 599,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/xnfM-IfzdeHOD9-eFfws5ySCCU-7lOrzkHyZx-G1YnE/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTQ3OC5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/xnfM-IfzdeHOD9-eFfws5ySCCU-7lOrzkHyZx-G1YnE/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTQ3OC5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/8fwX3_irBf0Q2JNv8RE_AU4sTh37bPA-Ycl2ZJsCRHA/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTQ3OC5qcGVn.jpeg",
+   "width": 600,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/2lyueX7SDICIVmulUZoaNUO65UegWuvOLUxRjA1c-WQ/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTM2NS5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/2lyueX7SDICIVmulUZoaNUO65UegWuvOLUxRjA1c-WQ/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTM2NS5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/NPJ15lJoigU8L0EdOYwLCxSwdef7PGlBXMnExczVTsU/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTctNTM2NS5qcGVn.jpeg",
+   "width": 600,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/23Cl1NbY15lqR7TSNWhPAAUIYn5r_vSqdqECuo4LV4c/rs:fit/g:sm/q:90/h:600/w:594/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNjI2MS5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/23Cl1NbY15lqR7TSNWhPAAUIYn5r_vSqdqECuo4LV4c/rs:fit/g:sm/q:90/h:600/w:594/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNjI2MS5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/FrIlWSz8X11GGKvQFDtYxqbLOWk5kZkmHa3gPaahoLs/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NjAtNjI2MS5qcGVn.jpeg",
+   "width": 594,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/2mjY8ZncLIFrrVl-LKhlfrH43B2-uWgDzr64YRotUqI/rs:fit/g:sm/q:90/h:600/w:592/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NzItNTcxNS5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/2mjY8ZncLIFrrVl-LKhlfrH43B2-uWgDzr64YRotUqI/rs:fit/g:sm/q:90/h:600/w:592/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NzItNTcxNS5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/0ksLGufRa6QJG_QI_NMp2edsGGctm2F7EtcwMuKe1dU/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NzItNTcxNS5qcGVn.jpeg",
+   "width": 592,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/Kn7unXWWSweCNMS4f9BEj3oAbyOPNjkVW4-uOzKCzQo/rs:fit/g:sm/q:90/h:128/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzg1NC5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/Kn7unXWWSweCNMS4f9BEj3oAbyOPNjkVW4-uOzKCzQo/rs:fit/g:sm/q:90/h:128/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzg1NC5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/N-CHyffmpUon6D7daiKfLRM5ClkhL55eLKj2oANkUWA/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzg1NC5qcGVn.jpeg",
+   "width": 600,
+   "height": 128
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/P9wuEtiRknuXP4Mudbbbe-sN5PFoE86C0_G0OuEnC5E/rs:fit/g:sm/q:90/h:191/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMTE0My5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/P9wuEtiRknuXP4Mudbbbe-sN5PFoE86C0_G0OuEnC5E/rs:fit/g:sm/q:90/h:191/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMTE0My5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/dwUapWaQisv5X-uQVmKNE_e6IQFk9cQXXNkEqtnbmtQ/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMTE0My5qcGVn.jpeg",
+   "width": 600,
+   "height": 191
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/OGIu3luTrY1GBiJfSDr8PaMiVvuzO7BY_rHE0TUvX_4/rs:fit/g:sm/q:90/h:594/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzMxMi5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/OGIu3luTrY1GBiJfSDr8PaMiVvuzO7BY_rHE0TUvX_4/rs:fit/g:sm/q:90/h:594/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzMxMi5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/0PR-Dz_aRIejdoB339SrKw_TW_knolLiDgI_DuU4iZg/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNzMxMi5qcGVn.jpeg",
+   "width": 600,
+   "height": 594
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/8i9YxFfpm8-S8uHIyX-fy3qwzy2j247rKgEhmA8VaHM/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNDQ4Ny5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/8i9YxFfpm8-S8uHIyX-fy3qwzy2j247rKgEhmA8VaHM/rs:fit/g:sm/q:90/h:600/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNDQ4Ny5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/HK3xCcIH3FwvYqQ_LVHDTCZSgmPqefEGg3sIl6boWG8/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtNDQ4Ny5qcGVn.jpeg",
+   "width": 600,
+   "height": 600
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/GzOKy0HXYD7udyog5qv31jQBRKgx5Iz49W7Zgq5X_gs/rs:fit/g:sm/q:90/h:516/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjM1OC5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/GzOKy0HXYD7udyog5qv31jQBRKgx5Iz49W7Zgq5X_gs/rs:fit/g:sm/q:90/h:516/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjM1OC5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/s4MjlH4pORCVZjFFwCgr7_3hnLrkjYqkcw_qhnh0jAU/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjM1OC5qcGVn.jpeg",
+   "width": 600,
+   "height": 516
+  },
+  {
+   "type": "secondary",
+   "uri": "https://i.discogs.com/IsP-zbCxwXkZT-7B-lCSksB84WZz0VVAqHTpewYjY4Y/rs:fit/g:sm/q:90/h:263/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjUyOC5qcGVn.jpeg",
+   "resource_url": "https://i.discogs.com/IsP-zbCxwXkZT-7B-lCSksB84WZz0VVAqHTpewYjY4Y/rs:fit/g:sm/q:90/h:263/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjUyOC5qcGVn.jpeg",
+   "uri150": "https://i.discogs.com/7yPMcX_xU56mlmDjZXUjhGynylR79DklZHMkKso7L80/rs:fit/g:sm/q:40/h:150/w:150/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMjM5/MTE2LTE3NjA0NjEw/NTYtMjUyOC5qcGVn.jpeg",
+   "width": 600,
+   "height": 263
+  }
+ ],
+ "genres": [
+  "Electronic"
+ ],
+ "styles": [
+  "Trip Hop"
+ ],
+ "year": 1994,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Mysterons",
+   "extraartists": [
+    {
+     "name": "Adrian Utley",
+     "anv": "",
+     "join": "",
+     "role": "Theremin [Thereman]",
+     "tracks": "",
+     "id": 206478,
+     "resource_url": "https://api.discogs.com/artists/206478"
+    }
+   ],
+   "duration": "4:56"
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "Sour Times",
+   "extraartists": [
+    {
+     "name": "Neil Solman",
+     "anv": "",
+     "join": "",
+     "role": "Electric Piano [Rhodes], Organ [Hammond]",
+     "tracks": "",
+     "id": 479616,
+     "resource_url": "https://api.discogs.com/artists/479616"
+    },
+    {
+     "name": "Henry Brooks",
+     "anv": "H Brooks",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 718531,
+     "resource_url": "https://api.discogs.com/artists/718531"
+    },
+    {
+     "name": "Lalo Schifrin",
+     "anv": "L Schifrin",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 23165,
+     "resource_url": "https://api.discogs.com/artists/23165"
+    },
+    {
+     "name": "Otis Turner",
+     "anv": "O Turner",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 556007,
+     "resource_url": "https://api.discogs.com/artists/556007"
+    }
+   ],
+   "duration": "4:05"
+  },
+  {
+   "position": "A3",
+   "type_": "track",
+   "title": "Strangers",
+   "extraartists": [
+    {
+     "name": "Wayne Shorter",
+     "anv": "W Shorter",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 29979,
+     "resource_url": "https://api.discogs.com/artists/29979"
+    }
+   ],
+   "duration": "3:49"
+  },
+  {
+   "position": "A4",
+   "type_": "track",
+   "title": "It Could Be Sweet",
+   "extraartists": [
+    {
+     "name": "Richard Newell (3)",
+     "anv": "",
+     "join": "",
+     "role": "Drum Programming",
+     "tracks": "",
+     "id": 5185005,
+     "resource_url": "https://api.discogs.com/artists/5185005"
+    }
+   ],
+   "duration": "4:10"
+  },
+  {
+   "position": "A5",
+   "type_": "track",
+   "title": "Wandering Star",
+   "extraartists": [
+    {
+     "name": "Geoff Barrow",
+     "anv": "",
+     "join": "",
+     "role": "Drums",
+     "tracks": "",
+     "id": 22504,
+     "resource_url": "https://api.discogs.com/artists/22504"
+    },
+    {
+     "name": "Gary Baldwin",
+     "anv": "",
+     "join": "",
+     "role": "Organ [Hammond]",
+     "tracks": "",
+     "id": 479614,
+     "resource_url": "https://api.discogs.com/artists/479614"
+    },
+    {
+     "name": "B.B. Dickerson",
+     "anv": "M Dickerson",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 401662,
+     "resource_url": "https://api.discogs.com/artists/401662"
+    },
+    {
+     "name": "Charles Miller",
+     "anv": "C W Miller",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 401129,
+     "resource_url": "https://api.discogs.com/artists/401129"
+    },
+    {
+     "name": "Harold Brown",
+     "anv": "H R Brown",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 401128,
+     "resource_url": "https://api.discogs.com/artists/401128"
+    },
+    {
+     "name": "Howard Scott",
+     "anv": "H Scott",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 280474,
+     "resource_url": "https://api.discogs.com/artists/280474"
+    },
+    {
+     "name": "Jerry Goldstein",
+     "anv": "J Goldstein",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 160600,
+     "resource_url": "https://api.discogs.com/artists/160600"
+    },
+    {
+     "name": "Lee Oskar",
+     "anv": "L Oskar",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 327676,
+     "resource_url": "https://api.discogs.com/artists/327676"
+    },
+    {
+     "name": "Lonnie Jordan",
+     "anv": "L Jordan",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 160601,
+     "resource_url": "https://api.discogs.com/artists/160601"
+    },
+    {
+     "name": "Papa Dee Allen",
+     "anv": "S Allen",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 401127,
+     "resource_url": "https://api.discogs.com/artists/401127"
+    }
+   ],
+   "duration": "4:46"
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Numb",
+   "extraartists": [
+    {
+     "name": "Gary Baldwin",
+     "anv": "",
+     "join": "",
+     "role": "Organ [Hammond]",
+     "tracks": "",
+     "id": 479614,
+     "resource_url": "https://api.discogs.com/artists/479614"
+    }
+   ],
+   "duration": "3:43"
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "Roads",
+   "extraartists": [
+    {
+     "name": "Adrian Utley",
+     "anv": "",
+     "join": "",
+     "role": "Arranged By [Strings Arrangement]",
+     "tracks": "",
+     "id": 206478,
+     "resource_url": "https://api.discogs.com/artists/206478"
+    },
+    {
+     "name": "Geoff Barrow",
+     "anv": "",
+     "join": "",
+     "role": "Arranged By [Strings Arrangement]",
+     "tracks": "",
+     "id": 22504,
+     "resource_url": "https://api.discogs.com/artists/22504"
+    },
+    {
+     "name": "Neil Solman",
+     "anv": "",
+     "join": "",
+     "role": "Electric Piano [Rhodes]",
+     "tracks": "",
+     "id": 479616,
+     "resource_url": "https://api.discogs.com/artists/479616"
+    },
+    {
+     "name": "Dave McDonald (2)",
+     "anv": "Dave Mc Donald",
+     "join": "",
+     "role": "Nose Flute",
+     "tracks": "",
+     "id": 284041,
+     "resource_url": "https://api.discogs.com/artists/284041"
+    },
+    {
+     "name": "Adrian Utley",
+     "anv": "",
+     "join": "",
+     "role": "Strings",
+     "tracks": "",
+     "id": 206478,
+     "resource_url": "https://api.discogs.com/artists/206478"
+    },
+    {
+     "name": "Strings Unlimited",
+     "anv": "",
+     "join": "",
+     "role": "Strings",
+     "tracks": "",
+     "id": 289462,
+     "resource_url": "https://api.discogs.com/artists/289462"
+    }
+   ],
+   "duration": "4:56"
+  },
+  {
+   "position": "B3",
+   "type_": "track",
+   "title": "Pedestal",
+   "extraartists": [
+    {
+     "name": "Andy Hague",
+     "anv": "",
+     "join": "",
+     "role": "Trumpet",
+     "tracks": "",
+     "id": 102378,
+     "resource_url": "https://api.discogs.com/artists/102378"
+    }
+   ],
+   "duration": "3:30"
+  },
+  {
+   "position": "B4",
+   "type_": "track",
+   "title": "Biscuit",
+   "extraartists": [
+    {
+     "name": "Johnnie Ray",
+     "anv": "J Ray",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 377934,
+     "resource_url": "https://api.discogs.com/artists/377934"
+    }
+   ],
+   "duration": "4:34"
+  },
+  {
+   "position": "B5",
+   "type_": "track",
+   "title": "Glory Box",
+   "extraartists": [
+    {
+     "name": "Adrian Utley",
+     "anv": "",
+     "join": "",
+     "role": "Organ [Hammond]",
+     "tracks": "",
+     "id": 206478,
+     "resource_url": "https://api.discogs.com/artists/206478"
+    },
+    {
+     "name": "Isaac Hayes",
+     "anv": "I Hayes",
+     "join": "",
+     "role": "Written-By",
+     "tracks": "",
+     "id": 48432,
+     "resource_url": "https://api.discogs.com/artists/48432"
+    }
+   ],
+   "duration": "4:49"
+  }
+ ],
+ "artists": [
+  {
+   "name": "Portishead",
+   "anv": "",
+   "join": "",
+   "role": "",
+   "tracks": "",
+   "id": 2774,
+   "resource_url": "https://api.discogs.com/artists/2774",
+   "thumbnail_url": "https://i.discogs.com/CQAuGI10vGpVvcmrHAlzorDvkV0q7rKkA5FQ36O_xGo/rs:fit/g:sm/q:90/h:337/w:600/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9BLTI3NzQt/MTcyMDAxNjU1OS01/NjExLmpwZWc.jpeg"
+  }
+ ],
+ "title": "Dummy",
+ "notes": "Winner of the 1995 Mercury Music Prize.\r\nFollowing the initial issue, there were Australian, American & Euro releases with an additional track \"It's A Fire\" inserted between \"Wandering Star\" & \"Numb\" [e.g. 828 553 vs the earlier 828 522 issues]. On vinyl, \"It's A Fire\" is listed as an additional track only on the Greek edition of the album. Some later issues also include the remix \"Sour Sour Times\" plus the \"To Kill A Dead Man\" track (from the film which led to Portishead's record contract and the cover image used on \"Dummy\").\r\nFor \"Glory Box\", most booklets claim Isaac Hayes' \"Ikes Rap III\" as sample source, but actually it's a sample from \"Ikes Rap II\" that is used (the same sample Tricky used on \"Hell Is Round the Corner\").\r\n\r\nTrack 2 contains samples from Lalo Schifrin's [url=http://www.discogs.com/Lalo-Schifrin-Action/release/2496879] \"Danube Incident\"[/url] a percussion sample from Smokey Brooks' [url=http://www.discogs.com/Smokey-Brooks-Eternal-Spin-It-Jig/release/827473] \"Spin-It Jig\"[/url].\r\nTrack 3 contains samples Weather Report's [url=http://www.discogs.com/Weather-Report-Black-Market/master/21739] \"Elegant People\"[/url].\r\nTrack 5 contains samples from Eric Burdon & War's [url=http://www.discogs.com/Eric-Burdon-War-Best-Of-Eric-Burdon-War/master/449308] \"Magic Mountain\"[/url]\r\nTrack 9 contains samples from Johnnie Ray's [url=http://www.discogs.com/Johnnie-Ray-Ill-Never-Fall-In-Love-Again/master/232947] \"I'll Never Fall In Love Again\"[/url]\r\nTrack 10 contains samples from Isaac Hayes' [url=http://www.discogs.com/Isaac-Hayes-Black-Moses/master/122054] \"Ike's Rap II\"[/url].",
+ "data_quality": "Correct",
+ "videos": [
+  {
+   "uri": "https://www.youtube.com/watch?v=slDNOtOQ8oA",
+   "title": "Mysterons",
+   "description": "Provided to YouTube by Universal Music Group\n\nMysterons · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nAssociated Performer, Producer, Composer Lyricist: Adrian Utley\nComposer Lyricist, Associated Performer, Voca",
+   "duration": 306,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=un8EW82GwKc",
+   "title": "Portishead - Sour Times",
+   "description": "Music video by Portishead performing Sour Times. © 1994 Go Beat Ltd.\n\nhttp://vevo.ly/khCqYl",
+   "duration": 204,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=wCAURNnKqFo",
+   "title": "Strangers",
+   "description": "Provided to YouTube by Universal Music Group\n\nStrangers · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer, Composer Lyricist: Adrian Utley\nComposer Lyricist: Wayne Shorter\nComposer Lyricist: Geoff Barrow\nCo",
+   "duration": 238,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=Aw8GucJ4f7E",
+   "title": "It Could Be Sweet",
+   "description": "Provided to YouTube by Universal Music Group\n\nIt Could Be Sweet · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer: Adrian Utley\nComposer Lyricist: Geoff Barrow\nComposer Lyricist: Beth Gibbons\n\nAuto-generate",
+   "duration": 258,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=8T0cRt8efsQ",
+   "title": "Wandering Star",
+   "description": "Provided to YouTube by Universal Music Group\n\nWandering Star · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer: Adrian Utley\nComposer Lyricist: Harold Ray Brown\nComposer Lyricist: Charles William Miller\nCom",
+   "duration": 294,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=selAvZE6lp4",
+   "title": "It's A Fire",
+   "description": "Provided to YouTube by Universal Music Group\n\nIt's A Fire · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer, Composer Lyricist: Adrian Utley\nComposer Lyricist: Geoff Barrow\nComposer Lyricist: Beth Gibbons\n\n",
+   "duration": 227,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=Z7If6GODLFc",
+   "title": "Portishead - Numb (Official Video)",
+   "description": "Music video by Portishead performing Numb.© 1994 Go Beat Ltd.",
+   "duration": 237,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=7nxWP9BhI7w",
+   "title": "Roads",
+   "description": "Provided to YouTube by Universal Music Group\n\nRoads · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nComposer Lyricist, Producer: Adrian Utley\nComposer Lyricist: Geoff Barrow\nComposer Lyricist: Beth Gibbons\n\nAuto-g",
+   "duration": 304,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=6zexKiOafjk",
+   "title": "Pedestal",
+   "description": "Provided to YouTube by Universal Music Group\n\nPedestal · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer, Composer Lyricist: Adrian Utley\nComposer Lyricist: Geoff Barrow\nComposer Lyricist: Beth Gibbons\n\nAut",
+   "duration": 221,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=FRntBOQsNYc",
+   "title": "Biscuit",
+   "description": "Provided to YouTube by Universal Music Group\n\nBiscuit · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer: Adrian Utley\nComposer Lyricist: Geoff Barrow\nComposer Lyricist: Beth Gibbons\n\nAuto-generated by YouTu",
+   "duration": 303,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=c417rIku6Iw",
+   "title": "Glory Box",
+   "description": "Provided to YouTube by Universal Music Group\n\nGlory Box · Portishead\n\nDummy\n\n℗ 1994 Go! Discs Ltd.\n\nReleased on: 1994-01-01\n\nProducer: Portishead\nProducer, Composer Lyricist: Adrian Utley\nStudio Personnel, Engineer: Dave McDonald\nComposer Lyricist: Geoff ",
+   "duration": 309,
+   "embed": true
+  },
+  {
+   "uri": "https://www.youtube.com/watch?v=sAB5TEk2sxE",
+   "title": "Portishead - Dummy 1994  | UK",
+   "description": "",
+   "duration": 0,
+   "embed": true
+  }
+ ]
+}

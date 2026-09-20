@@ -16,9 +16,16 @@ test('model reads edition note, extras, length and tier', () => {
   assert.equal(m.tracks.length, 1)
 })
 
-test('sectionsHtml shows the Discogs prompt when there is no token', () => {
+test('the Discogs token prompt is gone, because a token buys nothing it promised', () => {
+  // It offered "ratings and tags". A Discogs MASTER has no community rating at
+  // all, and the genres and notes come back without a token — so the sentence
+  // cost a token-less user the year, the notes, the chips and the link in
+  // exchange for a rating that does not exist.
   const html = D.sectionsHtml({ ...D.model(album, 'u', null), reception: { ok: false, reason: 'no-token' } }, s => s)
-  assert.ok(html.includes('Add a Discogs token in Settings'))
+  assert.ok(!html.includes('Add a Discogs token in Settings'))
+  assert.ok(!html.includes('ratings on Discogs'), 'and the star row went with it')
+  assert.ok(!html.includes('★'))
+  assert.ok(!html.includes('<b>Reception</b>'), 'one section per subject, not one per source')
 })
 
 test('sectionsHtml renders a rip verdict and the measured facts', () => {
@@ -199,12 +206,17 @@ test('firstSentence obeys the same abbreviation rules', () => {
 // --- the About section's three states -------------------------------------
 // The body of a section is never allowed to be empty: a headed blank reads as
 // the app having broken.
-function aboutBody(html) {
-  const i = html.indexOf('<b>About ')
-  assert.ok(i >= 0, 'the About section is always rendered')
+function sectionBody(html, heading) {
+  const i = html.indexOf('<b>' + heading + '</b>')
+  assert.ok(i >= 0, 'the "' + heading + '" section is always rendered')
   const rest = html.slice(html.indexOf('</b>', i) + 4)
   const end = rest.indexOf('<div class="slr-sec"')
   return (end >= 0 ? rest.slice(0, end) : rest).replace(/<[^>]*>/g, '').trim()
+}
+// "About Pink Floyd", not "About this record": there are two About headings
+// now, and these assertions are about the artist one.
+function aboutBody(html, artist) {
+  return sectionBody(html, 'About ' + (artist || 'Pink Floyd'))
 }
 
 test('About says it is still asking while the lookup is in flight', () => {
@@ -228,7 +240,7 @@ test('About says Wikipedia has nothing once the lookup answers empty', () => {
 test('About refuses the lookup outright when the folder names no artist', () => {
   const m = D.model({ ...album, artist: '' }, 'u', null)
   const html = D.sectionsHtml(m, s => s)
-  assert.equal(aboutBody(html), "This folder's name doesn't say who the artist is, so I can't look the record up.")
+  assert.equal(aboutBody(html, 'this artist'), "This folder's name doesn't say who the artist is, so I can't look the record up.")
 })
 
 // --- the Show more control ------------------------------------------------

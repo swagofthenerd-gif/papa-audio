@@ -304,6 +304,11 @@
     cacheSet,
     wikipediaTitleFromMb,
     wikidataIdFromMb,
+    // Exported so the album dossier's own Wikidata → Wikipedia hop builds the
+    // same two URLs this module does, rather than growing a second, drifting
+    // copy of them in main.js.
+    wikiExtractUrl: _wikiExtractUrl,
+    wikiSummaryUrl: _wikiSummaryUrl,
     wikipediaTitleFromWikidata,
     bioFromWikiSummary,
     bioFromQueryExtract,

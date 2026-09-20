@@ -9,6 +9,8 @@
     (typeof require === 'function' ? require('./slsk-shelves.js') : null)
   const CMP = () => (typeof window !== 'undefined' && window.PapaSlskCompare) ||
     (typeof require === 'function' ? require('./slsk-compare.js') : null)
+  const WN = () => (typeof window !== 'undefined' && window.PapaSlskWander) ||
+    (typeof require === 'function' ? require('./slsk-wander.js') : null)
   const AUDIO_RE = /\.(flac|mp3|wav|aiff?|aif|m4a|aac|ogg|opus|ape|wv|alac|dsf|dff)$/i
 
   function fmtDur(sec) {
@@ -52,10 +54,23 @@
       },
       verdict: album.upgrade ? 'Upgrade over yours' : (mine ? 'You have this' : 'Not yours'),
       rip: null, reception: null, about: null, siblings: [],
-      // The expander's open flag lives HERE, not in the DOM: repaintBody()
+      // What the record IS, and what else there is to hear. `null` means STILL
+      // ASKING in every one of these slots, and only a live promise is allowed
+      // to hold one at null — see NO_ANSWER.
+      albumInfo: null, artistReleases: null, artistTags: null,
+      // The discography's marks, worked out once when the reply lands rather
+      // than on each of the six repaints an open panel does.
+      releaseRows: null,
+      // Every expander's open flag lives HERE, not in the DOM: repaintBody()
       // re-serialises the whole body on every async arrival, so a flag read off
       // the markup would be thrown away by the next reply that lands.
-      bioOpen: false,
+      bioOpen: false, albumTextOpen: false, notesOpen: false,
+      // Set by a renderer-side timer at 12 s, not by any reply.
+      slow: false,
+      // Handed down by the room that opened this panel. Absent for any other
+      // caller, and every section that reads them tolerates that.
+      peerAlbums: [], tagsByArtist: null, tagsDone: false, library: [],
+      ownsPeerAlbum: null,
     }
   }
 
@@ -132,6 +147,180 @@
       .map(p => `<div>${esc(p)}</div>`).join('')
   }
 
+  // ── What the record is, in English ──────────────────────────────────────────
+  // There is no boolean for "studio album" in MusicBrainz: it is primary-type
+  // Album with an EMPTY secondary-types array, and any secondary type that IS
+  // present outranks the primary one — an Album/Live is a live album, not a
+  // studio one.
+  const SECONDARY_WORD = {
+    Live: 'Live album',
+    Compilation: 'Compilation',
+    Soundtrack: 'Soundtrack',
+    Remix: 'Remix album',
+    Demo: 'Demo',
+    'Mixtape/Street': 'Mixtape',
+    'DJ-mix': 'DJ mix',
+  }
+  const PRIMARY_WORD = { Album: 'Studio album', EP: 'EP', Single: 'Single', Broadcast: 'Broadcast' }
+  function typeWord(primaryType, secondaryTypes) {
+    const words = (Array.isArray(secondaryTypes) ? secondaryTypes : [])
+      .map(s => SECONDARY_WORD[String(s || '')]).filter(Boolean)
+    if (words.length) return words.join(' · ')
+    return PRIMARY_WORD[String(primaryType || '')] || 'Release'
+  }
+
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December']
+
+  // MusicBrainz dates arrive at three precisions and all three are worth
+  // printing. Anything else — a malformed date included — is no date at all,
+  // and the lead line has a fallback for that.
+  function formatReleaseDate(date) {
+    const s = String(date == null ? '' : date).trim()
+    let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+    if (m && MONTHS[Number(m[2]) - 1]) return Number(m[3]) + ' ' + MONTHS[Number(m[2]) - 1] + ' ' + m[1]
+    m = /^(\d{4})-(\d{2})$/.exec(s)
+    if (m && MONTHS[Number(m[2]) - 1]) return MONTHS[Number(m[2]) - 1] + ' ' + m[1]
+    m = /^(\d{4})$/.exec(s)
+    if (m) return m[1]
+    return ''
+  }
+
+  // The room keys wander.tags by PapaSlskWander.norm, so the lookups here have
+  // to use the very same folding. Wander's own function when it is loaded; the
+  // identical one-liner when it is not, so a module load order can never turn
+  // this into a silently empty section.
+  function tagKey(s) {
+    const w = WN()
+    if (w && w.norm) return w.norm(s)
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  }
+
+  // One album per artist, so a prolific artist cannot flood the shelf: the one
+  // he hasn't got, then the best-sounding, then the fullest.
+  function bestAlbumOf(list, owns) {
+    const rank = a => [
+      owns && owns(a) ? 0 : 1,
+      a.surround ? 3 : a.isHiRes ? 2 : a.lossless ? 1 : 0,
+      (a.files || []).length,
+    ]
+    let best = null, bestRank = null
+    for (const a of list || []) {
+      const r = rank(a)
+      // Compared element by element: [1,2,10] beats [1,2,9], which a `>` on the
+      // arrays themselves would get backwards.
+      let better = !best
+      if (best) for (let i = 0; i < r.length; i++) { if (r[i] !== bestRank[i]) { better = r[i] > bestRank[i]; break } }
+      if (better) { best = a; bestRank = r }
+    }
+    return best
+  }
+
+  // Artists in THIS library whose MusicBrainz tags overlap this one's — scored
+  // by how RARE the shared tags are, not by how many there are.
+  //
+  // Raw shared-tag counting does not discriminate. Measured on his own cache:
+  // 181 artists, 260 distinct tags, and the tags doing the work are generic —
+  // `rock` appears for 67 artists, `pop rock` 29, `british` 26. Under a raw
+  // count, seven candidates tie at exactly two shared tags and the top of the
+  // list is whatever the array happened to sort first.
+  //
+  // So a candidate has to share at least two tags AND at least one tag that
+  // fewer than RARE_TAG_SHARE of the tagged artists here carry, and the score
+  // is the sum of the shared tags' rarity.
+  const RARE_TAG_SHARE = 0.15
+  function rankSameTagArtists(opts) {
+    const o = opts || {}
+    const seedKey = tagKey(o.artist)
+    const byArtist = o.tagsByArtist || {}
+    const albums = o.peerAlbums || []
+    const owns = typeof o.owns === 'function' ? o.owns : null
+    const cap = Number(o.cap) > 0 ? Number(o.cap) : 8
+    // Every artist actually present in this library, with their albums.
+    const here = new Map()
+    for (const a of albums) {
+      const k = tagKey(a && a.artist)
+      if (!k) continue
+      if (!here.has(k)) here.set(k, [])
+      here.get(k).push(a)
+    }
+    // One pass for the document frequencies. In memory, no network.
+    const df = new Map()
+    let tagged = 0
+    for (const k of here.keys()) {
+      const tags = byArtist[k]
+      if (!Array.isArray(tags) || !tags.length) continue
+      tagged++
+      for (const t of new Set(tags)) df.set(t, (df.get(t) || 0) + 1)
+    }
+    const seedTags = new Set(Array.isArray(byArtist[seedKey]) ? byArtist[seedKey] : [])
+    const rarity = t => Math.log(Math.max(tagged, 1) / Math.max(df.get(t) || 0, 1))
+    const matches = []
+    // The tags a near-miss DID share, so the "nothing specific" sentence can
+    // name the generic ones rather than waving at them.
+    const nearMiss = new Map()
+    if (seedTags.size) {
+      for (const [k, list] of here) {
+        if (k === seedKey) continue
+        const tags = byArtist[k]
+        if (!Array.isArray(tags) || !tags.length) continue
+        const shared = [...new Set(tags)].filter(t => seedTags.has(t))
+        if (shared.length < 2) continue
+        if (!shared.some(t => (df.get(t) || 0) / Math.max(tagged, 1) < RARE_TAG_SHARE)) {
+          for (const t of shared) nearMiss.set(t, (nearMiss.get(t) || 0) + 1)
+          continue
+        }
+        const album = bestAlbumOf(list, owns)
+        if (!album) continue
+        matches.push({
+          artist: album.artist || k,
+          album: album.album || album.folderName || '',
+          folderPath: album.folderPath || '',
+          owned: !!(owns && owns(album)),
+          shared: shared.slice().sort((a, b) => rarity(b) - rarity(a)),
+          score: shared.reduce((s, t) => s + rarity(t), 0),
+        })
+      }
+    }
+    matches.sort((a, b) =>
+      b.score - a.score ||
+      (a.owned === b.owned ? 0 : a.owned ? 1 : -1) ||
+      (a.album < b.album ? -1 : a.album > b.album ? 1 : 0))
+    // What to name in the "nothing specific" sentence: the tags the near-misses
+    // kept sharing, or failing that the seed's own commonest.
+    const generic = (nearMiss.size
+      ? [...nearMiss.keys()].sort((a, b) => (nearMiss.get(b) - nearMiss.get(a)) || ((df.get(b) || 0) - (df.get(a) || 0)))
+      : [...seedTags].sort((a, b) => (df.get(b) || 0) - (df.get(a) || 0))).slice(0, 2)
+    return { tagged, total: matches.length, matches: matches.slice(0, cap), generic, seedTagCount: seedTags.size }
+  }
+
+  // Where each MusicBrainz release already lives — in his own library, or in
+  // this peer's. Both answers are local and instant; neither costs a request.
+  function markReleases(releases, opts) {
+    const o = opts || {}
+    const sh = SH()
+    const score = (a, b) => (sh && sh.tokenScore ? sh.tokenScore(a, b) : (tagKey(a) === tagKey(b) ? 1 : 0))
+    // The project's own bars, the ones buildLibraryIndex matches albums with.
+    const sameAlbum = (a, b) => score(a, b) >= 0.6
+    const sameArtist = (a, b) => !a || !b || score(a, b) >= 0.34
+    const artist = o.artist || ''
+    const library = o.library || []
+    const peerAlbums = o.peerAlbums || []
+    return (releases || []).map(r => {
+      const title = String((r && r.title) || '')
+      const owned = library.some(l => l && sameAlbum(l.name || '', title) && sameArtist(l.artist || '', artist))
+      const here = peerAlbums.find(a => a &&
+        sameAlbum(a.album || a.folderName || '', title) && sameArtist(a.artist || '', artist))
+      return {
+        id: (r && r.id) || '',
+        title,
+        year: String((r && r.date) || '').slice(0, 4),
+        owned,
+        folderPath: here ? (here.folderPath || '') : '',
+      }
+    })
+  }
+
   function labelDot(tier) { return `<i class="slr-lbl slr-lbl-${tier}"></i>` }
 
   // The claim vocabulary the check speaks, in English. Kept beside the pill and
@@ -204,16 +393,218 @@
       <span>${esc(tail)}</span>${second}${recheck}</div>`
   }
 
-  function receptionHtml(m, esc) {
-    const r = m.reception
-    if (!r) return `<div class="slr-muted">Looking up…</div>`
-    if (!r.ok) return r.reason === 'no-token'
-      ? `<div class="slr-muted">Add a Discogs token in Settings to see ratings and tags.</div>`
-      : `<div class="slr-muted">${esc(r.reason || 'Nothing found.')}</div>`
-    const stars = r.rating ? '★'.repeat(Math.round(r.rating)) + '☆'.repeat(5 - Math.round(r.rating)) : ''
-    const chips = [...(r.genres || []), ...(r.styles || [])].map(t => `<span class="slr-chip">${esc(t)}</span>`).join('')
-    return `<div><span class="slr-stars">${stars}</span> <span class="slr-mono slr-muted">${r.rating != null ? esc(String(r.rating)) : '—'} · ${Number(r.count || 0).toLocaleString()} ratings on Discogs</span></div>
-      <div class="slr-chips">${chips}</div>`
+  // The one sentence every new lookup owes a folder whose name doesn't say who
+  // made the record. slsk-columns synthesises those with artist:'' and nothing
+  // downstream can look anything up from that.
+  const NO_ARTIST = "This folder's name doesn't say who the artist is, so I can't look the record up."
+
+  function muted(text, esc) { return `<div class="slr-muted">${esc(text)}</div>` }
+
+  // An expander that survives repaintBody: the flag is on the model and the
+  // control is delegated, never an id with a listener bound to it.
+  function expandable(raw, open, act, limit, esc) {
+    const cut = bioPreview(raw, limit)
+    const shown = open ? tidyText(raw) : cut.text
+    // Rendered off `truncated`, which is a fact about the TEXT and not about
+    // the flag, so the control does not vanish when the text is open.
+    const more = cut.truncated
+      ? `<button class="slr-btn slr-btn-quiet" data-act="${act}">${open ? 'Show less' : 'Show more'}</button>`
+      : ''
+    return { html: paragraphsHtml(shown, esc), more }
+  }
+
+  // The Discogs genre string "Folk, World, & Country" is ONE genre. Splitting
+  // it on commas — which the old chip row did — put a chip reading "& Country"
+  // on his screen. Only a slash separates two genres.
+  function splitDiscogsGenre(s) {
+    return String(s == null ? '' : s).split('/').map(x => x.trim()).filter(Boolean)
+  }
+
+  // MusicBrainz genres first, then Discogs genres, then Discogs styles, folded
+  // together so "Prog Rock" and "progressive rock" are one chip and the first
+  // spelling seen is the one shown.
+  function genreChips(m) {
+    const ai = m.albumInfo && m.albumInfo.ok !== false ? m.albumInfo : null
+    const dg = m.reception && m.reception.ok !== false ? m.reception : null
+    const seen = new Set()
+    const names = []
+    const sources = []
+    const take = (list, source) => {
+      let used = false
+      for (const raw of list) {
+        for (const name of splitDiscogsGenre(raw)) {
+          const k = tagKey(name)
+          if (!k || seen.has(k)) continue
+          seen.add(k)
+          names.push(name)
+          used = true
+          if (names.length >= 10) break
+        }
+        if (names.length >= 10) break
+      }
+      if (used && !sources.includes(source)) sources.push(source)
+    }
+    // `genres`, never `tags`: MusicBrainz's free-text tags carry downvoted junk
+    // at count -1 and -2 ("groundbreaking", "laut.de", "male vocalist").
+    if (ai) take((ai.genres || []).filter(g => g && (Number(g.count) || 0) > 0).map(g => g.name), 'MusicBrainz')
+    if (dg) take(dg.genres || [], 'Discogs')
+    if (dg) take(dg.styles || [], 'Discogs')
+    return { names, sources }
+  }
+
+  // ── About this record ───────────────────────────────────────────────────────
+  // One section per SUBJECT, not one per source: the old Reception section
+  // showed Discogs' genres under a heading of its own, above a star row that
+  // had never once had a number behind it. Every fact here carries its own
+  // fallback sentence, because a headed blank is the one thing this must not be.
+  function aboutRecordHtml(m, esc) {
+    if (!m.artist) return muted(NO_ARTIST, esc)
+    const ai = m.albumInfo
+    const dg = m.reception && m.reception.ok !== false ? m.reception : null
+    const out = []
+    let descriptionUsed = false
+    if (ai == null) {
+      // Twelve seconds, not six: a cold album costs 4-7 s through the throttle,
+      // and a warning that fires on every normal open reads as breakage.
+      out.push(muted(m.slow
+        ? 'Still asking MusicBrainz — it only answers one question a second.'
+        : 'Looking up…', esc))
+    } else if (ai.ok === false) {
+      out.push(muted(ai.reason || NO_ANSWER, esc))
+    } else if (!ai.found) {
+      out.push(muted("I couldn't find this record on MusicBrainz. The folder name may not match what it's filed under.", esc))
+    } else {
+      const word = typeWord(ai.primaryType, ai.secondaryTypes)
+      const when = formatReleaseDate(ai.date)
+      let lead
+      if (when) lead = 'Released ' + when + ' · ' + word
+      else if (ai.wikiDescription) { lead = ai.wikiDescription; descriptionUsed = true }
+      else lead = word
+      out.push(`<div>${esc(lead)}</div>`)
+      // ALWAYS printed, never conditionally. The dangerous failure is a title
+      // that matches perfectly and a record that doesn't — a self-titled album,
+      // or a folder called "Live at Leeds" that the picker's own type
+      // preference steers onto the studio record.
+      const year = String(ai.date || '').slice(0, 4)
+      const paren = [year, word].filter(Boolean).join(', ')
+      out.push(muted(`MusicBrainz has this as "${ai.title}"${paren ? ' (' + paren + ')' : ''}.`, esc))
+      if (ai.confidence === 'loose') {
+        out.push(muted("This might not be the same record as the folder you're looking at.", esc))
+      }
+      if (ai.wikiExtract) {
+        const e = expandable(ai.wikiExtract, m.albumTextOpen, 'album-more', 420, esc)
+        out.push(`<div class="slr-muted">${e.html}</div>${e.more}`)
+      } else if (ai.wikiDescription && !descriptionUsed) {
+        out.push(muted(ai.wikiDescription, esc))
+      } else {
+        out.push(muted('No one has written this record up on Wikipedia.', esc))
+      }
+    }
+    const chips = genreChips(m)
+    if (chips.names.length) {
+      out.push(`<div class="slr-chips">${chips.names.map(n => `<span class="slr-chip">${esc(n)}</span>`).join('')}</div>`)
+      out.push(muted('Genres from ' + chips.sources.join(' and ') + '.', esc))
+    } else if (ai != null && m.reception != null) {
+      // Only once BOTH sources have answered — otherwise this says "no genre
+      // tags" about a lookup that is still running.
+      out.push(muted('No genre tags on this record.', esc))
+    }
+    // The pressing notes: submitter text the Discogs master carries and the
+    // panel has never shown. Sliced raw, escaped after.
+    if (dg && dg.notes) {
+      const sh = SH()
+      const master = String(dg.masterTitle || '')
+      // The master cleared the 0.6 title bar, but "cleared the bar" is not "is
+      // the same record" — say whose notes these are when the names differ.
+      const differs = master && sh && sh.normKey && sh.normKey(master) !== sh.normKey(m.title)
+      const prefix = differs ? `From Discogs, for "${master}": ` : 'From Discogs: '
+      const e = expandable(dg.notes, m.notesOpen, 'notes-more', 300, esc)
+      out.push(`<div class="slr-muted">${esc(prefix)}${e.html}</div>${e.more}`)
+    }
+    const url = (ai && ai.ok !== false && ai.discogsUrl) || (dg && dg.url) || ''
+    if (url) {
+      out.push(`<div><button class="slr-btn slr-btn-quiet" data-act="external" data-url="${esc(url)}">See it on Discogs</button></div>`)
+    }
+    // A Discogs failure is worth a line when it explains a gap he can see —
+    // the rate ceiling always, a plain miss only when MusicBrainz came up empty
+    // too. Otherwise it is noise below a section that already said plenty.
+    const dgFail = m.reception && m.reception.ok === false ? String(m.reception.reason || '') : ''
+    const matched = !!(ai && ai.ok !== false && ai.found)
+    if (dgFail && dgFail !== 'no-token' && (/busy/i.test(dgFail) || !matched)) out.push(muted(dgFail, esc))
+    return out.join('')
+  }
+
+  // ── Artists here with the same tags ─────────────────────────────────────────
+  // Named for what it actually is. The matching is at ARTIST level, so calling
+  // it "more like this" would overclaim: artist tags cannot tell an artist's
+  // ambient record from their breakbeat one.
+  function sameTagsHtml(m, esc) {
+    if (!m.artist) return muted(NO_ARTIST, esc)
+    if (!(m.peerAlbums || []).length) return muted('There is nothing else in this library to match against.', esc)
+    const tags = m.tagsByArtist || {}
+    const mine = tags[tagKey(m.artist)]
+    // The room only warms the peer's top 40 artists by shelf depth, so the
+    // dossier asks for its own artist rather than hoping the sweep covered it.
+    if (m.artistTags == null && !Array.isArray(mine)) return muted(`Reading genre tags for ${m.artist}…`, esc)
+    const r = rankSameTagArtists({
+      artist: m.artist, peerAlbums: m.peerAlbums, tagsByArtist: tags, owns: m.ownsPeerAlbum,
+    })
+    if (!r.seedTagCount) return muted(`MusicBrainz has no genre tags for ${m.artist}, so I can't match this one up.`, esc)
+    if (!r.matches.length) {
+      const two = r.generic.length ? r.generic.join(' and ') : 'the generic ones'
+      return muted(`Nothing else here shares anything specific with ${m.artist} — the tags they have in common are just ${two}.`, esc)
+    }
+    const rows = r.matches.map(x => {
+      // The matched tags ON the row are what make a bad match visible rather
+      // than mysterious.
+      const why = x.shared.slice(0, 2).join(' · ')
+      return `<div class="slr-chips"><button class="slr-chip slr-chip-btn" data-peer="${esc(x.folderPath)}">${esc(x.album)} · ${esc(x.artist)}</button>` +
+        (why ? `<span class="slr-chip">${esc(why)}</span>` : '') +
+        (x.owned ? `<span class="slr-chip">you have it</span>` : '') + `</div>`
+    }).join('')
+    // Never "of ${total}": the warm-up stops permanently at the top 40 plus
+    // three seeds, so a denominator it can never reach is a lie.
+    const note = m.tagsDone
+      ? `Matched on shared MusicBrainz tags. I have tags for ${r.tagged} of the biggest artists in this library.`
+      : `Still reading genre tags for the artists here (${r.tagged} so far).`
+    return rows + muted(note, esc)
+  }
+
+  // ── More by ${artist} ───────────────────────────────────────────────────────
+  // The peer's own folders first — already in memory, instant — then what
+  // MusicBrainz says the artist made that nobody here has.
+  function moreByHtml(m, esc) {
+    if (!m.artist) return muted(NO_ARTIST, esc)
+    const out = []
+    const sibs = (m.siblings || []).map(s =>
+      `<button class="slr-chip slr-chip-btn" data-sibling="${esc(s.folderPath)}">${esc(s.album)}${s.isHiRes ? ' · hi-res' : ''}${s.surround ? ' · surround' : ''}</button>`).join('')
+    if (sibs) out.push(`<div class="slr-chips">${sibs}</div>`)
+    const ar = m.artistReleases
+    if (ar == null) { out.push(muted('Looking up their records…', esc)); return out.join('') }
+    if (ar.ok === false) { out.push(muted(ar.reason || NO_ANSWER, esc)); return out.join('') }
+    const rows = m.releaseRows || []
+    if (!rows.length) {
+      out.push(muted(ar.artistMbid
+        ? `MusicBrainz lists no other studio albums for ${m.artist}.`
+        : `I couldn't find ${m.artist} on MusicBrainz, so I can't list what else they made.`, esc))
+      return out.join('')
+    }
+    // Attributed to its source on purpose: this is not a discography, it is
+    // what MusicBrainz has filed.
+    const here = rows.filter(r => r.folderPath).length
+    const yours = rows.filter(r => r.owned).length
+    out.push(muted(`MusicBrainz lists ${rows.length} studio albums for ${m.artist}. ${m.username} has ${here}. You have ${yours}.`, esc))
+    for (const r of rows.slice(0, 10)) {
+      const label = r.title + (r.year ? ' · ' + r.year : '')
+      const cell = r.folderPath
+        ? `<button class="slr-chip slr-chip-btn" data-peer="${esc(r.folderPath)}">${esc(label)}</button><span class="slr-chip">here too</span>`
+        : `<span class="slr-chip">${esc(label)}</span>` + (r.owned
+          ? `<span class="slr-chip">you have it</span>`
+          : `<button class="slr-btn slr-btn-quiet" data-act="wish" data-wish="${esc(m.artist + ' ' + r.title)}">Wishlist</button>`)
+      out.push(`<div class="slr-chips">${cell}</div>`)
+    }
+    if (rows.length > 10) out.push(muted(`Showing the first 10 of ${rows.length}.`, esc))
+    return out.join('')
   }
 
   // Three states, not two. `null` means STILL ASKING — and only a live promise
@@ -228,29 +619,29 @@
     if (a.ok === false) return `<div class="slr-muted">${esc(a.reason || NO_ANSWER)}</div>`
     const bio = a.bio ? String(a.bio) : ''
     if (!bio) return `<div class="slr-muted">Wikipedia has nothing on ${esc(m.artist)}.</div>`
-    const cut = bioPreview(bio, 420)
-    const shown = m.bioOpen ? tidyText(bio) : cut.text
-    // The control is rendered from `truncated`, which is a fact about the text
-    // and not about the open flag, so "Show less" survives being open.
-    const more = cut.truncated
-      ? `<button class="slr-btn slr-btn-quiet" data-act="bio-more">${m.bioOpen ? 'Show less' : 'Show more'}</button>`
-      : ''
-    return `<div class="slr-muted">${paragraphsHtml(shown, esc)}</div>${more}`
+    const e = expandable(bio, m.bioOpen, 'bio-more', 420, esc)
+    return `<div class="slr-muted">${e.html}</div>${e.more}`
   }
 
   function sectionsHtml(m, esc) {
     // A contradiction is worth nothing further down the panel: the Download
     // button is in the header, so the pill leads the row directly beneath it.
     const chan = m.rip && m.rip.ok ? m.rip.channelCheck : null
+    // The type pill costs nothing beyond the lookup already made, and it only
+    // appears when there is something to say: no pill on a plain studio album,
+    // and none at all on a loose match, where the type belongs to a record we
+    // are not sure is this one.
+    const ai = m.albumInfo && m.albumInfo.ok !== false && m.albumInfo.found ? m.albumInfo : null
+    const word = ai && ai.confidence === 'firm' ? typeWord(ai.primaryType, ai.secondaryTypes) : ''
     const facts = [
       (chan && chan.severity === 'warn') ? `<span class="slr-pill slr-pill-warn">${esc(warnPillText(chan))}</span>` : '',
+      (word && word !== 'Studio album') ? `<span class="slr-pill">${esc(word)}</span>` : '',
       `<span class="slr-pill">${labelDot(m.tier)}${esc(m.quality)}</span>`,
       `<span class="slr-pill">${m.tracks.length} track${m.tracks.length === 1 ? '' : 's'}${m.length ? ' · ' + esc(m.length) : ''}</span>`,
       `<span class="slr-pill">${esc(m.size)}</span>`,
       (m.extras.log || m.extras.cue) ? `<span class="slr-pill">${[m.extras.log && 'log', m.extras.cue && 'cue'].filter(Boolean).join(' + ')}</span>` : '',
       `<span class="slr-pill slr-pill-verdict">${esc(m.verdict)}</span>`,
     ].filter(Boolean).join('')
-    const sibs = (m.siblings || []).map(s => `<button class="slr-chip slr-chip-btn" data-sibling="${esc(s.folderPath)}">${esc(s.album)}${s.isHiRes ? ' · hi-res' : ''}${s.surround ? ' · surround' : ''}</button>`).join('')
     const about = aboutHtml(m, esc)
     const tracks = m.tracks.map((t, i) => {
       const name = String(t.name || t.filename || '')
@@ -263,9 +654,10 @@
     return `
       <div class="slr-facts">${facts}</div>
       <div class="slr-sec"><b>Rip check</b>${ripHtml(m, esc)}</div>
-      <div class="slr-sec"><b>Reception</b>${receptionHtml(m, esc)}</div>
+      <div class="slr-sec"><b>About this record</b>${aboutRecordHtml(m, esc)}</div>
       <div class="slr-sec"><b>About ${esc(m.artist || 'this artist')}</b>${about}</div>
-      ${sibs ? `<div class="slr-sec"><b>Also by ${esc(m.artist)} here</b><div class="slr-chips">${sibs}</div></div>` : ''}
+      <div class="slr-sec"><b>More by ${esc(m.artist || 'this artist')}</b>${moreByHtml(m, esc)}</div>
+      ${(m.peerAlbums || []).length ? `<div class="slr-sec"><b>Artists here with the same tags</b>${sameTagsHtml(m, esc)}</div>` : ''}
       <div class="slr-sec"><b>Tracks</b><div class="slr-tracks">${tracks}</div></div>
       <div class="slr-sec" id="slr-compare"><b>Tracks vs yours</b>${m.compareHtml || '<div class="slr-muted">You don\'t have this album.</div>'}</div>`
   }
@@ -278,6 +670,17 @@
     const mine = av && av.findMyCopy ? av.findMyCopy(album, deps.state) : null
     const m = model(album, username, mine)
     m.siblings = siblings || []
+    // Handed down by the room. peerAlbums is its whole albums array and
+    // tagsByArtist is a LIVE reference to wander.tags, so rows that fill in
+    // during the background sweep appear on the next repaint. Absent for any
+    // caller outside the room, and every section that reads them says so.
+    m.peerAlbums = Array.isArray(deps.peerAlbums) ? deps.peerAlbums : []
+    m.tagsByArtist = deps.tagsByArtist || null
+    m.ownsPeerAlbum = typeof deps.ownsPeerAlbum === 'function' ? deps.ownsPeerAlbum : null
+    m.library = (deps.state && deps.state.library) || []
+    // Read once here as well as in repaintBody, so a panel opened AFTER the
+    // room's sweep finished doesn't say "still reading" on its first paint.
+    m.tagsDone = typeof deps.tagsDone === 'function' ? !!deps.tagsDone() : !!deps.tagsDone
     // Real signatures: findMyCopy(a, state); compareDrawerHtml(cmp, mine, a, esc),
     // where cmp comes from PapaSlskCompare.compareAlbums(theirFiles, myTracks).
     if (mine && av && av.compareDrawerHtml) {
@@ -362,6 +765,9 @@
     function repaintBody() {
       const b = root.querySelector('.slr-dossier-body')
       if (!b) return
+      // tagsDone is a getter over the room's own sweep flag, so it is read at
+      // paint time rather than captured once when the panel opened.
+      m.tagsDone = typeof deps.tagsDone === 'function' ? !!deps.tagsDone() : !!deps.tagsDone
       const panel = root.querySelector('.slr-dossier-panel')
       const top = panel ? panel.scrollTop : 0
       b.innerHTML = sectionsHtml(m, esc)
@@ -372,6 +778,9 @@
       const t = e.target.closest('[data-act],[data-sibling]')
       if (!t) return
       if (t.dataset.sibling) { const s = m.siblings.find(x => x.folderPath === t.dataset.sibling); close(); if (s && deps.openDossier) deps.openDossier(s); return }
+      // Same behaviour as data-sibling, over the peer's whole library rather
+      // than this artist's corner of it.
+      if (t.dataset.peer) { const p = (m.peerAlbums || []).find(x => x && x.folderPath === t.dataset.peer); close(); if (p && deps.openDossier) deps.openDossier(p); return }
       const fi = Number(t.dataset.fi)
       const f = m.tracks[fi]
       switch (t.dataset.act) {
@@ -380,6 +789,17 @@
         // Delegated, never an id + addEventListener: repaintBody() destroys
         // directly-bound listeners on every async arrival.
         case 'bio-more': m.bioOpen = !m.bioOpen; repaintBody(); break
+        case 'album-more': m.albumTextOpen = !m.albumTextOpen; repaintBody(); break
+        case 'notes-more': m.notesOpen = !m.notesOpen; repaintBody(); break
+        // main already refuses anything that is not https.
+        case 'external':
+          if (t.dataset.url && window.api && window.api.openExternal) window.api.openExternal(t.dataset.url)
+          break
+        case 'wish':
+          if (!deps.wishlistAdd) { showSnackbar('The wishlist is not wired up'); break }
+          deps.wishlistAdd(t.dataset.wish || '')
+          showSnackbar('Added ' + (t.dataset.wish || '') + ' to the wishlist')
+          break
         case 'download': {
           if (!deps._slskEnqueue) { showSnackbar('Downloads are not wired up'); break }
           const items = m.tracks.map(x => ({ username, filename: x.fullPath || x.filename || x.name, size: x.size || 0 }))
@@ -412,7 +832,12 @@
       if (e.key === 'Escape') { e.stopPropagation(); close() }
     }
     document.addEventListener('keydown', onKey, true)
-    function close() { document.removeEventListener('keydown', onKey, true); root.remove() }
+    let slowTimer = null
+    function close() {
+      document.removeEventListener('keydown', onKey, true)
+      if (slowTimer) { clearTimeout(slowTimer); slowTimer = null }
+      root.remove()
+    }
 
     paint()
     // Async sections: cached rip verdict, reception, about. Each paints when it lands.
@@ -431,6 +856,81 @@
         repaintBody()
       }
     }
+
+    // ── The record's own facts, and what else there is ────────────────────────
+    // Every one of these follows the same rule as the bio above: a slot stays
+    // null only while a live promise is out, so each .then has a matching
+    // .catch and each bridge guard has an else, both writing a failure shape
+    // and repainting. Nothing is awaited before the first paint.
+    function settle(slot, value) {
+      m[slot] = value
+      if (root.isConnected) repaintBody()
+    }
+    function askArtistReleases() {
+      const ai = m.albumInfo
+      // The MBID is inherited ONLY from a firm match. From a loose one it
+      // produces a confidently wrong catalogue, so the handler pays for an
+      // artist search instead — cached per artist, not per album.
+      const firm = !!(ai && ai.ok !== false && ai.found && ai.confidence === 'firm' && ai.artistMbid)
+      const arg = firm ? { artistMbid: ai.artistMbid, artist: m.artist } : { artist: m.artist }
+      const land = r => {
+        const v = r || { ok: false, reason: NO_ANSWER }
+        // The marks are local and instant, but they are worked out ONCE here
+        // rather than on each of the repaints that follow.
+        m.releaseRows = v.ok !== false
+          ? markReleases(v.releases || [], { artist: m.artist, library: m.library, peerAlbums: m.peerAlbums })
+          : []
+        settle('artistReleases', v)
+      }
+      if (window.api && window.api.artistReleases) {
+        window.api.artistReleases(arg).then(land).catch(() => land(null))
+      } else land(null)
+    }
+    if (m.artist && m.title) {
+      if (window.api && window.api.albumInfo) {
+        window.api.albumInfo({ artist: m.artist, album: m.title, year: m.year, editionNote: m.editionNote })
+          .then(r => { settle('albumInfo', r || { ok: false, reason: NO_ANSWER }); askArtistReleases() })
+          .catch(() => { settle('albumInfo', { ok: false, reason: NO_ANSWER }); askArtistReleases() })
+      } else {
+        m.albumInfo = { ok: false, reason: NO_ANSWER }
+        askArtistReleases()
+      }
+      // The room warms only the peer's top 40 artists, so the 60th-ranked one
+      // would never have tags. Cache-backed and usually free.
+      if (window.api && window.api.musicbrainzArtistTags) {
+        window.api.musicbrainzArtistTags({ artist: m.artist })
+          .then(r => {
+            const v = r || { ok: false, reason: NO_ANSWER }
+            // Fold the answer into the live map the room owns, so this artist's
+            // tags are there for the ranking exactly like the swept ones.
+            if (v.ok && m.tagsByArtist && Array.isArray(v.tags)) m.tagsByArtist[tagKey(m.artist)] = v.tags
+            settle('artistTags', v)
+          })
+          .catch(() => settle('artistTags', { ok: false, reason: NO_ANSWER }))
+      } else m.artistTags = { ok: false, reason: NO_ANSWER }
+      // Twelve seconds, not six: a cold album genuinely costs 4-7 s through the
+      // 1.1 s throttle, and a warning that fires on every normal open reads as
+      // breakage rather than as patience.
+      slowTimer = setTimeout(() => {
+        slowTimer = null
+        if (m.albumInfo == null) { m.slow = true; if (root.isConnected) repaintBody() }
+      }, 12000)
+    } else {
+      // An empty artist is a folder name that did not parse. Refuse
+      // SYNCHRONOUSLY and make no request at all: `artist:""` would burn two
+      // throttled slots landing on whatever Lucene liked.
+      const refusal = {
+        ok: false,
+        reason: m.artist
+          ? "This folder has no album name in it, so I can't look the record up."
+          : "This folder's name doesn't say who the artist is, so I can't look the record up.",
+      }
+      m.albumInfo = refusal
+      m.artistReleases = refusal
+      m.artistTags = refusal
+      m.releaseRows = []
+      repaintBody()
+    }
     requestAnimationFrame(() => {
       root.classList.add('is-open')
       // "Verify this rip" opens the dossier and starts the check in one go;
@@ -440,7 +940,11 @@
     return { close }
   }
 
-  const api = { open, model, sectionsHtml, aboutHtml, bioPreview, firstSentence, editionOf, fmtDur }
+  const api = {
+    open, model, sectionsHtml, aboutHtml, aboutRecordHtml, sameTagsHtml, moreByHtml,
+    bioPreview, firstSentence, editionOf, fmtDur,
+    typeWord, formatReleaseDate, rankSameTagArtists, markReleases, splitDiscogsGenre,
+  }
   if (typeof window !== 'undefined') window.PapaSlskDossier = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()

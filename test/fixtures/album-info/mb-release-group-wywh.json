@@ -1,0 +1,645 @@
+{
+ "disambiguation": "",
+ "id": "1a272023-10d3-38ee-bab3-317b55fcc21d",
+ "title": "Wish You Were Here",
+ "tags": [
+  {
+   "name": "ageing",
+   "count": 1
+  },
+  {
+   "name": "alienation",
+   "count": 1
+  },
+  {
+   "name": "ambient",
+   "count": 1
+  },
+  {
+   "name": "art rock",
+   "count": 16
+  },
+  {
+   "count": 2,
+   "name": "atmospheric"
+  },
+  {
+   "name": "bittersweet",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "bright"
+  },
+  {
+   "count": 1,
+   "name": "compassionate"
+  },
+  {
+   "name": "complex",
+   "count": 1
+  },
+  {
+   "count": 3,
+   "name": "concept album"
+  },
+  {
+   "name": "cynical",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "electronic"
+  },
+  {
+   "name": "entertainment industry",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "epic"
+  },
+  {
+   "name": "existential",
+   "count": 1
+  },
+  {
+   "name": "experimental rock",
+   "count": 2
+  },
+  {
+   "name": "friendship",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "greed"
+  },
+  {
+   "name": "grief",
+   "count": 1
+  },
+  {
+   "name": "hiphop",
+   "count": 1
+  },
+  {
+   "name": "hypnotic",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "introspective"
+  },
+  {
+   "count": 1,
+   "name": "jazz"
+  },
+  {
+   "name": "laut.de",
+   "count": 1
+  },
+  {
+   "name": "lonely",
+   "count": 1
+  },
+  {
+   "count": 3,
+   "name": "longing"
+  },
+  {
+   "name": "male vocalist",
+   "count": 1
+  },
+  {
+   "name": "meditative",
+   "count": 1
+  },
+  {
+   "count": 3,
+   "name": "melancholic"
+  },
+  {
+   "name": "melodic",
+   "count": 1
+  },
+  {
+   "name": "mental health",
+   "count": 1
+  },
+  {
+   "count": 1,
+   "name": "nostalgia"
+  },
+  {
+   "name": "outro",
+   "count": 1
+  },
+  {
+   "name": "poetic",
+   "count": 1
+  },
+  {
+   "name": "prog rock",
+   "count": 1
+  },
+  {
+   "name": "progressive",
+   "count": 3
+  },
+  {
+   "name": "progressive rock",
+   "count": 25
+  },
+  {
+   "count": 1,
+   "name": "psychedelic"
+  },
+  {
+   "name": "psychedelic rock",
+   "count": 7
+  },
+  {
+   "name": "rock",
+   "count": 6
+  },
+  {
+   "count": 1,
+   "name": "sentimental"
+  },
+  {
+   "name": "serious",
+   "count": 1
+  },
+  {
+   "count": 2,
+   "name": "space rock"
+  },
+  {
+   "name": "suite",
+   "count": 1
+  },
+  {
+   "name": "trauma",
+   "count": 1
+  }
+ ],
+ "artist-credit": [
+  {
+   "name": "Pink Floyd",
+   "artist": {
+    "genres": [
+     {
+      "count": 2,
+      "disambiguation": "",
+      "name": "acid rock",
+      "id": "ef063b60-3206-466c-a7d8-7d317fcdf9fc"
+     },
+     {
+      "id": "b7ef058e-6d83-4ca4-8123-9724bff4648b",
+      "disambiguation": "",
+      "name": "art rock",
+      "count": 22
+     },
+     {
+      "count": 3,
+      "disambiguation": "",
+      "name": "blues rock",
+      "id": "58e325d5-54fd-4e98-b39a-3aa6bc319273"
+     },
+     {
+      "id": "93244085-20e5-4f16-9067-1d19143b3810",
+      "count": 4,
+      "disambiguation": "",
+      "name": "classic rock"
+     },
+     {
+      "disambiguation": "",
+      "name": "experimental rock",
+      "count": 2,
+      "id": "65c97e89-b42b-45c2-a70e-0eca1b8f0ff7"
+     },
+     {
+      "id": "8d275a8d-154a-4bcb-8b5a-f56306ad4bcb",
+      "count": 9,
+      "name": "progressive",
+      "disambiguation": ""
+     },
+     {
+      "count": 58,
+      "disambiguation": "",
+      "name": "progressive rock",
+      "id": "ae9b8279-3959-48d8-8a88-741a7f6d4a48"
+     },
+     {
+      "disambiguation": "",
+      "name": "psychedelic",
+      "count": 4,
+      "id": "d698ece0-6fed-4262-b446-42c98b73b65a"
+     },
+     {
+      "id": "2aeb5340-c474-4677-b9a6-35ddac9b6a58",
+      "name": "psychedelic pop",
+      "disambiguation": "",
+      "count": 2
+     },
+     {
+      "disambiguation": "",
+      "name": "psychedelic rock",
+      "count": 46,
+      "id": "146ef761-5ad9-48b4-b0b3-483104f7da48"
+     },
+     {
+      "id": "0e3fc579-2d24-4f20-9dae-736e1ec78798",
+      "count": 29,
+      "name": "rock",
+      "disambiguation": ""
+     },
+     {
+      "disambiguation": "",
+      "name": "rock opera",
+      "count": 6,
+      "id": "baaf713d-1e4e-459e-a058-60d89ce1f9df"
+     },
+     {
+      "disambiguation": "",
+      "name": "space rock",
+      "count": 15,
+      "id": "532dcf83-5641-446d-b007-51292b401650"
+     },
+     {
+      "count": 1,
+      "disambiguation": "",
+      "name": "symphonic rock",
+      "id": "f729e6f8-30dc-4b81-9ff4-f4e7de82225d"
+     }
+    ],
+    "country": "GB",
+    "name": "Pink Floyd",
+    "sort-name": "Pink Floyd",
+    "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+    "disambiguation": "",
+    "type": "Group",
+    "tags": [
+     {
+      "name": "acid rock",
+      "count": 2
+     },
+     {
+      "name": "album rock",
+      "count": 3
+     },
+     {
+      "count": 22,
+      "name": "art rock"
+     },
+     {
+      "name": "blues rock",
+      "count": 3
+     },
+     {
+      "count": 4,
+      "name": "classic rock"
+     },
+     {
+      "name": "experimental rock",
+      "count": 2
+     },
+     {
+      "name": "progressive",
+      "count": 9
+     },
+     {
+      "count": 58,
+      "name": "progressive rock"
+     },
+     {
+      "name": "proto-prog",
+      "count": 1
+     },
+     {
+      "name": "psychedelic",
+      "count": 4
+     },
+     {
+      "name": "psychedelic pop",
+      "count": 2
+     },
+     {
+      "name": "psychedelic rock",
+      "count": 46
+     },
+     {
+      "count": 29,
+      "name": "rock"
+     },
+     {
+      "name": "rock opera",
+      "count": 6
+     },
+     {
+      "count": 15,
+      "name": "space rock"
+     },
+     {
+      "count": 1,
+      "name": "symphonic rock"
+     }
+    ],
+    "id": "83d91898-7763-47d7-b03b-b92132375c47"
+   },
+   "joinphrase": ""
+  }
+ ],
+ "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+ "first-release-date": "1975-09-12",
+ "genres": [
+  {
+   "id": "608b0471-7531-4854-a348-e698c69cb699",
+   "name": "ambient",
+   "disambiguation": "",
+   "count": 1
+  },
+  {
+   "count": 16,
+   "name": "art rock",
+   "disambiguation": "",
+   "id": "b7ef058e-6d83-4ca4-8123-9724bff4648b"
+  },
+  {
+   "disambiguation": "",
+   "name": "electronic",
+   "count": 1,
+   "id": "89255676-1f14-4dd8-bbad-fca839d6aff4"
+  },
+  {
+   "name": "experimental rock",
+   "disambiguation": "",
+   "count": 2,
+   "id": "65c97e89-b42b-45c2-a70e-0eca1b8f0ff7"
+  },
+  {
+   "id": "a715278f-1580-409f-8078-4ffbc800e08b",
+   "count": 1,
+   "name": "jazz",
+   "disambiguation": ""
+  },
+  {
+   "id": "8d275a8d-154a-4bcb-8b5a-f56306ad4bcb",
+   "disambiguation": "",
+   "name": "progressive",
+   "count": 3
+  },
+  {
+   "disambiguation": "",
+   "name": "progressive rock",
+   "count": 25,
+   "id": "ae9b8279-3959-48d8-8a88-741a7f6d4a48"
+  },
+  {
+   "disambiguation": "",
+   "name": "psychedelic",
+   "count": 1,
+   "id": "d698ece0-6fed-4262-b446-42c98b73b65a"
+  },
+  {
+   "count": 7,
+   "disambiguation": "",
+   "name": "psychedelic rock",
+   "id": "146ef761-5ad9-48b4-b0b3-483104f7da48"
+  },
+  {
+   "name": "rock",
+   "disambiguation": "",
+   "count": 6,
+   "id": "0e3fc579-2d24-4f20-9dae-736e1ec78798"
+  },
+  {
+   "id": "532dcf83-5641-446d-b007-51292b401650",
+   "count": 2,
+   "name": "space rock",
+   "disambiguation": ""
+  }
+ ],
+ "secondary-types": [],
+ "primary-type": "Album",
+ "relations": [
+  {
+   "ended": false,
+   "end": null,
+   "attribute-ids": {},
+   "type": "allmusic",
+   "begin": null,
+   "source-credit": "",
+   "type-id": "a50a1d20-2b20-4d2c-9a29-eb771dd78386",
+   "attributes": [],
+   "target-credit": "",
+   "attribute-values": {},
+   "url": {
+    "id": "ccccba7b-8110-4f22-8aac-85e73b3211f7",
+    "resource": "https://www.allmusic.com/album/mw0000650633"
+   },
+   "target-type": "url",
+   "direction": "forward"
+  },
+  {
+   "begin": null,
+   "type": "discogs",
+   "ended": false,
+   "end": null,
+   "attribute-ids": {},
+   "target-type": "url",
+   "direction": "forward",
+   "url": {
+    "resource": "https://www.discogs.com/master/11703",
+    "id": "e5c2be83-970c-460b-998f-ae80191c424a"
+   },
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "source-credit": "",
+   "type-id": "99e550f3-5ab4-3110-b5b9-fe01d970b126"
+  },
+  {
+   "attribute-ids": {},
+   "ended": false,
+   "end": null,
+   "type": "lyrics",
+   "begin": null,
+   "type-id": "156344d3-da8b-40c6-8b10-7b1c22727124",
+   "source-credit": "",
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "url": {
+    "resource": "https://genius.com/albums/Pink-floyd/Wish-you-were-here",
+    "id": "b172bff4-5b9d-4c03-82ab-2d2cb1e70c36"
+   },
+   "direction": "forward",
+   "target-type": "url"
+  },
+  {
+   "type": "other databases",
+   "begin": null,
+   "end": null,
+   "ended": false,
+   "attribute-ids": {},
+   "target-type": "url",
+   "direction": "forward",
+   "url": {
+    "resource": "https://rateyourmusic.com/release/album/pink-floyd/wish-you-were-here/",
+    "id": "f361c169-97f9-4fe3-a22c-6f0d78d6afb9"
+   },
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "source-credit": "",
+   "type-id": "38320e40-9f4a-3ae7-8cb2-3f3c9c5d856d"
+  },
+  {
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "source-credit": "",
+   "type-id": "38320e40-9f4a-3ae7-8cb2-3f3c9c5d856d",
+   "target-type": "url",
+   "direction": "forward",
+   "url": {
+    "resource": "https://www.musik-sammler.de/album/20361/",
+    "id": "85a653c0-d99d-4396-8ad9-011be73383c8"
+   },
+   "ended": false,
+   "end": null,
+   "attribute-ids": {},
+   "begin": null,
+   "type": "other databases"
+  },
+  {
+   "type": "other databases",
+   "begin": null,
+   "end": null,
+   "ended": false,
+   "attribute-ids": {},
+   "url": {
+    "resource": "https://www.offiziellecharts.de/charts/album-details-6347",
+    "id": "f0af897e-b1ee-4268-a85e-704e3d65280f"
+   },
+   "target-type": "url",
+   "direction": "forward",
+   "source-credit": "",
+   "type-id": "38320e40-9f4a-3ae7-8cb2-3f3c9c5d856d",
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {}
+  },
+  {
+   "source-credit": "",
+   "type-id": "38320e40-9f4a-3ae7-8cb2-3f3c9c5d856d",
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "url": {
+    "resource": "https://www.progarchives.com/album.asp?id=1441",
+    "id": "f3dd22cf-ba99-4ef4-b275-6ab98e9e3db3"
+   },
+   "target-type": "url",
+   "direction": "forward",
+   "end": null,
+   "ended": false,
+   "attribute-ids": {},
+   "begin": null,
+   "type": "other databases"
+  },
+  {
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "type-id": "38320e40-9f4a-3ae7-8cb2-3f3c9c5d856d",
+   "source-credit": "",
+   "direction": "forward",
+   "target-type": "url",
+   "url": {
+    "id": "6a4ef5f6-22b6-4cb6-8a86-91a1936b86a1",
+    "resource": "https://www.spirit-of-rock.com/en/album/Wish_You_Were_Here/947"
+   },
+   "attribute-ids": {},
+   "end": null,
+   "ended": false,
+   "type": "other databases",
+   "begin": null
+  },
+  {
+   "direction": "forward",
+   "target-type": "url",
+   "url": {
+    "resource": "https://laut.de/Pink-Floyd/Alben/Wish-You-Were-Here-50th-Anniversary-126289",
+    "id": "23b99b41-f0fc-4c62-91d0-5fc056b17e0c"
+   },
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "type-id": "c3ac9c3b-f546-4d15-873f-b294d2c1b708",
+   "source-credit": "",
+   "begin": null,
+   "type": "review",
+   "attribute-ids": {},
+   "end": null,
+   "ended": false
+  },
+  {
+   "target-type": "url",
+   "direction": "forward",
+   "url": {
+    "resource": "https://pitchfork.com/reviews/albums/pink-floyd-wish-you-were-here/",
+    "id": "dee36e71-fd52-400d-910a-7feb6c9cc81c"
+   },
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "source-credit": "",
+   "type-id": "c3ac9c3b-f546-4d15-873f-b294d2c1b708",
+   "type": "review",
+   "begin": null,
+   "end": null,
+   "ended": false,
+   "attribute-ids": {}
+  },
+  {
+   "url": {
+    "id": "4f0bc6ff-a1ab-4559-be68-226dec6707ef",
+    "resource": "https://www.bbc.co.uk/music/reviews/b8dp"
+   },
+   "direction": "forward",
+   "target-type": "url",
+   "type-id": "c3ac9c3b-f546-4d15-873f-b294d2c1b708",
+   "source-credit": "",
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "type": "review",
+   "begin": null,
+   "attribute-ids": {},
+   "ended": false,
+   "end": null
+  },
+  {
+   "type": "wikidata",
+   "begin": null,
+   "ended": false,
+   "end": null,
+   "attribute-ids": {},
+   "target-type": "url",
+   "direction": "forward",
+   "url": {
+    "resource": "https://www.wikidata.org/wiki/Q200872",
+    "id": "5363c12f-608a-460d-adf0-505e9831076b"
+   },
+   "target-credit": "",
+   "attribute-values": {},
+   "attributes": [],
+   "source-credit": "",
+   "type-id": "b988d08c-5d86-4a57-9557-c83b399e3580"
+  }
+ ],
+ "secondary-type-ids": []
+}

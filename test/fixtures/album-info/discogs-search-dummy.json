@@ -1,0 +1,136 @@
+{
+ "pagination": {
+  "page": 1,
+  "pages": 1,
+  "per_page": 5,
+  "items": 2,
+  "urls": {}
+ },
+ "results": [
+  {
+   "country": "Europe",
+   "year": "1994",
+   "format": [
+    "Vinyl",
+    "LP",
+    "Album",
+    "Misprint",
+    "Stereo"
+   ],
+   "label": [
+    "Go! Beat",
+    "Go! Discs Ltd.",
+    "Go! Discs Ltd.",
+    "Barclay",
+    "Metronome Musik GmbH",
+    "DFI"
+   ],
+   "type": "master",
+   "genre": [
+    "Electronic"
+   ],
+   "style": [
+    "Trip Hop"
+   ],
+   "id": 5542,
+   "barcode": [
+    "0 42282 85221 2",
+    "LC 7192",
+    "BA 281",
+    "BIEM / STEMRA",
+    "828-522-1-A-1 DFI 94 6",
+    "828-522-1-B-1 DFI 94 6 828 522 B1"
+   ],
+   "master_id": 5542,
+   "master_url": "https://api.discogs.com/masters/5542",
+   "uri": "/master/5542-Portishead-Dummy",
+   "catno": "828 522-1",
+   "title": "Portishead - Dummy",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/5542",
+   "community": {
+    "want": 94284,
+    "have": 139279
+   }
+  },
+  {
+   "country": "Europe",
+   "year": "2009",
+   "format": [
+    "Box Set",
+    "Compilation",
+    "CD",
+    "Album",
+    "Reissue",
+    "CD",
+    "Album",
+    "Reissue"
+   ],
+   "label": [
+    "Universal Music Group International",
+    "Go! Beat",
+    "2 For 1",
+    "Universal International Music B.V.",
+    "Universal International Music B.V.",
+    "Go! Discs Ltd.",
+    "Go! Discs Ltd.",
+    "Barclay",
+    "Metronome Musik GmbH",
+    "Polydor Ltd. (UK)",
+    "EDC, Germany",
+    "EDC, Germany"
+   ],
+   "type": "master",
+   "genre": [
+    "Electronic"
+   ],
+   "style": [
+    "Trip Hop",
+    "Downtempo"
+   ],
+   "id": 3221431,
+   "barcode": [
+    "6 00753 18644 2",
+    "0600753186442",
+    "LC 07192 / 00407",
+    "LC 7192",
+    "BA 900",
+    "PY 900",
+    "BIEM / SABAM",
+    "BIEM / STEMRA",
+    "BIEM / MCPS",
+    "004228285222",
+    "0073145391892",
+    "828 522-2",
+    "539 189-2",
+    "IFPI LV26",
+    "00422 828 522-2 03 * 50981054 MADE IN GERMANY BY EDC",
+    "[4x Universal logo] 00422 828 522-2 03 * 50981054 MADE IN GERMANY BY EDC E",
+    "00422 828 522-2 03 * 50981054 MADE IN GERMANY BY EDC C",
+    "IFPI 0149",
+    "IFPI 0133",
+    "IFPI 0153",
+    "07314 539 189-2 04 * 50995588 MADE IN GERMANY BY EDC",
+    "[4x Universal logo] 07314 539 189-2 04 * 50995588 MADE IN GERMANY BY EDC H",
+    "[4x Universal logo] 07314 539 189-2 04 * 50995588 MADE IN GERMANY BY EDC E",
+    "IFPI 0156",
+    "IFPI 0133",
+    "IFPI 0128",
+    "IFPI 0121"
+   ],
+   "master_id": 3221431,
+   "master_url": "https://api.discogs.com/masters/3221431",
+   "uri": "/master/3221431-Portishead-Dummy-Portishead",
+   "catno": "0600753186442",
+   "title": "Portishead - Dummy + Portishead",
+   "thumb": "",
+   "cover_image": "",
+   "resource_url": "https://api.discogs.com/masters/3221431",
+   "community": {
+    "want": 102,
+    "have": 540
+   }
+  }
+ ]
+}

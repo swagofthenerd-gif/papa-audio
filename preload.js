@@ -528,10 +528,15 @@ contextBridge.exposeInMainWorld('api', {
   loudnessScan:      (paths) => ipcRenderer.invoke('loudness-scan', { paths }),
   loudnessGetMap:    ()  => ipcRenderer.invoke('loudness-get-map'),
   musicbrainzCheckAlbum: (p) => ipcRenderer.invoke('musicbrainz-check-album', p),
-  // Peer library enrichment: artist tags from MusicBrainz, reception from
-  // Discogs (which needs the user's own token — no token, no call).
+  // Peer library enrichment: artist tags from MusicBrainz, and the record's own
+  // genres, notes and link from Discogs (keyless — a token raises the rate
+  // ceiling and buys nothing else).
   musicbrainzArtistTags: (p) => ipcRenderer.invoke('musicbrainz-artist-tags', p),
   discogsAlbum:          (p) => ipcRenderer.invoke('discogs-album', p),
+  // The album dossier's own facts: what the record is, and what else the artist
+  // made. Split in two so the facts paint without waiting for the discography.
+  albumInfo:             (p) => ipcRenderer.invoke('album-info', p),
+  artistReleases:        (p) => ipcRenderer.invoke('artist-releases', p),
   discogsTokenGet:       ()  => ipcRenderer.invoke('discogs-token-get'),
   discogsTokenSet:       (p) => ipcRenderer.invoke('discogs-token-set', p),
   playerGetStatus:   ()  => ipcRenderer.invoke('player-get-status'),

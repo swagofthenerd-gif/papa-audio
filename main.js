@@ -160,6 +160,12 @@ const IPC_TIMEOUT_OVERRIDES = {
   'loudness-scan': 0,
   // MusicBrainz at a 1 req/s ceiling, plus network latency for two lookups.
   'musicbrainz-check-album': 120000,
+  // MusicBrainz at a 1 req/s ceiling, plus Wikidata and Wikipedia. Without
+  // these the wrapper below races the handler against the 60 s default and
+  // REJECTS the invoke, which the dossier's .catch turns into a permanent
+  // "Looking up…".
+  'album-info': 120000,
+  'artist-releases': 120000,
 }
 
 // A tiny ring buffer of the last few IPC channels handled, so the crash
@@ -4966,7 +4972,13 @@ ipcMain.handle('artist-info', async (_, { artist } = {}) => {
     const hit = artistInfo.cacheGet(store, key)
     if (hit) return artistInfo.normalize(hit)
     const info = await artistInfo.resolve(name, {
-      mb: _artistInfoFetchJson,
+      // The MusicBrainz hops go through the SAME 1.1 s chain every other
+      // MusicBrainz call in this file uses. They used to be bare fetches, which
+      // meant the app hit MusicBrainz twice per uncached artist with no spacing
+      // at all — so the "one request a second" the UA promises was not being
+      // kept, and adding well-behaved traffic beside it would not have fixed
+      // that. Wikidata and Wikipedia are keyless and stay unthrottled.
+      mb: url => _mbThrottle(() => _artistInfoFetchJson(url)),
       wd: _artistInfoFetchJson,
       wiki: _artistInfoFetchJson,
     })
@@ -8165,6 +8177,138 @@ ipcMain.handle('musicbrainz-artist-tags', async (_, { artist } = {}) => {
   }
 })
 
+// ── Album facts (the dossier's "About this record") ─────────────────────────
+// Two throttled MusicBrainz hops, then two keyless ones. Always answers a
+// shape, never throws. The renderer paints without waiting for any of it.
+//
+// The Wikidata hop is NOT optional and is NOT the endpoint artist-info uses:
+// wbgetentities with props=sitelinks&sitefilter=enwiki answers this exact
+// question in 179 bytes, where Special:EntityData/<Q>.json returned 48,718 for
+// the same album. And looking an album up on Wikipedia by bare title is how
+// "Dummy" becomes a disambiguation page printed as fact about the record.
+function _wikidataSitelinksUrl(qid) {
+  return 'https://www.wikidata.org/w/api.php?action=wbgetentities&ids=' +
+    encodeURIComponent(String(qid || '')) + '&props=sitelinks&sitefilter=enwiki&format=json'
+}
+
+// The refusal the columns surface earns: slsk-columns synthesises an album with
+// artist:'' for a folder whose name doesn't parse, and `artist:""` is a Lucene
+// query that would burn two throttled slots landing on whatever it liked.
+const NO_ARTIST_REASON = "This folder's name doesn't say who the artist is, so I can't look the record up."
+
+ipcMain.handle('album-info', async (_, { artist, album, year, editionNote } = {}) => {
+  const ar = String(artist || '').trim(), al = String(album || '').trim()
+  if (!al) return { ok: false, reason: 'No album name to look up.' }
+  if (!ar) return { ok: false, reason: NO_ARTIST_REASON }
+  // The cache read is the FIRST thing, before any _mbThrottle call — the way
+  // discogs-album already works. An album he has opened before must paint in
+  // milliseconds even while the room's warm sweep owns the throttle chain.
+  const key = 'albuminfo:v1:' + (ar + '::' + al).toLowerCase()
+  const hit = _enrichGet(key)
+  if (hit) return { ok: true, ...hit, fromCache: true }
+  try {
+    const q = `releasegroup:"${al.replace(/"/g, '\\"')}" AND artist:"${ar.replace(/"/g, '\\"')}"`
+    const search = await _mbThrottle(() =>
+      _mbGetJson(`/release-group/?limit=5&query=${encodeURIComponent(q)}`))
+    const pick = peerEnrich.pickReleaseGroup(search, { title: al, year, editionNote })
+    if (!pick) {
+      // A clean miss is a stable fact and IS cached for the 30 days: MusicBrainz
+      // genuinely not having the record will still be true tomorrow. A THROWN
+      // lookup is not — see the catch.
+      const miss = {
+        found: false, confidence: null, mbid: null, artistMbid: null,
+        title: '', date: '', primaryType: '', secondaryTypes: [], genres: [],
+        wikiExtract: null, wikiDescription: null, discogsUrl: null,
+      }
+      _enrichSet(key, miss)
+      return { ok: true, ...miss }
+    }
+    const detail = await _mbThrottle(() => _mbGetJson(
+      `/release-group/${encodeURIComponent(pick.id)}?inc=genres+tags+url-rels+artist-credits`))
+    const facts = peerEnrich.releaseGroupFacts(detail)
+    let wikiExtract = null, wikiDescription = null
+    if (facts.wikidataId) {
+      const entity = await _artistInfoFetchJson(_wikidataSitelinksUrl(facts.wikidataId))
+      const title = artistInfo.wikipediaTitleFromWikidata(entity, facts.wikidataId)
+      if (title) {
+        wikiExtract = artistInfo.bioFromQueryExtract(
+          await _artistInfoFetchJson(artistInfo.wikiExtractUrl(title)))
+        // The REST summary's one-line `description` is reliably shaped "1994
+        // studio album by Portishead", which is the whole lead line when
+        // MusicBrainz has no date. Only fetched when it would actually be used.
+        if (!wikiExtract || !pick.date) {
+          const summary = await _artistInfoFetchJson(artistInfo.wikiSummaryUrl(title))
+          const d = summary && typeof summary.description === 'string' ? summary.description.trim() : ''
+          wikiDescription = d || null
+        }
+      }
+    }
+    // Lean on purpose: ids, dates, types, the trimmed extract and the chip
+    // list. The store has a TTL but no cap and no eviction, so raw API
+    // responses would sit there for a month each.
+    const value = {
+      found: true,
+      confidence: pick.confidence,
+      mbid: pick.id,
+      artistMbid: facts.artistMbid,
+      title: facts.title || pick.title,
+      date: facts.date || pick.date,
+      primaryType: facts.primaryType || pick.primaryType,
+      secondaryTypes: facts.secondaryTypes.length ? facts.secondaryTypes : pick.secondaryTypes,
+      genres: facts.genres.slice(0, 12),
+      wikiExtract, wikiDescription,
+      discogsUrl: facts.discogsUrl,
+    }
+    _enrichSet(key, value)
+    return { ok: true, ...value }
+  } catch (e) {
+    // NOTHING is written to the cache here. A network blip must not pin
+    // "nothing found" on this album for thirty days.
+    return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
+  }
+})
+
+// What else the artist made. Split from album-info deliberately: the facts
+// section paints as soon as it can instead of waiting for the discography.
+ipcMain.handle('artist-releases', async (_, { artistMbid, artist } = {}) => {
+  let mbid = String(artistMbid || '').trim()
+  const name = String(artist || '').trim()
+  if (!mbid && !name) return { ok: false, reason: NO_ARTIST_REASON }
+  if (!mbid) {
+    // The caller only passes an MBID when the album match was FIRM. An MBID
+    // inherited from a loose match produces a confidently wrong catalogue,
+    // which is the most damaging thing this design could print — so a loose
+    // match pays one throttled artist search instead, cached per ARTIST so the
+    // cost lands once, not once per album.
+    const nameKey = 'artistmbid:v1:' + name.toLowerCase()
+    const cached = _enrichGet(nameKey)
+    if (cached) mbid = String(cached)
+    else {
+      try {
+        const j = await _mbThrottle(() => _mbGetJson(
+          `/artist?query=${encodeURIComponent('artist:"' + name.replace(/"/g, '\\"') + '"')}&limit=1`))
+        const first = j && Array.isArray(j.artists) ? j.artists[0] : null
+        if (first && first.id) { mbid = String(first.id); _enrichSet(nameKey, mbid) }
+      } catch (e) {
+        return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
+      }
+      if (!mbid) return { ok: true, artistMbid: null, releases: [] }
+    }
+  }
+  const key = 'artistrgs:v1:' + mbid
+  const hit = _enrichGet(key)
+  if (hit) return { ok: true, artistMbid: mbid, releases: hit, fromCache: true }
+  try {
+    const j = await _mbThrottle(() => _mbGetJson(
+      `/release-group?artist=${encodeURIComponent(mbid)}&type=album&limit=50`))
+    const releases = peerEnrich.studioAlbums(j)
+    _enrichSet(key, releases)
+    return { ok: true, artistMbid: mbid, releases }
+  } catch (e) {
+    return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
+  }
+})
+
 ipcMain.handle('discogs-token-get', () => ({ token: store.get('discogsToken', '') }))
 ipcMain.handle('discogs-token-set', (_, { token } = {}) => { store.set('discogsToken', String(token || '').trim()); return { ok: true } })
 
@@ -8181,9 +8325,13 @@ async function _discogsGetJson(pathAndQuery, token) {
   if (wait > 0) await new Promise(r => setTimeout(r, wait))
   _discogsLastAt = Date.now()
   const sep = pathAndQuery.includes('?') ? '&' : '?'
+  // No token, no token PARAMETER — `token=` with nothing after it is a
+  // malformed credential, not an absent one, and Discogs is entitled to read it
+  // that way. Both endpoints this file calls answer to the User-Agent alone.
+  const auth = token ? `${sep}token=${encodeURIComponent(token)}` : ''
   let raw
   try {
-    raw = await httpsGet(`https://api.discogs.com${pathAndQuery}${sep}token=${encodeURIComponent(token)}`)
+    raw = await httpsGet(`https://api.discogs.com${pathAndQuery}${auth}`)
   } catch (e) {
     // httpsGet embeds the full URL in its error text, and that URL carries the
     // user's Discogs token. Strip the query string before this leaves main —
@@ -8194,23 +8342,39 @@ async function _discogsGetJson(pathAndQuery, token) {
 }
 
 ipcMain.handle('discogs-album', async (_, { artist, album } = {}) => {
-  const token = store.get('discogsToken', '')
-  if (!token) return { ok: false, reason: 'no-token' }
   const a = String(artist || '').trim(), b = String(album || '').trim()
   if (!b) return { ok: false, reason: 'No album name to look up.' }
-  const key = 'discogs:' + (a + '::' + b).toLowerCase()
+  // v2 is load-bearing: 18 albums already hold the narrow {rating, count,
+  // genres, styles, url} shape, and without the bump the year, the pressing
+  // notes and the master title would never appear on any album he has already
+  // opened, for up to a month.
+  const key = 'discogs:v2:' + (a + '::' + b).toLowerCase()
   const hit = _enrichGet(key)
   if (hit) return { ok: true, ...hit, fromCache: true }
+  // The token guard used to sit ABOVE this, returning 'no-token' before any
+  // network call, and the panel printed "Add a Discogs token in Settings to see
+  // ratings and tags." It bought a token-less user nothing and cost him the
+  // year, the pressing notes, the genre chips and the link — all of which
+  // answer to the User-Agent alone (verified: /database/search and
+  // /masters/5542 both HTTP 200 unauthenticated, x-discogs-ratelimit 25 against
+  // 60 signed in). The guard existed to keep a credential off the wire, and no
+  // credential goes on it either way; the rating it protected does not exist on
+  // a Discogs master at all.
+  const token = store.get('discogsToken', '')
   try {
     const search = await _discogsGetJson(`/database/search?type=master&artist=${encodeURIComponent(a)}&release_title=${encodeURIComponent(b)}&per_page=5`, token)
-    const master = peerEnrich.pickDiscogsMaster(search)
+    const master = peerEnrich.pickDiscogsMaster(search, { title: b })
     if (!master) return { ok: false, reason: 'Discogs has no entry for this album.' }
     const detail = await _discogsGetJson(`/masters/${master.id}`, token)
-    const value = { ...peerEnrich.discogsSummary(detail), url: master.url }
+    const value = { ...peerEnrich.discogsSummary(detail), url: master.url, tokenless: !token }
     _enrichSet(key, value)
     return { ok: true, ...value }
   } catch (e) {
-    return { ok: false, reason: 'Discogs did not answer: ' + _discogsRedact(String(e && e.message || e)) }
+    const msg = _discogsRedact(String(e && e.message || e))
+    // The unauthenticated ceiling is 25 requests a minute, so a token-less user
+    // can genuinely reach it. Say so in words he can act on.
+    if (/\b429\b|rate limit/i.test(msg)) return { ok: false, reason: 'Discogs is busy right now. Try again in a minute.' }
+    return { ok: false, reason: 'Discogs did not answer: ' + msg }
   }
 })
 

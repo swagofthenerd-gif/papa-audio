@@ -212,7 +212,24 @@
       const Wm = W()
       if (!D) return
       const sibs = Wm ? albums.filter(a => a !== album && a.artist && album.artist && Wm.norm(a.artist) === Wm.norm(album.artist)) : []
-      D.open({ album, username, host: root, deps: { ...deps, openDossier }, siblings: sibs, autoVerify: !!(opts && opts.autoVerify) })
+      // The whole library, the live tag map, and the two facts only this
+      // closure knows — passed unconditionally. `albums` and `wander.tags` go
+      // by REFERENCE so a background sweep that lands while the panel is open
+      // shows up on its next repaint; tagsDone is a getter for the same reason.
+      // The columns surface is mounted BY this room and handed this same
+      // openDossier, so the Folders view gets all of it too.
+      D.open({
+        album, username, host: root, siblings: sibs,
+        deps: {
+          ...deps,
+          openDossier,
+          peerAlbums: albums,
+          tagsByArtist: wander.tags,
+          tagsDone: () => wander.tagsDone,
+          ownsPeerAlbum: a => !missingSet.has(a),
+        },
+        autoVerify: !!(opts && opts.autoVerify),
+      })
     }
 
     function cardHtml(a) {
