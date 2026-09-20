@@ -94,10 +94,20 @@ test('both modules still publish their window API when run as page scripts', () 
 	// Compiling proves they parse; this proves they still register the globals the
 	// rest of the renderer reaches for. Run in a bare context with a `window`, the
 	// way the page provides one.
-	const ctx = vm.createContext({ window: {}, Intl, console })
+	// `window` IS the global in a page, and these modules are not consistent
+	// about which one they register on — some write window.X, the UMD-wrapped
+	// ones write globalThis.X. A sandbox where window points at the global is
+	// the browser's arrangement, and the only one where both land in the same
+	// place.
+	const sandbox = { Intl, console }
+	sandbox.window = sandbox
+	const ctx = vm.createContext(sandbox)
 	const ROOM_FILES = ['slsk-hunt.js', 'slsk-wander.js', 'slsk-columns.js',
 		'slsk-dossier.js', 'slsk-room-ui.js']
-	for (const f of ['slsk-tree.js', 'slsk-shelves.js', ...ROOM_FILES]) {
+	// transfer-indicator.js loads in the same shared scope and reaches for
+	// PapaSlskShelves.fmtSize, so it belongs in this context, after the shelves.
+	for (const f of ['slsk-tree.js', 'slsk-shelves.js', ...ROOM_FILES,
+		'transfer-indicator.js']) {
 		vm.runInContext(fs.readFileSync(path.join(SRC, f), 'utf8'), ctx, { filename: f })
 	}
 	assert.ok(ctx.window.PapaSlskTree, 'window.PapaSlskTree missing')
@@ -112,9 +122,20 @@ test('both modules still publish their window API when run as page scripts', () 
 	// The Listening Room's five modules register alongside them, in the same
 	// shared scope, without a collision.
 	for (const g of ['PapaSlskHunt', 'PapaSlskWander', 'PapaSlskColumns',
-		'PapaSlskDossier', 'PapaSlskRoomUI']) {
+		'PapaSlskDossier', 'PapaSlskRoomUI', 'PapaTransferIndicator']) {
 		assert.ok(ctx.window[g], `window.${g} missing`)
 	}
+	// The sidebar indicator's four surfaces, reachable in the page's own scope.
+	for (const fn of ['downloadPill', 'sharingPill', 'sharingRows', 'todayLine']) {
+		assert.strictEqual(typeof ctx.window.PapaTransferIndicator[fn], 'function',
+			`PapaTransferIndicator.${fn}`)
+	}
+	// And it works here, not merely exists — including the size formatter it
+	// borrows from the shelves module in this very context.
+	assert.strictEqual(
+		ctx.window.PapaTransferIndicator.downloadPill(
+			[{ username: 'a', files: [{ filename: 'x.flac', state: 'InProgress' }] }]).text,
+		'↓ 1')
 	assert.strictEqual(typeof ctx.window.PapaSlskRoomUI.show, 'function')
 	assert.strictEqual(typeof ctx.window.PapaSlskColumns.mount, 'function')
 	assert.strictEqual(typeof ctx.window.PapaSlskDossier.open, 'function')

@@ -28,6 +28,11 @@
       day: day || null,
       totalUploadedToday: 0,   // bytes transferred to peers today
       peers: {},               // username -> true, for distinctPeersToday
+      // Uploads that finished successfully today, keyed the same way as `seen`
+      // (username + filename). A set rather than a counter because slskd keeps
+      // reporting a finished transfer for a while: without the dedup every poll
+      // would count the same delivered file again.
+      done: {},                // uploadKey -> true, for filesUploadedToday
       // The last-seen transferred bytes per upload key, so a growing transfer
       // contributes only its delta each poll rather than its whole size again.
       seen: {},                // uploadKey -> lastTransferredBytes
@@ -100,6 +105,14 @@
     return /inprogress|queued|initializing|requested/i.test(s)
   }
 
+  // A delivered file: slskd reports a clean finish as "Completed, Succeeded".
+  // "Completed, Cancelled" and "Completed, Errored" are also Completed, and
+  // neither put a file in a peer's hands, so Succeeded has to be there too.
+  function isDeliveredUpload(state) {
+    const s = String(state || '')
+    return /completed/i.test(s) && /succeeded/i.test(s)
+  }
+
   // Fold a fresh uploads snapshot into the counters. Pure: returns a NEW state
   // (the caller persists it) plus a small summary of what is active right now.
   //
@@ -107,7 +120,8 @@
   //   uploads: the raw /transfers/uploads payload
   //   now: epoch ms (or a Date)
   //
-  // Returns { state, activeUploads, totalUploadedToday, distinctPeersToday }.
+  // Returns { state, activeUploads, totalUploadedToday, distinctPeersToday,
+  // filesUploadedToday }.
   // On a day change the counters reset first, so the returned totals are today's.
   function ingest(prevState, uploads, now) {
     const nowMs = now instanceof Date ? now.getTime() : Number(now)
@@ -119,6 +133,7 @@
     // Defensive: an older persisted shape may lack a field.
     state.peers = state.peers && typeof state.peers === 'object' ? state.peers : {}
     state.seen = state.seen && typeof state.seen === 'object' ? state.seen : {}
+    state.done = state.done && typeof state.done === 'object' ? state.done : {}
     if (!Number.isFinite(Number(state.totalUploadedToday))) state.totalUploadedToday = 0
 
     const files = flattenUploads(uploads)
@@ -136,6 +151,13 @@
         if (f.username) state.peers[f.username] = true
       }
       state.seen[f.key] = f.transferred
+      // Files delivered today, counted once each. `done` is NOT pruned with
+      // `seen`: once a file has gone out it stays counted for the rest of the
+      // day, even after slskd drops the finished row from its list.
+      if (isDeliveredUpload(f.state) && !state.done[f.key]) {
+        state.done[f.key] = true
+        if (f.username) state.peers[f.username] = true
+      }
       if (isActiveUpload(f.state)) activeUploads++
     }
     // Forget transfers slskd no longer reports, so `seen` cannot grow without
@@ -147,8 +169,9 @@
       activeUploads,
       totalUploadedToday: state.totalUploadedToday,
       distinctPeersToday: Object.keys(state.peers).length,
+      filesUploadedToday: Object.keys(state.done).length,
     }
   }
 
-  return { emptyState, flattenUploads, isActiveUpload, ingest, _dayKey }
+  return { emptyState, flattenUploads, isActiveUpload, isDeliveredUpload, ingest, _dayKey }
 })

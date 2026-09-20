@@ -98,7 +98,9 @@ test('#54 the upload-stats IPC, poll and activity event are wired', () => {
   assert.match(MAIN, /uploadStats\.ingest\(/)
   assert.match(MAIN, /slskUploadPollStart\(/)
   assert.match(MAIN, /safeSend\('slsk-upload-activity'/)
-  assert.match(PRELOAD, /slskUploadStats:\s*\(\)\s*=> ipcRenderer\.invoke\('slsk-upload-stats'/)
+  // The channel takes an options argument now (the sidebar's cachedOk), so the
+  // arrow has a parameter — the wiring this test is about is unchanged.
+  assert.match(PRELOAD, /slskUploadStats:\s*\(opts\)\s*=> ipcRenderer\.invoke\('slsk-upload-stats'/)
   assert.match(PRELOAD, /onSlskUploadActivity:/)
 })
 
