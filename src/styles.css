@@ -6751,7 +6751,11 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
    surface rather than scroll inside a box of its own. .sharing-today stays
    outside it, pinned to the bottom. */
 .sharing-body { flex:1; min-height:0; overflow-y:auto }
-.sharing-controls { padding:10px 14px 14px }
+/* The rows moved here out of .mcs-set-group, which was a flex column with a
+   6px gap. Without that the rows sat flush and .mcs-set-reset's
+   align-self:flex-start went inert, so the "Back on in an hour" button
+   stretched the full width of the panel instead of hugging its text. */
+.sharing-controls { padding:10px 14px 14px; display:flex; flex-direction:column; gap:6px }
 .sharing-divider { height:1px; background:var(--glass-border) }
 .sharing-live { padding:10px 6px 4px }
 .sharing-live-label { padding:0 8px 2px }

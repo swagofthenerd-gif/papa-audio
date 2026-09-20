@@ -233,7 +233,7 @@ test('the open panel still gets a real poll, unlike the sidebar', () => {
   assert.match(RENDERER, /\? window\.api\.slskUploadStats\(\{\}\)/,
     'the fresh path sends no cachedOk')
   const at = RENDERER.indexOf('function _openSharingPanel')
-  assert.match(RENDERER.slice(at, at + 1400), /_refreshSharingStats\(true\)/,
+  assert.match(RENDERER.slice(at, at + 2200), /_refreshSharingStats\(true\)/,
     'and the panel asks for it on open')
 })
 
@@ -393,10 +393,15 @@ test('the open-panel refresh is one 10 s timer, cleared on close', () => {
     'and takes its key handler with it')
 })
 
-test('Escape closes the panel', () => {
+test('Escape closes the panel, but not out from under someone typing in it', () => {
   const start = RENDERER.indexOf('function _onSharingPanelKey')
-  const body = RENDERER.slice(start, start + 200)
-  assert.match(body, /e\.key === 'Escape'[\s\S]*_closeSharingPanel\(\)/)
+  const body = RENDERER.slice(start, RENDERER.indexOf('function _closeSharingPanel'))
+  assert.match(body, /e\.key !== 'Escape'/)
+  assert.match(body, /_closeSharingPanel\(\)/)
+  // The panel holds the upload number boxes now. Escape inside one of them
+  // belongs to the box; closing the whole panel would lose what he typed.
+  assert.match(body, /INPUT|TEXTAREA|SELECT/,
+    'a field has focus means Escape is not ours')
   assert.match(RENDERER, /addEventListener\('keydown', _onSharingPanelKey\)/,
     'and the handler is only bound while it is open')
 })

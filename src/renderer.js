@@ -27176,7 +27176,7 @@ async function _initSoulseekAccountSettings() {
     const st = await window.api.slskStatus().catch(() => null)
     accText.textContent = !st ? 'Could not reach the Soulseek daemon.'
       : st.connected ? 'Connected' + (st.username ? ' as ' + st.username : '') + '.'
-      : st.enabled === false ? 'Soulseek is off. Turn it on above when you want it.'
+      : st.enabled === false ? 'Soulseek is off. Turn it on in Sharing, on the left.'
       : st.configured ? 'Signed in details are saved, but the daemon is not connected right now.'
       : 'No Soulseek account is set up yet.'
   }
@@ -27345,9 +27345,15 @@ function _paintSlskShareList() {
 // Every paint of this block starts from a fresh read. It used to be painted
 // once at boot, so the sentence naming his shared folder could describe a
 // folder he removed weeks ago.
-async function _repaintSlskShare() {
+// `force` is for the moments where the stored truth really did change under us
+// — an Apply, or the panel opening fresh. Everywhere else a repaint must leave
+// a tick he has changed but not yet applied exactly where he put it: the switch
+// repainting this block was silently undoing his ticks before he ever reached
+// the Apply button.
+async function _repaintSlskShare(force) {
   const list = document.getElementById('slsk-share-list')
   if (!list || !window.api || typeof window.api.slskShareFoldersGet !== 'function') return
+  if (!force && _slskShareDirty()) return
   const r = await window.api.slskShareFoldersGet().catch(() => null)
   if (!r || !r.ok) {
     list.innerHTML = '<div class="mcs-set-hint">Could not read which folders are shared.</div>'
@@ -27395,7 +27401,9 @@ async function _slskShareApply() {
   } else {
     showSnackbar(_slskShareCountText((r.dirs || []).length) + '.')
   }
-  await _repaintSlskShare()
+  // Apply is the one moment the stored truth genuinely changed, so this repaint
+  // is allowed to overwrite the ticks.
+  await _repaintSlskShare(true)
 }
 
 async function _slskShareAdd() {
@@ -27632,7 +27640,7 @@ async function _repaintSharingSettings() {
   _wireSoulseekSettings()
   await Promise.all([
     _repaintSlskEnabled(),
-    _repaintSlskShare(),
+    _repaintSlskShare(true),
     _repaintSlskUploadLimit(),
   ])
 }
@@ -29976,7 +29984,13 @@ function _renderSharingPanel() {
 }
 
 function _onSharingPanelKey(e) {
-  if (e.key === 'Escape') { e.preventDefault(); _closeSharingPanel() }
+  if (e.key !== 'Escape') return
+  // The panel holds number boxes now. Escape inside one of them belongs to the
+  // box — closing the whole panel mid-edit loses what he was typing.
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
+  e.preventDefault()
+  _closeSharingPanel()
 }
 
 function _closeSharingPanel() {
@@ -29998,6 +30012,9 @@ function _openSharingPanel() {
   // would sit exactly underneath this one, visible through nothing and still
   // scrolling. One slot, one panel.
   closeQueuePanel()
+  // Settings sits in the same right-hand slot. Opening Sharing on top of it
+  // left a sliver of the drawer down the edge; close it rather than stack.
+  try { if (chatState && chatState.open) toggleChatSidebar() } catch (_) {}
   _sharingPanelOpen = true
   el.classList.add('open')
   document.addEventListener('keydown', _onSharingPanelKey)

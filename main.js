@@ -1660,7 +1660,7 @@ function _SLSK_OFF_DOWNLOAD() {
   return {
     ok: false,
     off: true,
-    error: 'Soulseek is off. Turn it back on in Settings → Soulseek to download.',
+    error: 'Soulseek is off. Turn it back on in Sharing, on the left, to download.',
   }
 }
 
@@ -1670,7 +1670,7 @@ function _SLSK_OFF_REASON(what) {
   return {
     ok: false,
     off: true,
-    reason: 'Soulseek is off. Turn it back on in Settings → Soulseek to ' +
+    reason: 'Soulseek is off. Turn it back on in Sharing, on the left, to ' +
       what + '.',
   }
 }
