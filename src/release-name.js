@@ -76,6 +76,35 @@
     try { m = new RegExp('(?:^|[^\\p{L}\\p{N}])' + body + '[\\s._]+' + SEQUEL + '(?![\\p{L}\\p{N}])', 'iu').exec(name) } catch (_) { return null }
     return m ? m[1].toLowerCase() : null
   }
+  // The season a release DECLARES, when it declares one unambiguously:
+  // "S03", "S03E07", "Season 3", "3rd Season". null when the name says nothing
+  // — silence is not evidence of a mismatch, and most first-season releases
+  // name no season at all.
+  //
+  // The sequel check below knows bare ordinals ("Show 2", "Show III") but knew
+  // nothing of these forms, so a season-three pack looked like a perfectly
+  // good answer to a season-one request — and its own "01" file then satisfied
+  // "episode 1". Reported as: played season 1 episode 1, got season 3
+  // episode 1.
+  function declaredSeason(releaseName) {
+    const name = String(releaseName || '')
+    // The ordinal form FIRST. "Show 3rd Season - 01" read the other way round
+    // gives 1 — that trailing number is the EPISODE, not the season, and
+    // reading it as the season is how a third-season pack passes for a
+    // first-season request.
+    let m = /\b(\d{1,2})(?:st|nd|rd|th)[\s._]+season\b/i.exec(name)
+    if (m) return Number(m[1])
+    m = /\bseason[\s._]*(\d{1,2})(?!\d)/i.exec(name)
+    if (m) return Number(m[1])
+    // S03 / S03E07, but never a letter-run like "DTS5" — a non-alphanumeric
+    // must precede the S.
+    try {
+      m = new RegExp('(?:^|[^\\p{L}\\p{N}])s(\\d{1,2})(?:e\\d{1,3})?(?![\\p{L}\\p{N}])', 'iu').exec(name)
+    } catch (_) { m = null }
+    if (m) return Number(m[1])
+    return null
+  }
+
   function plausible(req, releaseName) {
     const name = String(releaseName || '')
     if (!name.trim()) return true
@@ -93,6 +122,26 @@
     }
     const variants = _variants(req)
     const reqWords = new Set([].concat.apply([], variants.map(_words)))
+    // A release that declares a season answers only for THAT season.
+    if (!isFilm) {
+      const decl = declaredSeason(name)
+      if (decl != null) {
+        const reqSeason = req && req.season != null ? Number(req.season) : null
+        if (reqSeason != null && Number.isFinite(reqSeason)) {
+          // Television: the seasons live under one title, so the numbers must
+          // simply agree.
+          if (decl !== reqSeason) return false
+        } else if (decl >= 2) {
+          // Anime is catalogued one entry per season, so the request carries
+          // no season at all. A release announcing a SECOND or later season is
+          // therefore a different entry — unless the requested title says as
+          // much itself ("Show 2nd Season"). Season one is never a sequel
+          // marker, which is why only >= 2 counts.
+          const titleSaysSo = variants.some(function (v) { return declaredSeason(v) === decl })
+          if (!titleSaysSo) return false
+        }
+      }
+    }
     for (const v of variants) {
       const w = _words(v)
       if (!w.length) continue
@@ -124,5 +173,5 @@
     return { group: group(name), resolution: resolution(name), batch: isBatch(name), title: _s(name) }
   }
 
-  return { parse, group, resolution, isBatch, plausible }
+  return { parse, group, resolution, isBatch, plausible, declaredSeason }
 })
