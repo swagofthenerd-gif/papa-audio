@@ -67,7 +67,22 @@ test('an opening or ending clip is still never mistaken for the absolute episode
 test('the number actually reaches the picker from the renderer', () => {
   const R = read('src/renderer.js'), M = read('main.js'), T = read('torrent-stream.js'), D = read('src/debrid.js')
   assert.match(R, /function _absoluteEpisodeFor\(detail, state\)/, 'the renderer can compute it')
-  assert.match(R, /absoluteEpisode: typeof _absoluteEpisodeFor === 'function' \? _absoluteEpisodeFor\(vd, vs\) : null/, 'and puts it on the play, from the pinned play context')
+  // This assertion used to be a regex over the whole file, and the string it
+  // matched lived in the SUBTITLE payload (subMeta) — so it was green while
+  // the play request carried no absolute number at all, the exact bug it was
+  // written to prevent. Scoping it to _videoPlayResult is NOT enough either:
+  // subMeta is built inside that same function, so a per-function pin matches
+  // it too (proved by mutation — removing the real line left the test green).
+  //
+  // Pin the REQUEST OBJECT itself: the Object.assign that builds what goes to
+  // main must carry the absolute number next to the episode it belongs to.
+  assert.match(R, /result = Object\.assign\(\{\}, result, \{[\s\S]{0,600}?absoluteEpisode: typeof _absoluteEpisodeFor/,
+    'the play request must carry it')
+  // And both source-switch paths, since switching mid-episode has to resolve
+  // the same file the play would have.
+  const switches = R.match(/result = Object\.assign\(\{\}, next, \{[\s\S]{0,600}?absoluteEpisode: typeof _absoluteEpisodeFor/g) || []
+  assert.equal(switches.length, 2,
+    'both _playerPickSource and _autoSwitchSource must carry it; got ' + switches.length)
   assert.match(M, /absoluteEpisode: result\.absoluteEpisode \?\? null/, 'main hands it to the streamer')
   assert.match(M, /absoluteEpisode: num\(result && result\.absoluteEpisode\)/, 'and into the debrid want')
   assert.match(T, /const want = episode != null \? \{ season, episode, absoluteEpisode \} : null/)

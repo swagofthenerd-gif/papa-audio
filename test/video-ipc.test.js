@@ -1094,7 +1094,14 @@ test('video-switch-stream keeps mpv alive and reuses only the streamer', () => {
   // running mpv, and seeked absolutely back to the saved position.
   assert.match(body, /_startTorrentStream\(result, \{/)
   assert.match(body, /videoEngine\(\)\.load\(url\)/)
-  assert.match(body, /videoEngine\(\)\.seek\(resumeAt, 'absolute'\)/)
+  // The seek target is CLAMPED to inside the new file now. A different release
+  // of the same episode is routinely a different cut and shorter, and an
+  // absolute seek at or past the end makes mpv report end-of-file — which the
+  // renderer reads as "finished", marking the episode watched and jumping to
+  // the next one, on a switch the viewer had just asked for.
+  assert.match(body, /videoEngine\(\)\.seek\(target, 'absolute'\)/)
+  assert.match(body, /let target = resumeAt/, 'the clamp starts from the saved position')
+  assert.match(body, /SWITCH_SEEK_TAIL_S/, 'and keeps a margin inside the new file')
   assert.match(body, /_prioritiseStreamAtPlayhead\(\)/)
 })
 

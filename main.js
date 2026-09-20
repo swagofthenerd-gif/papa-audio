@@ -14836,6 +14836,14 @@ function _debridCacheAhead() {
 }
 
 function _videoTeardown() {
+  // A switch's flag must never outlive the switch. It was cleared in exactly
+  // three places — the switch's own failure, its own success, and video-stop —
+  // so every supersede path left it true: press Next while a switch is
+  // resolving and the flag stuck for the rest of the session. Its only reader
+  // suppresses 'ended' during a switch, so from then on every episode played
+  // to its last frame and simply stopped: no auto-advance, no "Finished",
+  // nothing marked watched, until the player was closed.
+  _videoSession.switching = false
   // The relay is deliberately NOT stopped here: it is what makes the next
   // press of Play instant, it holds no upstream connection while idle, and it
   // is replaced when a different magnet is played or when it ages out.
@@ -15190,6 +15198,9 @@ function _startTorrentStream(result, { current, fail, onReady, quiet }) {
 ipcMain.handle('video-play', async (_, { result }) => {
   if (DRY_RUN) return _dryRunRefusal('streaming this title')
   try {
+    // A new play supersedes any switch still resolving; its flag is not ours
+    // to inherit (see _videoTeardown).
+    _videoSession.switching = false
     if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
     _videoTeardown()
     _wireVideoEngine()
@@ -15661,14 +15672,27 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // prioritise and no pack list to read from a torrent that was never made.
     const loadInto = async (url, streamer) => {
       await videoEngine().load(url)
-      _videoSession.switching = false
+      // Deliberately NOT clearing `switching` here. A newer token owns the
+      // session now and sets its own flag; clearing it would clear theirs.
       if (!current()) return
-      // Absolute seek to the saved position. A source with a shorter file
-      // (a different cut) would reject the seek; that must not fail the
-      // swap, so it is caught.
+      // Absolute seek to the saved position. A different release of the same
+      // episode can be a different cut and shorter, so the target is clamped
+      // to inside the new file — an absolute seek at or past the end makes mpv
+      // report end-of-file, and with the switch already marked finished that
+      // was no longer suppressed: the app declared the episode watched and
+      // jumped to the next one, on a switch the viewer had just asked for.
       if (resumeAt > 0) {
-        try { await videoEngine().seek(resumeAt, 'absolute') } catch (_) {}
+        let target = resumeAt
+        try {
+          const dur = Number(videoEngine().state && videoEngine().state.duration) || 0
+          if (dur > 0 && target > dur - SWITCH_SEEK_TAIL_S) target = Math.max(0, dur - SWITCH_SEEK_TAIL_S)
+        } catch (_) {}
+        if (target < resumeAt - 1) say('This copy is a different cut — starting a little earlier.')
+        try { await videoEngine().seek(target, 'absolute') } catch (_) {}
       }
+      // Only now is the switch over. Everything above — the load, the seek and
+      // the end-of-file a clamped seek can provoke — belongs to it.
+      _videoSession.switching = false
       if (streamer) {
         // Tell the new swarm where the viewer actually is, so it fetches the
         // bytes around the playhead first instead of the file head.
@@ -16614,6 +16638,10 @@ function _wantOf(result) {
 // Enough for one parallel round of cheap look-ups plus building the relay,
 // on servers that refuse about two requests in five.
 const DEBRID_BUDGET_MS = 14000
+// How far inside a new file an absolute resume seek must land. A different
+// release of the same episode is routinely a different cut; seeking to the old
+// playhead can be past its end.
+const SWITCH_SEEK_TAIL_S = 5
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the
 // on-device view. Missing files self-heal out of the index.

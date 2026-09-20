@@ -4660,6 +4660,11 @@ async function _playerPickSource(key) {
     result = Object.assign({}, next, {
       season: pctx.detail.type === 'tv' ? pctx.state.season : null,
       episode: pctx.state.episode,
+      // The number the indexers matched the batch on has to travel with the
+      // request, or the picker inside the pack looks for "09" and hands back
+      // season one's ninth episode. Null for film and television, and for a
+      // first season, where the seasonal number already IS the absolute.
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
     })
   }
   showToast('Switching to ' + (next.source || 'another source') + '…')
@@ -4733,6 +4738,11 @@ async function _autoSwitchSource() {
     result = Object.assign({}, next, {
       season: pctx.detail.type === 'tv' ? pctx.state.season : null,
       episode: pctx.state.episode,
+      // The number the indexers matched the batch on has to travel with the
+      // request, or the picker inside the pack looks for "09" and hands back
+      // season one's ninth episode. Null for film and television, and for a
+      // first season, where the seasonal number already IS the absolute.
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
     })
   }
   showToast('Source stalled — switching to another…')
@@ -6196,6 +6206,11 @@ function _videoPlayResult(result, opts) {
     result = Object.assign({}, result, {
       season: vd.type === 'tv' ? vs.season : null,
       episode: vs.episode,
+      // The number the indexers matched the batch on has to travel with the
+      // request, or the picker inside the pack looks for "09" and hands back
+      // season one's ninth episode. Null for film and television, and for a
+      // first season, where the seasonal number already IS the absolute.
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(vd, vs) : null,
     })
   }
   // The two next-ranked sources ride along as hedge lanes: if the picked

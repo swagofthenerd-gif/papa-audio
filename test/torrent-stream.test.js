@@ -1019,8 +1019,13 @@ const { newStreamDir: _newStreamDir } = require('../torrent-stream')
     const main = _fsx.readFileSync(_pathx.join(__dirname, '..', 'main.js'), 'utf8')
     // The window covers the rewatch-cache save and the adopted-warm sweep
     // that now sit above the stop (2026-09-14).
+    // The window also has to clear the switch-flag reset that now opens the
+    // function (a switch's flag must not outlive the switch, or every later
+    // end-of-file is swallowed and auto-advance dies for the session).
     const teardown = main.slice(main.indexOf('function _videoTeardown()'),
-      main.indexOf('function _videoTeardown()') + 1600)
+      main.indexOf('function _videoTeardown()') + 2400)
+    assert.match(teardown, /_videoSession\.switching = false/,
+      'a superseded switch must not leave its flag set')
     assert.match(teardown, /streamer\.stop\(\)/)
     // The stop verb (the player's stop button), quitting, and mpv dying.
     assert.match(main, /case 'stop':[\s\S]{0,200}_videoTeardown\(\)/)

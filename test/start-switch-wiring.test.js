@@ -50,12 +50,17 @@ test('the switch takes the next untried source and remembers it; a start failure
 test("main drops the old stream's end-of-file while a switch is in flight", () => {
   assert.match(M, /if \(_videoSession\.switching\) \{ console\.log\('\[papa-video\] end of the old stream during a switch, ignored'\); return \}/)
   assert.match(M, /_videoSession\.switching = true\n\s+const fail = e => \{ _videoSession\.switching = false;/)
-  // The switch now resolves debrid before the swarm, so the load is shared by
-  // both paths in one async helper instead of being written inline in the
-  // torrent callback. What must not change is WHEN the flag clears: the moment
-  // the new source is loaded, so a late end-of-file from the old stream is
-  // still ignored and the flag can never stay stuck.
-  assert.match(M, /await videoEngine\(\)\.load\(url\)\n\s+_videoSession\.switching = false/)
+  // The switch resolves debrid before the swarm, so the load is shared by both
+  // paths in one async helper rather than written inline in the torrent
+  // callback. WHEN the flag clears turned out to matter more than first
+  // thought: clearing it at the load left the resume SEEK unprotected, and a
+  // seek clamped to (or past) a shorter cut's end makes mpv report
+  // end-of-file — which the renderer reads as a finished episode. It now
+  // clears only after the seek has settled, so everything the switch causes
+  // stays suppressed.
+  assert.match(M, /await videoEngine\(\)\.seek\(target, 'absolute'\)[\s\S]{0,400}_videoSession\.switching = false/)
+  assert.doesNotMatch(M, /await videoEngine\(\)\.load\(url\)\n\s+_videoSession\.switching = false/,
+    'clearing it at the load is the bug')
   assert.match(M, /const loadInto = async \(url, streamer\) => \{/,
     'one load path, used by the debrid link and by the torrent alike')
   assert.match(M, /_videoSession\.token\+\+\n\s+_videoSession\.switching = false/)
