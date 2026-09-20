@@ -12829,39 +12829,64 @@ function _vSortChipsHtml(active) {
 
 // Re-render just the source rows for the current sort, rewiring the play
 // buttons. Leaves the header (and its chips) in place.
+// One set of listeners on the LIST, not four on every row.
+//
+// This list is rebuilt whenever the sort chips change, whenever the debrid
+// answer lands, and whenever "Show more" appends — and for anime, where six or
+// seven indexers answer, it can hold forty-odd rows. Binding per row meant
+// well over a hundred listener attachments on every one of those repaints,
+// each holding a closure over the row it was made for, and the rows they were
+// bound to were thrown away by the very next innerHTML. That is the lag.
+//
+// Delegation survives the rebuild: the markup already carries the index each
+// handler needs, so nothing has to be re-bound at all.
+function _bindSourceListOnce(listEl) {
+  if (!listEl || listEl.dataset.srcBound === '1') return
+  listEl.dataset.srcBound = '1'
+  const hit = function (ev, sel) {
+    const el = ev.target && ev.target.closest ? ev.target.closest(sel) : null
+    return el && listEl.contains(el) ? el : null
+  }
+  listEl.addEventListener('click', function (ev) {
+    // Download first: it sits inside the row and must not also start a play.
+    const dl = hit(ev, '.video-source-dl')
+    if (dl) {
+      ev.stopPropagation()
+      _downloadStream(_videoStreams[Number(dl.dataset.dlIdx)])
+      return
+    }
+    const play = hit(ev, '.video-source-play')
+    if (play) {
+      // A click in the sources list is a deliberate choice; the index tells a
+      // non-first pick (which can become a remembered preference, App #43)
+      // from the default first row.
+      const idx = Number(play.dataset.idx)
+      _videoPlayResult(_videoStreams[idx], { manual: true, index: idx })
+      return
+    }
+    // V053: the full release name is one click away — a click on the label
+    // toggles it between the trimmed and the whole name; a double-click copies
+    // it. The tooltip already carries it for hover.
+    const lbl = hit(ev, '.video-source-label')
+    if (lbl) lbl.classList.toggle('video-source-label-full')
+  })
+  listEl.addEventListener('dblclick', function (ev) {
+    const lbl = hit(ev, '.video-source-label')
+    if (!lbl) return
+    ev.preventDefault()
+    const row = lbl.closest('.video-source-row')
+    const name = (row && row.getAttribute('title')) || lbl.textContent || ''
+    if (!name) return
+    navigator.clipboard?.writeText(name).then(function () { showToast('Release name copied') }).catch(function () {})
+  })
+}
+
 function _renderVideoSourceRows(target, sort) {
   const listEl = target.querySelector('.video-source-list')
   if (!listEl) return
   const pairs = _vSortedStreams(_videoStreams, sort)
   listEl.innerHTML = pairs.map(function (p) { return _videoStreamRow(p.s, p.i) }).join('')
-  listEl.querySelectorAll('.video-source-play').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      const idx = Number(btn.dataset.idx)
-      // A click in the sources list is a deliberate choice; the index tells a
-      // non-first pick (which can become a remembered preference, App #43) from
-      // the default first row.
-      _videoPlayResult(_videoStreams[idx], { manual: true, index: idx })
-    })
-  })
-  listEl.querySelectorAll('.video-source-dl').forEach(function (btn) {
-    btn.addEventListener('click', function (ev) {
-      ev.stopPropagation()
-      _downloadStream(_videoStreams[Number(btn.dataset.dlIdx)])
-    })
-  })
-  // V053: the full release name is one click away — a click on the label
-  // toggles it between the trimmed and the whole name; a double-click copies
-  // it. The tooltip already carries it for hover.
-  listEl.querySelectorAll('.video-source-label').forEach(function (lbl) {
-    lbl.addEventListener('click', function () { lbl.classList.toggle('video-source-label-full') })
-    lbl.addEventListener('dblclick', function (ev) {
-      ev.preventDefault()
-      const row = lbl.closest('.video-source-row')
-      const name = (row && row.getAttribute('title')) || lbl.textContent || ''
-      if (!name) return
-      navigator.clipboard?.writeText(name).then(function () { showToast('Release name copied') }).catch(function () {})
-    })
-  })
+  _bindSourceListOnce(listEl)
   // Reflect what is actually playing (including after an auto-switch) on the
   // freshly-rendered rows.
   _syncSourcesHighlight()

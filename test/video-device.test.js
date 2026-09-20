@@ -151,10 +151,18 @@ test('every torrent source row carries its own Download, keyed so two qualities 
   const row = RENDERER.slice(RENDERER.indexOf('function _videoStreamRow('), RENDERER.indexOf('// ── Folder management'))
   assert.ok(/s\.kind === 'torrent' && s\.magnet/.test(row), 'a direct-HTTP row gets no dead button')
   assert.ok(/class="video-source-dl" data-dl-idx="' \+ i \+ '"/.test(row))
-  const bind = RENDERER.slice(RENDERER.indexOf('function _renderVideoSourceRows('), RENDERER.indexOf('function _wireVideoSortChips'))
-  assert.ok(/video-source-dl'\)\.forEach/.test(bind), 'bound on every repaint, so a re-sort keeps them live')
-  assert.ok(/_downloadStream\(_videoStreams\[Number\(btn\.dataset\.dlIdx\)\]\)/.test(bind))
+  // The wiring is DELEGATED now — one listener on the list instead of four on
+  // every row. Binding per row meant well over a hundred attachments on each
+  // repaint (the list re-renders on a re-sort, when the debrid answer lands,
+  // and on "Show more", and anime fills it with forty-odd rows). Delegation
+  // survives the rebuild outright, so the buttons are live always rather than
+  // live-again-after-rebinding.
+  const bind = RENDERER.slice(RENDERER.indexOf('function _bindSourceListOnce('), RENDERER.indexOf('function _wireVideoSortChips'))
+  assert.ok(/listEl\.addEventListener\('click'/.test(bind), 'one listener on the list')
+  assert.ok(/hit\(ev, '\.video-source-dl'\)/.test(bind), 'and the download button is matched inside it')
+  assert.ok(/_downloadStream\(_videoStreams\[Number\(dl\.dataset\.dlIdx\)\]\)/.test(bind))
   assert.ok(/ev\.stopPropagation\(\)/.test(bind), 'downloading must not also start playing')
+  assert.ok(/dataset\.srcBound === '1'/.test(bind), 'and it is bound once, not once per repaint')
   const fn = RENDERER.slice(RENDERER.indexOf('function _downloadStream('), RENDERER.indexOf('function _deviceCardHtml'))
   assert.ok(/\+ '\|' \+ _sourceKey\(pick\)/.test(fn), 'the download id carries the source, not just the episode')
 })

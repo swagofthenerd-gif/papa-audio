@@ -26,11 +26,13 @@ test('the threshold is five minutes of real playback', () => {
 })
 
 test('a sources-panel pick is flagged manual with its row index', () => {
-  // The play-click wiring moved into _renderVideoSourceRows so it can be
-  // rebound whenever the sort chips re-render the rows; the index still points
-  // into the ranked _videoStreams, so a manual pick is unchanged.
-  const rows = fn('_renderVideoSourceRows')
+  // The play-click wiring is delegated to the list container now, so it no
+  // longer has to be rebound when the sort chips re-render the rows — but the
+  // index still points into the ranked _videoStreams, so a manual pick is
+  // unchanged.
+  const rows = fn('_bindSourceListOnce')
   assert.match(rows, /_videoPlayResult\(_videoStreams\[idx\], \{ manual: true, index: idx \}\)/)
+  assert.match(rows, /const idx = Number\(play\.dataset\.idx\)/, 'read off the row that was clicked')
 })
 
 test('only a manual non-first pick becomes a candidate preference', () => {
