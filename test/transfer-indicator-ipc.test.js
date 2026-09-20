@@ -159,3 +159,62 @@ test('clicking Sharing opens the panel instead of navigating', () => {
   assert.ok(branch.indexOf('return') < branch.indexOf("navigate(el.dataset.page)"),
     'and returns before the navigate fallback')
 })
+
+// ── The sharing panel ────────────────────────────────────────────────────────
+
+test('the panel is a slide-over beside the queue panel', () => {
+  assert.match(HTML, /<div class="queue-panel sharing-panel" id="sharing-panel"/,
+    'it reuses the queue panel shell')
+  assert.match(HTML, /id="sharing-list"/, 'a list of rows')
+  assert.match(HTML, /id="sharing-today"/, 'and the day line under it')
+  assert.ok(HTML.indexOf('id="sharing-panel"') > HTML.indexOf('id="queue-panel"'),
+    'it lives next to the queue panel')
+})
+
+test('the rows come from the pure model and the day line from todayLine', () => {
+  const start = RENDERER.indexOf('function _renderSharingPanel')
+  const body = RENDERER.slice(start, RENDERER.indexOf('function _onSharingPanelKey'))
+  assert.match(body, /PapaTransferIndicator\.sharingRows\(s\.rows \|\| \[\]\)/)
+  assert.match(body, /today\.textContent = window\.PapaTransferIndicator\.todayLine\(stats\)/,
+    'the day line is text, and it is the model\'s sentence')
+  assert.match(body, /Nobody is taking anything right now/, 'the empty state is never blank')
+})
+
+test('every peer-controlled string in a row is escaped', () => {
+  const start = RENDERER.indexOf('function _sharingRowHtml')
+  const body = RENDERER.slice(start, RENDERER.indexOf('function _renderSharingPanel'))
+  for (const field of ['r.username', 'r.file', 'r.folder']) {
+    assert.ok(body.includes('esc(' + field + ')'), field + ' goes through esc')
+  }
+  // The only unescaped interpolation is the clamped percentage, a number.
+  const raw = body.match(/\+ (?!esc\()(?!'|\()[\w.]+ \+/g) || []
+  assert.deepStrictEqual(raw.filter(x => !/pct|moving|speed/.test(x)), [],
+    'nothing but numbers reaches the markup unescaped: ' + raw.join(' '))
+})
+
+test('a peer name opens their library', () => {
+  const start = RENDERER.indexOf('function _renderSharingPanel')
+  const body = RENDERER.slice(start, RENDERER.indexOf('function _onSharingPanelKey'))
+  assert.match(body, /showSlskUserExplorer\(b\.dataset\.peer\)/,
+    'the peer button routes to the explorer')
+})
+
+test('the open-panel refresh is one 10 s timer, cleared on close', () => {
+  assert.match(RENDERER, /const SHARING_PANEL_REFRESH_MS = 10000/)
+  const timers = RENDERER.match(/, SHARING_PANEL_REFRESH_MS\)/g) || []
+  assert.equal(timers.length, 1, 'exactly one panel timer, got ' + timers.length)
+  const close = RENDERER.slice(RENDERER.indexOf('function _closeSharingPanel'),
+    RENDERER.indexOf('function _openSharingPanel'))
+  assert.match(close, /clearInterval\(_sharingPanelTimer\); _sharingPanelTimer = null/,
+    'closing stops it')
+  assert.match(close, /removeEventListener\('keydown', _onSharingPanelKey\)/,
+    'and takes its key handler with it')
+})
+
+test('Escape closes the panel', () => {
+  const start = RENDERER.indexOf('function _onSharingPanelKey')
+  const body = RENDERER.slice(start, start + 200)
+  assert.match(body, /e\.key === 'Escape'[\s\S]*_closeSharingPanel\(\)/)
+  assert.match(RENDERER, /addEventListener\('keydown', _onSharingPanelKey\)/,
+    'and the handler is only bound while it is open')
+})

@@ -970,6 +970,21 @@
   <div class="queue-list" id="queue-list"></div>
 </div>
 
+<!-- Sharing panel — the outgoing half of the transfer indicator, opened from
+     the Sharing row in the sidebar. Same slide-over shell as the queue panel
+     (.queue-panel gives it the frame and the open/closed rule); the rows and
+     the "today" line underneath are its own. -->
+<div class="queue-panel sharing-panel" id="sharing-panel" role="region" aria-label="Sharing">
+  <div class="queue-header">
+    <span class="queue-title">Sharing</span>
+    <button class="queue-close-btn" id="sharing-close-btn" title="Close (Esc)" aria-label="Close">
+      <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+    </button>
+  </div>
+  <div class="queue-list sharing-list" id="sharing-list"></div>
+  <div class="sharing-today" id="sharing-today"></div>
+</div>
+
 <!-- Now Playing fullscreen modal.
 
      Rebuilt as four layers (see src/styles.css "NOW PLAYING (fullscreen)"):

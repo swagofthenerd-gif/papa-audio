@@ -29355,10 +29355,14 @@ function _paintSharingPill() {
     : pill.text.replace(' today', '') + ' files shared today')
 }
 
-async function _refreshSharingStats() {
+// `fresh` is the open panel asking for a real poll: it is showing progress bars
+// and somebody is watching them move. The sidebar never asks for one.
+async function _refreshSharingStats(fresh) {
   if (!_appVisible) return
   if (!window.api || !window.api.slskUploadStats) return
-  const s = await window.api.slskUploadStats({ cachedOk: true })
+  const s = await (fresh
+    ? window.api.slskUploadStats({})
+    : window.api.slskUploadStats({ cachedOk: true }))
     .catch(function () { return null })
   if (!s || !s.ok) return
   _sharingStats = s
@@ -29378,6 +29382,91 @@ function retuneSharingPoll() {
   if (_sharingPollTimer) return
   _sharingPollTimer = setInterval(function () { _refreshSharingStats() }, SHARING_POLL_MS)
   _refreshSharingStats()
+}
+
+// ── Sharing panel ────────────────────────────────────────────────────────────
+// The slide-over behind the Sharing row: a line per upload — who, what, how far,
+// how fast — and the day's tally underneath. It borrows the queue panel's shell
+// and, while open, refreshes every 10 s with a real poll so the progress bars
+// actually move. That timer dies with the panel.
+//
+// Every string here comes from a peer: the username and the file path are
+// whatever the other end sent. All of it goes through esc().
+const SHARING_PANEL_REFRESH_MS = 10000
+let _sharingPanelTimer = null
+
+function _sharingRowHtml(r) {
+  const pct = Math.max(0, Math.min(100, Number(r.pct) || 0))
+  const moving = window.PapaTransferIndicator
+    && (window.PapaTransferIndicator.isMoving(r.state)
+      || window.PapaTransferIndicator.isWaiting(r.state))
+  const speed = moving && Number(r.speed) > 0 ? _fmtSpeed(Number(r.speed)) : ''
+  return '<div class="sharing-row' + (moving ? '' : ' is-done') + '">'
+    + '<button class="sharing-peer" data-peer="' + esc(r.username) + '" '
+    + 'title="Browse ' + esc(r.username) + '’s library">' + esc(r.username) + '</button>'
+    + '<span class="sharing-speed">' + esc(speed || Math.round(pct) + '%') + '</span>'
+    + '<div class="sharing-file">' + esc(r.file) + '</div>'
+    + (r.folder ? '<div class="sharing-folder">' + esc(r.folder) + '</div>' : '')
+    + '<div class="sharing-bar"><div class="sharing-bar-fill" style="width:' + pct + '%"></div></div>'
+    + '</div>'
+}
+
+function _renderSharingPanel() {
+  const list = document.getElementById('sharing-list')
+  const today = document.getElementById('sharing-today')
+  if (!list || !today || !window.PapaTransferIndicator) return
+  const s = _sharingStats || {}
+  const stats = {
+    filesToday: s.filesUploadedToday,
+    bytesToday: s.totalUploadedToday,
+    distinctPeersToday: s.distinctPeersToday,
+  }
+  const rows = window.PapaTransferIndicator.sharingRows(s.rows || [])
+  // Never a blank panel: with nobody pulling, the day's tally is the answer.
+  list.innerHTML = rows.length
+    ? rows.map(_sharingRowHtml).join('')
+    : '<div class="sharing-empty">Nobody is taking anything right now.</div>'
+  today.textContent = window.PapaTransferIndicator.todayLine(stats)
+  list.querySelectorAll('.sharing-peer').forEach(function (b) {
+    b.addEventListener('click', function () {
+      _closeSharingPanel()
+      showSlskUserExplorer(b.dataset.peer)
+    })
+  })
+}
+
+function _onSharingPanelKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); _closeSharingPanel() }
+}
+
+function _closeSharingPanel() {
+  const el = document.getElementById('sharing-panel')
+  if (el) el.classList.remove('open')
+  _sharingPanelOpen = false
+  // The faster poll exists only for the open panel.
+  if (_sharingPanelTimer) { clearInterval(_sharingPanelTimer); _sharingPanelTimer = null }
+  document.removeEventListener('keydown', _onSharingPanelKey)
+  _unregisterNavDismiss(_closeSharingPanel)
+}
+
+function _openSharingPanel() {
+  const el = document.getElementById('sharing-panel')
+  if (!el) return
+  // A second click on the sidebar row closes it again, like the queue button.
+  if (_sharingPanelOpen) { _closeSharingPanel(); return }
+  _sharingPanelOpen = true
+  el.classList.add('open')
+  document.addEventListener('keydown', _onSharingPanelKey)
+  // Navigating away must not leave it floating over the next page.
+  _registerNavDismiss(_closeSharingPanel)
+  // Paint from what the sidebar already knows, then replace it with a fresh
+  // poll, so the panel is never blank while the request is in flight.
+  _renderSharingPanel()
+  _refreshSharingStats(true)
+  _sharingPanelTimer = setInterval(function () {
+    if (!_sharingPanelOpen) return
+    _refreshSharingStats(true)
+  }, SHARING_PANEL_REFRESH_MS)
 }
 
 // ── Downloads context menu ───────────────────────────────────────────────────
@@ -32864,6 +32953,8 @@ function setupListeners() {
   // The sidebar's outgoing pill. Starts the 60 s cached refresh (and paints
   // once immediately) so the Sharing row is right from the first frame.
   retuneSharingPoll()
+  document.getElementById('sharing-close-btn')
+    ?.addEventListener('click', function () { _closeSharingPanel() })
 
   // Sidebar nav
   document.querySelectorAll('.nav-item').forEach(el => {

@@ -6703,6 +6703,47 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 /* Download badge in sidebar */
 .nav-dl-badge { position:absolute;top:6px;right:8px;min-width:16px;height:16px;padding:0 4px;background:var(--accent);color:#000;border-radius:8px;font-size:10px;font-weight:700;display:none;align-items:center;justify-content:center;line-height:1 }
 
+/* Sharing panel — who is taking what, right now.
+   The shell is the queue panel's; these are the rows. Everything in them is
+   peer-controlled text, so the layout has to survive a very long file name:
+   hence the ellipsis on the name and the fixed-width speed column. */
+.sharing-list { padding:6px 8px }
+.sharing-row {
+  display:grid; grid-template-columns:1fr auto;
+  gap:2px 10px; padding:8px 8px 9px;
+  border-radius:var(--r-sm);
+}
+.sharing-row + .sharing-row { border-top:1px solid var(--glass-border) }
+.sharing-peer {
+  background:none; border:none; padding:0; cursor:pointer;
+  font-size:12px; font-weight:700; color:var(--accent);
+  text-align:left; justify-self:start;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;
+}
+.sharing-peer:hover { text-decoration:underline }
+.sharing-speed { font-size:11px; color:var(--text3); font-variant-numeric:tabular-nums }
+.sharing-file {
+  grid-column:1 / -1; font-size:12px; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.sharing-folder {
+  grid-column:1 / -1; font-size:10px; color:var(--text3);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.sharing-bar {
+  grid-column:1 / -1; height:3px; margin-top:5px;
+  background:var(--glass); border-radius:2px; overflow:hidden;
+}
+.sharing-bar-fill { height:100%; background:var(--accent); border-radius:2px }
+.sharing-row.is-done .sharing-bar-fill { background:var(--text3) }
+.sharing-empty { padding:18px 12px; font-size:12px; color:var(--text3); line-height:1.6 }
+.sharing-today {
+  flex-shrink:0; padding:10px 14px 12px;
+  border-top:1px solid var(--glass-border);
+  font-size:11px; color:var(--text2);
+}
+body.theme-light .sharing-bar { background:rgba(0,0,0,.08) }
+
 /* Sidebar transfer pills — the live "what is moving" counts.
    Downloads wear the app accent, sharing wears neutral ink. The arrow and the
    number carry the whole meaning, so nothing here depends on telling two
