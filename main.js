@@ -143,6 +143,16 @@ const IPC_TIMEOUT_OVERRIDES = {
   'slsk-set-download-dir': 0,
   // Restarts slskd; not a per-request deadline (roadmap 137).
   'slsk-share-mode-set': 0,
+  // The folder list's Apply: a full stop/start plus a share rescan, which is
+  // minutes on a large library.
+  'slsk-share-folders-set': 0,
+  // Opens the native folder chooser, so it waits on a person.
+  'slsk-share-folder-pick': 0,
+  // Turning Soulseek on after a launch spent off is a normal cold start, and
+  // slskd rebuilds its share index before it answers — measured at minutes.
+  'slsk-enabled-set': 0,
+  // Rewrites slskd.yml; the daemon picks the new numbers up on its own.
+  'slsk-upload-limit-set': 0,
   // Opens a file picker, so it waits on the user, not on the machine.
   'video-sub-open': 0,
   'save-lyrics': 0,
@@ -1420,16 +1430,144 @@ function _mintSlskdApiCreds() {
 }
 
 const slskShare = _lazyNs(() => require('./src/slsk-share'))
+
+// ── What is shared: the ticked folder list ───────────────────────────────────
+// slskShareMode was a three-way dropdown that decided FOR you which folder went
+// out. It is read exactly once more — here, by the migration — and is never
+// written again, so an older build you roll back to still finds it.
+//
+// THE MIGRATION MUST NOT CHANGE WHAT ANYBODY SHARES. Every row of
+// slskShare.fromLegacyMode reproduces what the old shareDirs() returned for the
+// same inputs, so the shares block this writes after the upgrade is the block
+// already on disk — which is also why the upgrade costs no rescan.
+// test/slsk-share-migration.test.js writes the YAML both ways and compares the
+// bytes for all five legacy values.
+function _slskShareSelection() {
+  const stored = store.get('slskShareFolders', null)
+  if (Array.isArray(stored)) return stored
+  const migrated = slskShare.fromLegacyMode(
+    store.get('slskShareMode', slskShare.DEFAULT),
+    store.get('musicFolders', []),
+    _downloadDir())
+  store.set('slskShareFolders', migrated)
+  console.log('[papa] migrated the Soulseek share setting from ' +
+    JSON.stringify(store.get('slskShareMode', slskShare.DEFAULT)) +
+    ' to ' + JSON.stringify(migrated) + ' — the same folders, written down')
+  return migrated
+}
+
+// A folder that is not on this machine is never handed to the daemon. The old
+// code passed a dead path straight through; slskd shared nothing from it either
+// way, so what goes out is unchanged — but the file now says what is true, and
+// the dropped folder is named in the log rather than disappearing quietly.
+// Its row in Settings says "can't find this folder any more".
+function _slskShareDirs(musicFolders, downloadDir) {
+  const wanted = slskShare.shareDirs(_slskShareSelection(), musicFolders, downloadDir)
+  const out = []
+  for (const dir of wanted) {
+    let there = false
+    try { there = fs.existsSync(dir) } catch (_) { there = false }
+    if (there) out.push(dir)
+    else console.warn('[papa] not sharing ' + dir + ': that folder is not there any more')
+  }
+  return out
+}
+
+// ── How hard other people may pull on this connection ────────────────────────
+// slskd's own defaults are ten upload slots and no speed limit at all
+// (--upload-slots 10, --upload-speed-limit 2147483647), and the app never wrote
+// a transfers block, so ten strangers could flatten a home upstream — which
+// slows his DOWNLOADS too, because the acknowledgements they depend on cannot
+// get out. Four slots ships as the default: strictly gentler than today, and
+// each of the four gets a faster turn. The speed cap ships OFF, because a wrong
+// number there makes peers give up on him, which costs him the standing he
+// needs to download.
+//
+// One unit everywhere: MB/s, 1 MB = 1,000,000 bytes. slskd's speed_limit is in
+// kibibytes per second, so the conversion happens here, at the edge, once.
+const SLSK_UPLOAD_SLOTS_MIN = 1
+const SLSK_UPLOAD_SLOTS_MAX = 20
+const SLSK_UPLOAD_SLOTS_DEFAULT = 4
+
+// A number the caller actually gave, or nothing. `null`, `''` and `undefined`
+// all mean "not given" — Number(null) is 0, and taking that at face value would
+// clamp his slots to one, or read an empty speed box as a cap he never typed.
+function _slskNumberOrNull(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function _slskUploadLimit(patch) {
+  const stored = store.get('slskUploadLimit', null) || {}
+  const p = patch && typeof patch === 'object' ? patch : {}
+
+  let slots = _slskNumberOrNull(p.slots)
+  if (slots === null) slots = _slskNumberOrNull(stored.slots)
+  if (slots === null) slots = SLSK_UPLOAD_SLOTS_DEFAULT
+  slots = Math.round(slots)
+  if (slots < SLSK_UPLOAD_SLOTS_MIN) slots = SLSK_UPLOAD_SLOTS_MIN
+  if (slots > SLSK_UPLOAD_SLOTS_MAX) slots = SLSK_UPLOAD_SLOTS_MAX
+
+  // Zero or below is not a cap of nothing. A cap of zero would mean nobody can
+  // take anything — an off switch he never asked for. It means no cap.
+  let mbps = _slskNumberOrNull(p.mbps)
+  if (mbps === null) mbps = _slskNumberOrNull(stored.mbps)
+  if (mbps === null || mbps <= 0) mbps = 0
+  return { slots, mbps }
+}
+
+// MB/s -> slskd's kibibytes/second. 0 means no cap and the key is omitted.
+function _slskSpeedLimitKiB(mbps) {
+  const n = Number(mbps)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.max(1, Math.round(n * 1000000 / 1024))
+}
+
+function _slskUploadLimitText({ slots, mbps }) {
+  const who = slots === 1 ? '1 person at a time' : slots + ' people at a time'
+  const fast = mbps > 0 ? mbps.toFixed(1) + ' MB/s all together' : 'no speed limit'
+  return 'Right now: ' + who + ', ' + fast + '.'
+}
+
+// ── Is Soulseek switched on? ─────────────────────────────────────────────────
+// A deliberate off has to survive the 60-second health supervisor, every other
+// restart path and a relaunch, or the app turns itself back on behind him. This
+// is the single flag all of them read.
+//
+// A timed off that ran out while the app was closed comes back on here, on the
+// first read, before anything can consult it — that is the whole of the timer's
+// persistence. slskdEnabled absent means true, i.e. exactly today's behaviour.
+function _slskEnabled() {
+  const until = store.get('slskdOffUntil', null)
+  if (until && Date.now() >= Number(until)) {
+    store.set('slskdOffUntil', null)
+    store.set('slskdEnabled', true)
+    return true
+  }
+  return store.get('slskdEnabled', true) !== false
+}
+
+function _slskOffUntil() {
+  if (_slskEnabled()) return null
+  const until = store.get('slskdOffUntil', null)
+  return until ? Number(until) : null
+}
+
 function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {}) {
   if (!downloadDir) downloadDir = _downloadDir()
   fs.mkdirSync(SLSKD_DIR, { recursive: true })
   fs.mkdirSync(path.join(SLSKD_DIR, 'incomplete'), { recursive: true })
   fs.mkdirSync(downloadDir, { recursive: true })
   const apiCreds = _mintSlskdApiCreds()
-  // Roadmap 137: what is shared is a stated setting (src/slsk-share.js), not
-  // a silent "first music folder". Default unchanged; scope and off exist.
+  // What is shared is the folders he ticked (src/slsk-share.js), not a silent
+  // "first music folder" and not a three-way mode that chose for him. The
+  // migration behind _slskShareSelection keeps today's setting meaning exactly
+  // what it meant.
   const musicFolders = store.get('musicFolders', [])
-  const shareDirs = slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)
+  const shareDirs = _slskShareDirs(musicFolders, downloadDir)
+  const uploadLimit = _slskUploadLimit()
+  const speedLimitKiB = _slskSpeedLimitKiB(uploadLimit.mbps)
   const yml = [
     `soulseek:`,
     `  username: ${JSON.stringify(username)}`,
@@ -1462,6 +1600,17 @@ function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {
     `    - \\.log$`,
     `    - \\.cue$`,
     `    - \\.txt$`,
+    // slskd 0.26 reads these live: it watches its own config file
+    // (flags.no_config_watch defaults to false), and rewriting slots and
+    // speed_limit while it was running changed GET /api/v0/options within
+    // seconds with no restart — measured against the installed binary, not
+    // assumed. That is why slsk-upload-limit-set answers 'live'.
+    `transfers:`,
+    `  upload:`,
+    `    slots: ${uploadLimit.slots}`,
+    // Omitted entirely when there is no cap, so the daemon keeps its own
+    // "unlimited" rather than being handed a number that means something else.
+    ...(speedLimitKiB ? [`    speed_limit: ${speedLimitKiB}`] : []),
     `rooms:`,
     `  - "Lossless Music"`,
     `  - "FLAC"`,
@@ -1891,6 +2040,12 @@ function stopSlskdAndWait() {
 // instead and leave the failure count alone so the next cycle tries again rather
 // than believing a restart that never happened.
 async function slskdHealthCheck() {
+  // Restart path 2 of 7. This is the one that would otherwise resurrect a
+  // deliberately-off daemon within three minutes and log "slskd reconnected".
+  // No ping, no failure count, no status push, no restart — because none of
+  // those is true of a thing the user switched off. The 60 s interval has no
+  // stored handle and is never cleared, so the gate has to live in here.
+  if (!_slskEnabled()) return 'off'
   try {
     await slskdFetch('GET', '/session')
     _slskdFailures = 0
@@ -2095,7 +2250,10 @@ const slskdUpdater = new SlskdUpdater({
     try { return await slskdFetch('GET', '/application') } catch (_) { return null }
   },
   stopFn: async () => { stopSlskd() },
-  startFn: async () => { await startSlskd() },
+  // Restart path 3 of 7. An update that finishes while Soulseek is off leaves
+  // the new binary in place and the daemon stopped, rather than starting one he
+  // switched off.
+  startFn: async () => { if (_slskEnabled()) await startSlskd() },
 })
 
 let _slskdUpdating = false
@@ -2128,6 +2286,9 @@ async function _slskdRunUpdate({ force = false } = {}) {
 async function _slskdAutoCheck({ force = false } = {}) {
   const now = Date.now()
   if (store.get('slskdAutoUpdate', true) === false) return { ok: true, skipped: 'disabled' }
+  // Off means off: no version probe either. Skipped, not failed — a deliberate
+  // off is not an outage and must never be reported as one.
+  if (!_slskEnabled()) return { ok: true, skipped: 'soulseek-off' }
   if (!fs.existsSync(SLSKD_BIN)) return { ok: true, skipped: 'not-installed' }
   const {
     shouldAutoCheck: _slskdShouldAutoCheck,
@@ -2562,8 +2723,14 @@ app.whenReady().then(() => {
   }, 20000).unref?.()
   // Item 56: a startup failure used to be discarded entirely, so a daemon that
   // never came up looked identical to one that was never installed.
-  if (fs.existsSync(SLSKD_BIN)) {
+  // Restart path 1 of 7. Off survives a relaunch at zero cost: the daemon is
+  // not started at all. _slskEnabled() also clears a timed off that ran out
+  // while the app was closed, so "back on in an hour" keeps its promise across
+  // a quit.
+  if (_slskEnabled() && fs.existsSync(SLSKD_BIN)) {
     startSlskd().catch(e => console.error('[papa] slskd failed to start at launch:', String(e && e.message || e)))
+  } else if (!_slskEnabled()) {
+    console.log('[papa] Soulseek is switched off; not starting slskd')
   }
   // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive
   // failures. The decision lives in slskdHealthCheck so it can be run in a test
@@ -5521,6 +5688,13 @@ function papaRoots() {
   const roots = folders.slice()
   if (cfg.downloadDir) roots.push(cfg.downloadDir)
   for (const base of folders) roots.push(path.join(base, DOWNLOAD_SUBDIR))
+  // A hand-picked shared folder is a place this app legitimately reads from, so
+  // "show in folder" works on a file inside it. papaRoots() ONLY: not
+  // libRoots(), not libDeletableRoots(), not musicFolders. Sharing a folder
+  // makes it readable and revealable and grants no delete, no move, and no
+  // visibility to the LAN bridge.
+  const shared = store.get('slskShareFolders', null)
+  if (Array.isArray(shared)) for (const p of shared) roots.push(p)
   roots.push(path.join(SLSKD_DIR, 'incomplete'))
   roots.push(USER_DATA)
   return roots.filter(Boolean)
@@ -7880,7 +8054,21 @@ ipcMain.handle('discogs-album', async (_, { artist, album } = {}) => {
 ipcMain.handle('slsk-status', async () => {
   const installed = fs.existsSync(SLSKD_BIN)
   const cfg = store.get('slskConfig', {})
-  if (!installed) return { installed: false, running: false, connected: false, configured: false }
+  const enabled = _slskEnabled()
+  const offUntil = _slskOffUntil()
+  if (!installed) {
+    return { installed: false, running: false, connected: false, configured: false, enabled, offUntil }
+  }
+  // Switched off is not the same as broken, and nothing downstream should paint
+  // it red. Answered before the probe, because probing a daemon we deliberately
+  // disconnected is how a deliberate off becomes a reported outage.
+  if (!enabled) {
+    return {
+      installed: true, running: !!(slskdProc || slskdReady), connected: false,
+      enabled: false, offUntil, starting: false,
+      configured: !!(cfg.username && cfg.password),
+    }
+  }
   try {
     const data = await slskdFetch('GET', '/application')
     return {
@@ -7888,6 +8076,7 @@ ipcMain.handle('slsk-status', async () => {
       connected: data?.server?.isLoggedIn ?? false,
       configured: !!(cfg.username && cfg.password),
       username: data?.user?.username || cfg.username || '',
+      enabled: true, offUntil: null,
     }
   } catch (_) {
     return {
@@ -7896,6 +8085,7 @@ ipcMain.handle('slsk-status', async () => {
       // minutes to start here; the badge should say so rather than "offline".
       starting: slskdIsStarting(),
       configured: !!(cfg.username && cfg.password),
+      enabled: true, offUntil: null,
     }
   }
 })
@@ -7913,6 +8103,9 @@ ipcMain.handle('slsk-configure', async (_, { username, password }) => {
   const prev = store.get('slskConfig', {})
   store.set('slskConfig', { ...prev, username, password })
   writeSlskdConfig({ username, password, downloadDir: _downloadDir() })
+  // Restart path 4 of 7. Saving an account while Soulseek is off saves the
+  // account and starts nothing; it is there when he turns it back on.
+  if (!_slskEnabled()) return { ok: true, started: false, enabled: false }
   stopSlskd()
   await startSlskd()
   return { ok: true }
@@ -7926,6 +8119,12 @@ ipcMain.handle('slsk-setup', async () => {
     await downloadSlskd(text => safeSend('slsk-progress', { text }))
     const cfg = store.get('slskConfig', {})
     writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
+    // Restart path 5 of 7. Installing the daemon while Soulseek is off installs
+    // it and leaves it stopped.
+    if (!_slskEnabled()) {
+      safeSend('slsk-progress', { text: 'Installed. Soulseek is off, so it is not running.' })
+      return { ok: true, started: false, enabled: false }
+    }
     safeSend('slsk-progress', { text: 'Starting daemon…' })
     await startSlskd()
     return { ok: true }
@@ -8093,6 +8292,17 @@ function slskServeSearch(args = {}) {
 }
 
 async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, generation = 0 } = {}) {
+  // The eighth path. Not a restart, but it undoes an off just as effectively:
+  // this self-heal re-probes /application and re-authenticates whenever
+  // slskdReady is false, which is exactly the state a deliberate off leaves
+  // behind. Gated, and it throws the off-shaped error so the search box can say
+  // "Soulseek is off" with a button rather than "Soulseek is not connected".
+  if (!_slskEnabled()) {
+    const err = new Error('Soulseek is off')
+    err.code = 'SLSK_OFF'
+    err.slskOff = true
+    throw err
+  }
   // Reconnect if needed
   if (!slskdReady) {
     try {
@@ -9345,7 +9555,13 @@ function pruneDlDone() {
 
 let dlRestored = false
 function dlStart() {
+  // The saved queue is restored even while Soulseek is off, so the Downloads
+  // page can show him what is waiting rather than an empty list. What does not
+  // happen is the tick that dispatches them.
   if (!dlRestored) { dlRestored = true; dlRestore() }
+  // One shared gate rather than six edits: without it the logs fill with
+  // failures for a thing the user deliberately switched off.
+  if (!_slskEnabled()) return
   if (dlTimer) return
   dlTimer = setInterval(() => { dlTick() }, DL_TICK_MS)
   if (dlTimer.unref) dlTimer.unref()
@@ -9470,6 +9686,7 @@ async function slskUploadPollOnce() {
 }
 
 function slskUploadPollStart() {
+  if (!_slskEnabled()) return
   if (_uploadTimer) return
   _uploadTimer = setInterval(() => { slskUploadPollOnce() }, _uploadPollMs)
   if (_uploadTimer.unref) _uploadTimer.unref()
@@ -9646,6 +9863,7 @@ async function slskChatPollOnce() {
 }
 
 function slskChatPollStart() {
+  if (!_slskEnabled()) return
   if (_chatTimer) return
   _chatTimer = setInterval(() => { slskChatPollOnce().catch(() => {}) }, CHAT_POLL_MS)
   if (_chatTimer.unref) _chatTimer.unref()
@@ -10061,10 +10279,12 @@ ipcMain.handle('slsk-schedule-set', (_, patch) => {
     // now, not on the next tick.
     _lastScheduleBps = undefined
     _applyBandwidthSchedule(Date.now())
-    // slskd's speed cap is baked into slskd.yml at startup; there is no live
-    // reload, so a Soulseek-side change needs a restart to take hold. Say so
-    // rather than silently applying only half the schedule.
-    return { ok: true, schedule: nextSchedule, slskdNeedsRestart: true }
+    // This schedule throttles video downloads and nothing else. It has never
+    // written a single byte for Soulseek in either direction, so telling the
+    // user a Soulseek change needs a restart was a lie about work that was not
+    // happening. Soulseek has its own limit, in Settings → Soulseek, and that
+    // one the daemon reads live.
+    return { ok: true, schedule: nextSchedule, slskdNeedsRestart: false }
   } catch (e) {
     return { ok: false, error: e.message }
   }
@@ -10209,6 +10429,9 @@ function wishlistAlreadyHunted(normQuery) {
 // "Search now" button. Enqueued entries are removed from the wishlist store as
 // they land, so a crash mid-sweep loses no progress.
 async function slskWishlistSweep() {
+  // A sweep is a run of searches, and searching is one of the things an off
+  // switch turns off. Skipped, and said so — not an error and not a failure.
+  if (!_slskEnabled()) return { ok: true, skipped: 'soulseek-off', results: [] }
   if (slskWishlistSweeping) return { ok: false, error: 'A wishlist sweep is already running', results: [] }
   slskWishlistSweeping = true
   try {
@@ -10572,7 +10795,10 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   // slskd reads its download folder once, at startup. Writing the config and
   // stopping there meant the newly picked folder did nothing until the next
   // launch, while the UI reported the change as applied.
-  if (slskdProc || slskdReady) {
+  //
+  // Restart path 6 of 7: while Soulseek is off the new folder is written and
+  // nothing is started — it is in force the next time it comes on.
+  if (_slskEnabled() && (slskdProc || slskdReady)) {
     stopSlskd()
     try { await startSlskd() } catch (e) {
       console.error('[papa] slskd restart after folder change:', String(e && e.message || e))
@@ -10583,8 +10809,10 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   return { ok: true, downloadDir, restarted: false }
 })
 
-// Roadmap 137: read and change what is shared. A change rewrites the daemon
-// config and restarts slskd if it is running, exactly as a folder change does.
+// The old three-way dropdown. Kept working while the new folder list is being
+// built on top of it, and it now writes the new key as well as the old one, so
+// the two views of the same setting can never drift apart. It is deleted with
+// the markup that drives it.
 ipcMain.handle('slsk-share-mode-get', () => {
   const mode = slskShare.normalise(store.get('slskShareMode', slskShare.DEFAULT))
   const dirs = slskShare.shareDirs(mode, store.get('musicFolders', []), _downloadDir())
@@ -10594,10 +10822,12 @@ ipcMain.handle('slsk-share-mode-set', async (_, { mode }) => {
   if (DRY_RUN) return _dryRunRefusal('changing what is shared')
   const m = slskShare.normalise(mode)
   store.set('slskShareMode', m)
+  store.set('slskShareFolders',
+    slskShare.fromLegacyMode(m, store.get('musicFolders', []), _downloadDir()))
   const cfg = store.get('slskConfig', {})
   writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
   let restarted = false
-  if (slskdProc || slskdReady) {
+  if (_slskEnabled() && (slskdProc || slskdReady)) {
     stopSlskd()
     try { await startSlskd(); restarted = true } catch (e) {
       console.error('[papa] slskd restart after share change:', String(e && e.message || e))
@@ -10605,6 +10835,280 @@ ipcMain.handle('slsk-share-mode-set', async (_, { mode }) => {
   }
   const dirs = slskShare.shareDirs(m, store.get('musicFolders', []), _downloadDir())
   return { ok: true, mode: m, dirs, text: slskShare.describe(m, dirs), restarted }
+})
+
+// ── The folder list ──────────────────────────────────────────────────────────
+// Every row the list can show, built here and handed over whole: the music
+// folders, the download folder, and anything he picked by hand that is neither.
+// Deduplicated by resolved path, so /a and /a/ are one row.
+function _slskShareCandidates() {
+  const selection = _slskShareSelection()
+  const selected = Object.create(null)
+  for (const p of selection) {
+    const n = slskShare.normalisePath(p)
+    if (n) selected[n] = true
+  }
+  const coveredBy = Object.create(null)
+  for (const c of slskShare.collapse(selection).covered) coveredBy[c.path] = c.coveredBy
+
+  const rows = []
+  const seen = Object.create(null)
+  const add = (raw, source) => {
+    const p = slskShare.normalisePath(raw)
+    if (!p || seen[p]) return
+    seen[p] = true
+    let missing = false
+    try { missing = !fs.existsSync(p) } catch (_) { missing = true }
+    rows.push({
+      path: p,
+      label: path.basename(p) || p,
+      source,
+      selected: !!selected[p],
+      missing,
+      coveredBy: coveredBy[p] || null,
+    })
+  }
+  for (const f of store.get('musicFolders', [])) add(f, 'music')
+  add(_downloadDir(), 'download')
+  // A folder he picked by hand keeps its row even though nothing else in the
+  // app knows about it.
+  for (const p of selection) add(p, 'custom')
+  return rows
+}
+
+// What actually goes out: ticked, present, and with nested folders collapsed
+// into the parent that already covers them.
+function _slskShareLive() {
+  return _slskShareDirs(store.get('musicFolders', []), _downloadDir())
+}
+
+ipcMain.handle('slsk-share-folders-get', () => {
+  const had = Array.isArray(store.get('slskShareFolders', null))
+  const selected = _slskShareSelection()
+  return {
+    ok: true,
+    selected: selected.slice(),
+    candidates: _slskShareCandidates(),
+    text: slskShare.describe(_slskShareLive()),
+    migrated: !had,
+  }
+})
+
+ipcMain.handle('slsk-share-folders-set', async (_, { folders } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('changing what is shared')
+  const wanted = Array.isArray(folders) ? folders : []
+  // Stored as he ticked them, normalised and deduped but NOT collapsed and NOT
+  // filtered for existence: a folder that is temporarily unmounted keeps its
+  // tick and comes back on its own, and the row is what tells him it is gone.
+  const validated = []
+  const seen = Object.create(null)
+  for (const f of wanted) {
+    const p = slskShare.normalisePath(f)
+    if (!p || p.charAt(0) !== '/' || seen[p]) continue
+    seen[p] = true
+    validated.push(p)
+  }
+  store.set('slskShareFolders', validated)
+  const cfg = store.get('slskConfig', {})
+  writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
+  const dirs = _slskShareLive()
+  const text = slskShare.describe(dirs)
+
+  // Restart path 7 of 7. Changing what is shared while Soulseek is off saves
+  // the choice and applies it next time it comes on.
+  if (!_slskEnabled()) {
+    return { ok: true, folders: validated, dirs, text, restarted: false, enabled: false }
+  }
+  if (!(slskdProc || slskdReady)) {
+    return { ok: true, folders: validated, dirs, text, restarted: false }
+  }
+  stopSlskd()
+  try {
+    await startSlskd()
+  } catch (e) {
+    console.error('[papa] slskd restart after share change:', String(e && e.message || e))
+    // Saved is saved. Not a green tick: the daemon did not come back, and the
+    // health supervisor is what will try again.
+    return { ok: false, folders: validated, dirs, text, restarted: false, error: String(e && e.message || e) }
+  }
+  return { ok: true, folders: validated, dirs, text, restarted: true }
+})
+
+ipcMain.handle('slsk-share-folder-pick', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Choose a folder to share',
+  })
+  if (result.canceled || !result.filePaths.length) return { ok: false, cancelled: true }
+  const picked = result.filePaths[0]
+  // The cheap half of "know what you are about to share": the obviously wrong
+  // answers are refused before the folder can ever reach the list. Nothing is
+  // counted and nothing is written — this only opens a dialog and answers.
+  const refusal = slskShare.pickRefusal(picked, {
+    home: app.getPath('home'),
+    slskdDir: SLSKD_DIR,
+  })
+  if (refusal) return { ok: false, refused: true, reason: refusal.reason, error: refusal.error }
+  return { ok: true, path: slskShare.normalisePath(picked) }
+})
+
+// ── The off switch ───────────────────────────────────────────────────────────
+// Setting sharing to nothing is not this. That empties the share list and
+// leaves slskd running, signed in, downloading, answering searches and holding
+// the router port open. Off means the app stops using the network.
+function _slskPollersStart() {
+  try { dlStart() } catch (_) {}
+  try { slskUploadPollStart() } catch (_) {}
+  try { slskChatPollStart() } catch (_) {}
+  try { startPresenceWatch() } catch (_) {}
+}
+
+function _slskPollersStop() {
+  if (dlTimer) { clearInterval(dlTimer); dlTimer = null }
+  if (_uploadTimer) { clearInterval(_uploadTimer); _uploadTimer = null }
+  if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null }
+  if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null }
+}
+
+// Disconnect rather than kill, when we can. slskd's own DELETE /api/v0/server
+// signs out of the Soulseek network, drops every transfer and every peer
+// connection, and leaves the process alive with its share index still in
+// memory — so turning it back on in the same session costs about a second
+// instead of the three-minute share rebuild a cold start pays.
+//
+// Verified against the installed slskd 0.26.0.0: DELETE /api/v0/server answers
+// 204 and PUT /api/v0/server answers 200, both with the Content-Type header
+// slskdFetch already sends. If a future daemon drops them the catch below falls
+// back to a full stop, which reaches the identical visible state — the only
+// difference is that turning it back on takes the usual few minutes.
+//
+// The UPnP map at port 2234 is deliberately left in place while disconnected:
+// nothing is listening on it, and re-mapping is the slow part. It is unmapped
+// on a full stop and on quit, as today.
+async function _slskGoOff() {
+  let method = 'stopped'
+  if (slskdProc || slskdReady) {
+    try {
+      await slskdFetch('DELETE', '/server')
+      method = 'disconnected'
+    } catch (e) {
+      console.warn('[papa] slskd would not disconnect (' +
+        String(e && e.message || e) + '); stopping it instead')
+      stopSlskd()
+      method = 'stopped'
+    }
+  }
+  _slskPollersStop()
+  safeSend('slskd-status-change', { connected: false, restarting: false, off: true })
+  return method
+}
+
+async function _slskGoOn() {
+  let method = 'started'
+  let connected = false
+  if (slskdProc || slskdReady) {
+    try {
+      await slskdFetch('PUT', '/server')
+      // Signing back in is not instant. Ask once what actually happened rather
+      // than reporting "back on" and letting him find out it isn't.
+      const srv = await slskdFetch('GET', '/server')
+      connected = !!(srv && srv.isLoggedIn)
+      method = 'reconnected'
+    } catch (e) {
+      console.warn('[papa] slskd would not reconnect (' +
+        String(e && e.message || e) + '); starting it instead')
+      stopSlskd()
+      await startSlskd()
+      method = 'started'
+    }
+  } else {
+    await startSlskd()
+  }
+  _slskPollersStart()
+  // A cold start is minutes of share-indexing before it answers, so it is
+  // "starting", not "connected" — the existing amber badge, not a green tick
+  // that is not true yet.
+  safeSend('slskd-status-change', {
+    connected, restarting: false, off: false, starting: method === 'started',
+  })
+  return method
+}
+
+ipcMain.handle('slsk-enabled-get', () => {
+  return {
+    ok: true,
+    enabled: _slskEnabled(),
+    offUntil: _slskOffUntil(),
+    running: !!(slskdProc || slskdReady),
+    connected: !!slskdReady && _slskEnabled(),
+  }
+})
+
+// The one timed option is an hour, and it is a single setTimeout plus the
+// launch check inside _slskEnabled(). There is no ticking state to keep in sync.
+let _slskOffTimer = null
+
+ipcMain.handle('slsk-enabled-set', async (_, { enabled, forMinutes } = {}) => {
+  if (DRY_RUN) {
+    return _dryRunRefusal(enabled ? 'turning Soulseek on' : 'turning Soulseek off')
+  }
+  const want = enabled !== false
+  if (_slskOffTimer) { clearTimeout(_slskOffTimer); _slskOffTimer = null }
+
+  if (want) {
+    store.set('slskdEnabled', true)
+    store.set('slskdOffUntil', null)
+    let method = 'started'
+    let restarted = false
+    try {
+      method = await _slskGoOn()
+      restarted = method === 'started'
+    } catch (e) {
+      console.error('[papa] turning Soulseek on:', String(e && e.message || e))
+      return { ok: false, enabled: true, offUntil: null, method: 'started', restarted: false, error: String(e && e.message || e) }
+    }
+    return { ok: true, enabled: true, offUntil: null, method, restarted }
+  }
+
+  const mins = Number(forMinutes)
+  const offUntil = Number.isFinite(mins) && mins > 0 ? Date.now() + mins * 60000 : null
+  store.set('slskdEnabled', false)
+  store.set('slskdOffUntil', offUntil)
+  const method = await _slskGoOff()
+  if (offUntil) {
+    _slskOffTimer = setTimeout(() => {
+      _slskOffTimer = null
+      if (_slskEnabled()) _slskGoOn().catch(e =>
+        console.error('[papa] Soulseek did not come back on:', String(e && e.message || e)))
+    }, Math.max(0, offUntil - Date.now()))
+    _slskOffTimer.unref?.()
+  }
+  return { ok: true, enabled: false, offUntil, method, restarted: false }
+})
+
+// ── Go easy on my connection ─────────────────────────────────────────────────
+ipcMain.handle('slsk-upload-limit-get', () => {
+  const lim = _slskUploadLimit()
+  return { ok: true, slots: lim.slots, mbps: lim.mbps, text: _slskUploadLimitText(lim) }
+})
+
+ipcMain.handle('slsk-upload-limit-set', (_, patch) => {
+  if (DRY_RUN) return _dryRunRefusal('changing the Soulseek upload limit')
+  const lim = _slskUploadLimit(patch)
+  store.set('slskUploadLimit', lim)
+  const cfg = store.get('slskConfig', {})
+  writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
+  // 'live', not 'needsRestart': slskd 0.26 watches its own config file and
+  // picked up new slots and speed_limit values within seconds of the rewrite,
+  // with no restart — measured against the installed binary through
+  // GET /api/v0/options, not assumed from the documentation.
+  return {
+    ok: true,
+    slots: lim.slots,
+    mbps: lim.mbps,
+    applied: 'live',
+    text: _slskUploadLimitText(lim),
+  }
 })
 
 ipcMain.handle('slsk-show-in-folder', (_, filePath) => {
@@ -11434,7 +11938,7 @@ let presenceConnected = null
 function presenceSnapshot() { return Array.from(presenceCache.values()) }
 
 function presenceResult() {
-  return { statuses: presenceSnapshot(), connected: presenceConnected }
+  return { statuses: presenceSnapshot(), connected: presenceConnected, off: !_slskEnabled() }
 }
 
 function presenceBroadcast(changed, serverConnected) {
@@ -11470,6 +11974,11 @@ function presenceRecord(username, presence, isPrivileged, changed) {
 }
 
 async function pollPresenceOnce() {
+  // Nobody's presence can be checked over a connection the user switched off,
+  // and "connected: false" is what paints every peer as an outage. No verdict
+  // is the truth here, and presenceResult() carries `off` so the list can say
+  // which it is.
+  if (!_slskEnabled()) { presenceConnected = null; return presenceResult() }
   if (presencePolling) return presenceResult()
   presencePolling = true
   try {
@@ -11515,6 +12024,7 @@ async function pollPresenceOnce() {
 }
 
 function startPresenceWatch() {
+  if (!_slskEnabled()) return
   if (presenceTimer) return
   presenceTimer = setInterval(() => { pollPresenceOnce() }, PRESENCE_POLL_MS)
   if (presenceTimer.unref) presenceTimer.unref()

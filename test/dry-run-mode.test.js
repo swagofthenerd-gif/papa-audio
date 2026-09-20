@@ -55,6 +55,9 @@ const ARGS = {
   'library-set-artwork': { albumId: 'a1', sourcePath: '/a.jpg' },
   'papa-import-all': { path: '/x.json' },
   'slsk-verify-rip': { username: 'u', folderPath: 'p', files: [{ name: 'a.flac', size: 1e6, length: 300 }] },
+  'slsk-share-folders-set': { folders: ['/mnt/data/MUSIC/Downloads'] },
+  'slsk-enabled-set': { enabled: false },
+  'slsk-upload-limit-set': { slots: 4, mbps: 0 },
 }
 
 // The one effectful call each handler must reach when the dry run is OFF, and
@@ -95,6 +98,11 @@ const EFFECT = {
   'library-set-artwork': 'spawn',
   'papa-import-all': 'fs.readFileSync',
   'slsk-verify-rip': 'slskdFetch',
+  'slsk-share-folders-set': 'writeSlskdConfig',
+  // Turning it off disconnects or stops the daemon his real account is signed
+  // in through. _slskGoOff is the one call that does it.
+  'slsk-enabled-set': '_slskGoOff',
+  'slsk-upload-limit-set': 'writeSlskdConfig',
 }
 
 // Module-level constants a handler body does ARITHMETIC on. Everything else the

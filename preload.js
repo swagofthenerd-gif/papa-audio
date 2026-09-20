@@ -334,9 +334,21 @@ contextBridge.exposeInMainWorld('api', {
   slskRetryTransfer:  (p) => ipcRenderer.invoke('slsk-retry-transfer', p),
   slskGetDownloadDir: ()  => ipcRenderer.invoke('slsk-get-download-dir'),
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
-  // Roadmap 137: what is shared with Soulseek peers.
+  // Roadmap 137: what is shared with Soulseek peers. The three-way mode is on
+  // its way out; these two stay only until the dropdown's markup goes.
   slskShareModeGet:   ()  => ipcRenderer.invoke('slsk-share-mode-get'),
   slskShareModeSet:   (p) => ipcRenderer.invoke('slsk-share-mode-set', p),
+  // The folder list that replaces it: read every row, write the ticked set,
+  // and open the native chooser for one more folder.
+  slskShareFoldersGet: ()  => ipcRenderer.invoke('slsk-share-folders-get'),
+  slskShareFoldersSet: (p) => ipcRenderer.invoke('slsk-share-folders-set', p),
+  slskShareFolderPick: ()  => ipcRenderer.invoke('slsk-share-folder-pick'),
+  // The Soulseek on/off switch. Off persists, so nothing restarts it behind him.
+  slskEnabledGet:     ()  => ipcRenderer.invoke('slsk-enabled-get'),
+  slskEnabledSet:     (p) => ipcRenderer.invoke('slsk-enabled-set', p),
+  // How many people may take files at once, and how fast, all together.
+  slskUploadLimitGet: ()  => ipcRenderer.invoke('slsk-upload-limit-get'),
+  slskUploadLimitSet: (p) => ipcRenderer.invoke('slsk-upload-limit-set', p),
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),

@@ -142,14 +142,18 @@ test('the throttle memory outlives the backoff it came from', () => {
 
 // ── Stage 2: the search that runs under it ──────────────────────────────────
 
-function liftSearch({ results = [], throttledRecently = false } = {}) {
+function liftSearch({ results = [], throttledRecently = false, enabled = true } = {}) {
   const code = slice(MAIN,
     'async function slskRunSearch(', "\nipcMain.handle('slsk-download'", 'slskRunSearch')
-  const names = ['slskdReady', 'fetch', 'SLSKD_BASE', 'slskdAcquireToken', '_searchCacheGet',
+  const names = ['_slskEnabled', 'slskdReady', 'fetch', 'SLSKD_BASE', 'slskdAcquireToken',
+    '_searchCacheGet',
     '_searchCacheSet', '_searchPersistSet', 'slskdFetch', '_liveSearches', '_cancelledSearches',
     'safeSend', 'normalizeSearchResponses', 'slskdThrottledRecently', 'setTimeout', 'console']
   const make = new Function(...names, `${code}\nreturn slskRunSearch`)
   return make(
+    // Whether the user has Soulseek switched on. Every case here is a search he
+    // wants run; the off case is its own test at the end of the file.
+    () => enabled,
     true, async () => ({ ok: true, status: 200 }), 'http://x', async () => {},
     () => null, () => {}, () => {},
     // POST /searches starts it; the first GET reports it complete; the
@@ -251,4 +255,20 @@ test('a fresh search clears the flag, and any throttled variant sets it', () => 
   assert.match(run, /_slskBeginSearchPaint\(query\)/, 'and runSlskSearch calls it')
   assert.match(run, /if \(throttled\) slsk\.throttledRecently = true/)
   assert.match(run, /if \(_slskIsThrottleError\(e\)\) \{ slsk\.throttledRecently = true;/)
+})
+
+// ── Stage 3: a search he switched Soulseek off for ──────────────────────────
+// Not "Soulseek is not connected", which reads as a fault and offers a Retry
+// that retries nothing. The self-heal at the top of slskRunSearch re-probes
+// /application and re-authenticates whenever slskdReady is false — which is
+// exactly the state an off leaves behind — so without the gate the search box
+// would quietly turn Soulseek back on.
+// That nothing is probed or re-authenticated is asserted in
+// test/slskd-enabled-gate.test.js, which counts the calls. This is the shape of
+// the refusal, which is what the search box branches on.
+test('a search while Soulseek is off refuses with the off error, not a fault', async () => {
+  const run = liftSearch({ enabled: false })
+  await assert.rejects(
+    () => run({ query: 'aphex twin selected ambient' }),
+    (e) => e.code === 'SLSK_OFF' && e.slskOff === true && /off/i.test(e.message))
 })
