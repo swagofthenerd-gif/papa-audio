@@ -351,7 +351,11 @@
     function fetchArt(el) {
       const [artist, album] = String(el.dataset.art).split('|')
       const lib = (state.library || []).find(l => l.artPath && SH().tokenScore(album, l.name) >= 0.6 && (!artist || !l.artist || SH().tokenScore(artist, l.artist) >= 0.34))
-      const put = p => { if (p && el.isConnected) el.style.backgroundImage = `url("${/^https?:/.test(p) ? p : 'file://' + p}")` }
+      // Layer the art OVER the gradient rather than replacing it: an art path
+      // that 404s or was deleted used to leave a blank tile, because the
+      // gradient it overwrote was the only thing under it.
+      const grad = el.dataset.grad || coverGradient(album)
+      const put = p => { if (p && el.isConnected) el.style.backgroundImage = `url("${/^https?:/.test(p) ? p : 'file://' + p}"), ${grad}` }
       if (lib) return put(lib.artPath)
       if (window.api && window.api.fetchAlbumArt && artist) {
         window.api.fetchAlbumArt({ albumId: 'slsk-' + (artist + '-' + album).replace(/[^a-z0-9]+/gi, '-').toLowerCase(), artist, album }).then(put).catch(() => {})

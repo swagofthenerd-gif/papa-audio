@@ -101,9 +101,14 @@ body.theme-light .slr-card-cover .slr-lbl{box-shadow:0 0 0 2px rgba(255,255,255,
 .slr-shelf[data-shelf="surround"] .slr-shelf-h b::before{content:"";flex:none;width:3px;height:15px;border-radius:2px}
 .slr-shelf[data-shelf="hires"] .slr-shelf-h b::before{background:var(--slr-hires)}
 .slr-shelf[data-shelf="surround"] .slr-shelf-h b::before{background:var(--slr-surround)}
-.slr-strip{display:flex;gap:9px;overflow-x:auto;padding:2px 0 8px 12px;scroll-snap-type:x proximity;
-  -webkit-mask-image:linear-gradient(to right,transparent 0,#000 12px,#000 calc(100% - 24px),transparent 100%);
-  mask-image:linear-gradient(to right,transparent 0,#000 12px,#000 calc(100% - 24px),transparent 100%)}
+/* No mask on the strip itself: a fade over the leading edge clipped the first
+   card's title and hint, which is a legibility bug, not a flourish. The
+   "more this way" cue is a right-edge overlay on the shelf instead, which can
+   never touch card one. */
+.slr-strip{display:flex;gap:9px;overflow-x:auto;padding:2px 0 8px 0;scroll-snap-type:x proximity}
+.slr-shelf{position:relative}
+.slr-shelf::after{content:"";position:absolute;right:0;bottom:8px;width:44px;height:calc(100% - 34px);
+  pointer-events:none;background:linear-gradient(to right,transparent,var(--bg))}
 .slr-card{width:var(--slr-card-w);flex:none;background:none;border:0;padding:0;text-align:left;color:var(--text);cursor:pointer;scroll-snap-align:start;display:flex;flex-direction:column;gap:3px}
 .slr-card-cover{display:block;width:100%;aspect-ratio:1;border-radius:6px;background:var(--glass-hi) center/cover;position:relative;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);
