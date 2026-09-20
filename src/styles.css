@@ -6703,6 +6703,27 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 /* Download badge in sidebar */
 .nav-dl-badge { position:absolute;top:6px;right:8px;min-width:16px;height:16px;padding:0 4px;background:var(--accent);color:#000;border-radius:8px;font-size:10px;font-weight:700;display:none;align-items:center;justify-content:center;line-height:1 }
 
+/* Sidebar transfer pills — the live "what is moving" counts.
+   Downloads wear the app accent, sharing wears neutral ink. The arrow and the
+   number carry the whole meaning, so nothing here depends on telling two
+   colours apart. `hidden` keeps the pill out of the flow when there is nothing
+   to say; margin-left:auto parks it against the right edge of the row. */
+.nav-pill {
+  margin-left:auto; flex-shrink:0;
+  padding:1px 7px; border-radius:9px;
+  font-size:10px; font-weight:700; line-height:1.5;
+  letter-spacing:.2px; white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+.nav-pill[hidden] { display:none }
+.nav-pill-dl { background:var(--accent-dim); color:var(--accent) }
+.nav-pill-up { background:var(--glass); color:var(--text2) }
+/* Idle sharing ("14 today") is a tally, not an event: quieter than the live
+   count so a busy sidebar does not read as three things happening at once. */
+.nav-pill-up.is-idle { background:transparent; color:var(--text3); font-weight:600 }
+body.theme-light .nav-pill-up { background:rgba(0,0,0,.06); color:var(--text2) }
+body.theme-light .nav-pill-up.is-idle { background:transparent; color:var(--text3) }
+
 /* Stats hero date range */
 .stats-hero-sub { font-size:11px;color:var(--text3);margin-top:4px }
 

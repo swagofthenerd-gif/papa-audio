@@ -101,3 +101,59 @@ test('the seen map only retains transfers present in the latest poll', () => {
   }), now)
   assert.deepStrictEqual(Object.keys(r2.state.seen), ['bob b.flac'])
 })
+
+// ── Files delivered today (the idle Sharing pill's number) ───────────────────
+
+test('a finished upload counts once, however many polls report it', () => {
+  const now = dayMs(2026, 9, 10)
+  const snap = grouped({
+    alice: [{ filename: 'a.flac', bytesTransferred: 100, state: 'Completed, Succeeded' }],
+  })
+  const r1 = ingest(emptyState(_dayKey(now)), snap, now)
+  assert.strictEqual(r1.filesUploadedToday, 1)
+  // slskd keeps reporting a finished row; the same file must not be counted
+  // again on the next poll.
+  const r2 = ingest(r1.state, snap, now)
+  assert.strictEqual(r2.filesUploadedToday, 1)
+})
+
+test('only a successful finish counts as a file delivered', () => {
+  const now = dayMs(2026, 9, 10)
+  const r = ingest(emptyState(_dayKey(now)), grouped({
+    alice: [
+      { filename: 'a.flac', bytesTransferred: 10, state: 'InProgress' },
+      { filename: 'b.flac', bytesTransferred: 20, state: 'Completed, Cancelled' },
+      { filename: 'c.flac', bytesTransferred: 30, state: 'Completed, Errored' },
+      { filename: 'd.flac', bytesTransferred: 40, state: 'Completed, Succeeded' },
+    ],
+  }), now)
+  assert.strictEqual(r.filesUploadedToday, 1)
+})
+
+test('two peers taking the same filename are two delivered files', () => {
+  const now = dayMs(2026, 9, 10)
+  const done = { filename: 'a.flac', bytesTransferred: 10, state: 'Completed, Succeeded' }
+  const r = ingest(emptyState(_dayKey(now)), grouped({ alice: [done], bob: [done] }), now)
+  assert.strictEqual(r.filesUploadedToday, 2)
+  assert.strictEqual(r.distinctPeersToday, 2)
+})
+
+test('a delivered file stays counted after slskd drops the row', () => {
+  const now = dayMs(2026, 9, 10)
+  const r1 = ingest(emptyState(_dayKey(now)), grouped({
+    alice: [{ filename: 'a.flac', bytesTransferred: 10, state: 'Completed, Succeeded' }],
+  }), now)
+  const r2 = ingest(r1.state, [], now)
+  assert.strictEqual(r2.filesUploadedToday, 1, 'today is still today')
+})
+
+test('the delivered count rolls over with the rest at midnight', () => {
+  const day1 = dayMs(2026, 9, 10, 23)
+  const day2 = dayMs(2026, 9, 11, 1)
+  const r1 = ingest(emptyState(_dayKey(day1)), grouped({
+    alice: [{ filename: 'a.flac', bytesTransferred: 10, state: 'Completed, Succeeded' }],
+  }), day1)
+  assert.strictEqual(r1.filesUploadedToday, 1)
+  const r2 = ingest(r1.state, [], day2)
+  assert.strictEqual(r2.filesUploadedToday, 0, 'a new day starts at nothing')
+})

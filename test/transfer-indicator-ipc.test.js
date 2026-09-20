@@ -66,3 +66,96 @@ test('no second upload poller was added for the rows', () => {
   const timers = MAIN.match(/setInterval\(\(\) => \{ slskUploadPollOnce\(\) \}/g) || []
   assert.ok(timers.length <= 2, 'still only the existing poll/retune pair, got ' + timers.length)
 })
+
+// ── The counters the sidebar reads ───────────────────────────────────────────
+
+test('the handler returns the day\'s delivered-file count on both paths', () => {
+  const body = handlerBody()
+  assert.match(body, /filesUploadedToday: result\.filesUploadedToday/,
+    'the live path carries the count the idle Sharing pill shows')
+  assert.match(body, /filesUploadedToday: rolled\.filesUploadedToday/,
+    'and so does the unreachable-daemon path')
+})
+
+test('a repainting caller can be served from the last poll', () => {
+  const body = handlerBody()
+  assert.match(body, /opts && opts\.cachedOk/,
+    'the handler takes a cachedOk opt-in')
+  assert.match(body, /_lastUploadPollAt\) < UPLOAD_CACHE_FRESH_MS/,
+    'and only honours it while the cached poll is still fresh')
+  assert.match(MAIN, /const UPLOAD_CACHE_FRESH_MS = 70 \* 1000/,
+    'fresh means under 70 s — one tick longer than the 60 s active poll')
+  // The cached answer must come BEFORE the poll call, or it saves nothing.
+  assert.ok(body.indexOf('cachedOk') < body.indexOf('await slskUploadPollOnce'),
+    'the cache is checked before slskd is asked again')
+})
+
+test('preload hands the whole handler result back, opts and all', () => {
+  const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
+  const line = (PRELOAD.match(/^.*slskUploadStats:.*$/m) || [''])[0]
+  assert.match(line, /ipcRenderer\.invoke\('slsk-upload-stats', opts \|\| \{\}\)/,
+    'the options reach main')
+  // No .then that picks fields off the result: rows and counters pass through.
+  assert.ok(!/slskUploadStats:[^\n]*\.then/.test(line),
+    'preload does not reshape the result')
+})
+
+// ── The sidebar wiring ───────────────────────────────────────────────────────
+
+const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+const HTML = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8')
+
+test('the sidebar carries a downloads pill and a hidden Sharing row', () => {
+  assert.match(HTML, /id="nav-dl-pill"[^>]*hidden/, 'the downloads pill starts hidden')
+  assert.match(HTML, /<li class="nav-item" data-page="sharing" id="nav-sharing" hidden/,
+    'the Sharing row exists and starts hidden')
+  assert.match(HTML, /id="nav-sharing-pill"/, 'with its own pill')
+  assert.match(HTML, /<script src="transfer-indicator\.js"><\/script>/,
+    'the pure model is loaded as a page script')
+})
+
+test('the downloads pill is painted from the existing poll, not a new one', () => {
+  const start = RENDERER.indexOf('async function _pollAndRenderDownloadsInner')
+  const body = RENDERER.slice(start, start + 4000)
+  assert.match(body, /_paintDownloadPill\(files\)/,
+    'the poll callback paints the pill from the snapshot it already has')
+  assert.ok(!/setInterval\([^)]*_paintDownloadPill/.test(RENDERER),
+    'the download pill has no timer of its own')
+})
+
+test('the sharing refresh is one 60 s timer that asks main for its cache', () => {
+  assert.match(RENDERER, /const SHARING_POLL_MS = 60000/)
+  const timers = RENDERER.match(/setInterval\([^\n]*_refreshSharingStats/g) || []
+  assert.equal(timers.length, 1, 'exactly one sharing timer, got ' + timers.length)
+  assert.match(RENDERER, /slskUploadStats\(\{ cachedOk: true \}\)/,
+    'the refresh never forces a fresh slskd fetch')
+})
+
+test('the sharing refresh stops while the window is hidden', () => {
+  const start = RENDERER.indexOf('function retuneSharingPoll')
+  const body = RENDERER.slice(start, start + 500)
+  assert.match(body, /if \(!_appVisible\) \{\s*\n\s*if \(_sharingPollTimer\) \{ clearInterval\(_sharingPollTimer\)/,
+    'a hidden window clears the timer, the same rule the downloads poll follows')
+  assert.match(RENDERER, /retuneDownloadsPolling\(\)\n\s*retuneSharingPoll\(\)/,
+    'and the visibility handler retunes it alongside the downloads poll')
+})
+
+test('the Sharing row only appears when the pill model says so', () => {
+  const start = RENDERER.indexOf('function _paintSharingPill')
+  const body = RENDERER.slice(start, RENDERER.indexOf('async function _refreshSharingStats'))
+  assert.match(body, /PapaTransferIndicator\.sharingPill/, 'the model decides')
+  assert.match(body, /if \(!pill\) \{[\s\S]*row\.hidden = true/,
+    'no pill means the whole row is hidden')
+  assert.match(body, /row\.hidden = false/, 'and a pill unhides it')
+  assert.match(body, /el\.textContent = pill\.text/, 'text, never innerHTML')
+})
+
+test('clicking Sharing opens the panel instead of navigating', () => {
+  const start = RENDERER.indexOf("if (el.dataset.action === 'settings')")
+  const body = RENDERER.slice(start, start + 600)
+  assert.match(body, /el\.dataset\.page === 'sharing'/, 'the click handler knows it')
+  const branch = body.slice(body.indexOf("=== 'sharing'"))
+  assert.match(branch.slice(0, 200), /_openSharingPanel\(\)/, 'it opens the panel')
+  assert.ok(branch.indexOf('return') < branch.indexOf("navigate(el.dataset.page)"),
+    'and returns before the navigate fallback')
+})

@@ -803,9 +803,11 @@ document.addEventListener('visibilitychange', () => {
   _appVisible = !document.hidden
   if (!_appVisible) {
     retuneDownloadsPolling()
+    retuneSharingPoll()
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
   } else {
     retuneDownloadsPolling()
+    retuneSharingPoll()
     if (state.currentPage === 'home' && !_homeClockInterval) {
       _drawHomeClock()
       _homeClockInterval = setInterval(_drawHomeClock, 1000)
@@ -16224,6 +16226,7 @@ if (window.api && window.api.onWindowFocus) {
     // the poll altogether.
     _appVisible = on || !document.hidden
     retuneDownloadsPolling()
+    retuneSharingPoll()
   })
 }
 document.addEventListener('visibilitychange', () => {
@@ -29289,6 +29292,94 @@ function retuneDownloadsPolling() {
   startDownloadsPolling(_dlHasActive() ? DL_POLL_ACTIVE_MS : DL_POLL_IDLE_MS)
 }
 
+// ── Sidebar transfer indicator ───────────────────────────────────────────────
+// Two pills on the tab bar: what is coming in (on Downloads) and what is going
+// out (on a Sharing row that only exists while there is something to say).
+//
+// Neither pill owns a poll of its own. The download pill is painted from the
+// snapshot the existing downloads poll already fetched, inside that poll's own
+// callback. The sharing pill has a 60 s refresh, but it asks main with
+// { cachedOk:true }, so main answers from its last upload poll rather than
+// hitting slskd again — the sidebar costs the daemon nothing. The refresh stops
+// entirely while the window is hidden, the same rule the downloads poll follows.
+//
+// All the text comes from PapaTransferIndicator; this half only paints.
+const SHARING_POLL_MS = 60000
+let _sharingPollTimer = null
+let _sharingStats = null
+// Declared here rather than with the panel: this refresh has to know whether
+// the panel is on screen, and an undeclared read would be a ReferenceError.
+let _sharingPanelOpen = false
+
+function _paintDownloadPill(files) {
+  const el = document.getElementById('nav-dl-pill')
+  if (!el || !window.PapaTransferIndicator) return
+  const pill = window.PapaTransferIndicator.downloadPill(files || [])
+  if (!pill) {
+    el.hidden = true
+    el.textContent = ''
+    el.removeAttribute('aria-label')
+    return
+  }
+  // textContent, never innerHTML: the counts are ours, but this pill sits one
+  // edit away from carrying a peer's file name.
+  el.textContent = pill.text
+  el.hidden = false
+  el.setAttribute('aria-label',
+    pill.active + ' downloading, ' + pill.queued + ' queued')
+}
+
+function _paintSharingPill() {
+  const row = document.getElementById('nav-sharing')
+  const el = document.getElementById('nav-sharing-pill')
+  if (!row || !el || !window.PapaTransferIndicator) return
+  const s = _sharingStats
+  const pill = s ? window.PapaTransferIndicator.sharingPill({
+    activeUploads: s.activeUploads,
+    filesToday: s.filesUploadedToday,
+  }) : null
+  // Nothing in flight and nothing given away today: the whole row goes, rather
+  // than sitting there saying zero.
+  if (!pill) {
+    row.hidden = true
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  row.hidden = false
+  el.hidden = false
+  el.textContent = pill.text
+  el.classList.toggle('is-idle', !pill.live)
+  el.setAttribute('aria-label', pill.live
+    ? pill.text.replace('↑ ', '') + ' files going out now'
+    : pill.text.replace(' today', '') + ' files shared today')
+}
+
+async function _refreshSharingStats() {
+  if (!_appVisible) return
+  if (!window.api || !window.api.slskUploadStats) return
+  const s = await window.api.slskUploadStats({ cachedOk: true })
+    .catch(function () { return null })
+  if (!s || !s.ok) return
+  _sharingStats = s
+  _paintSharingPill()
+  // The open panel repaints off its own faster clock; this keeps it honest when
+  // a 60 s tick lands between two of those.
+  if (typeof _renderSharingPanel === 'function' && _sharingPanelOpen) _renderSharingPanel()
+}
+
+// Same shape as retuneDownloadsPolling: a hidden window is not looking at the
+// sidebar, so the timer stops rather than ticking into nothing.
+function retuneSharingPoll() {
+  if (!_appVisible) {
+    if (_sharingPollTimer) { clearInterval(_sharingPollTimer); _sharingPollTimer = null }
+    return
+  }
+  if (_sharingPollTimer) return
+  _sharingPollTimer = setInterval(function () { _refreshSharingStats() }, SHARING_POLL_MS)
+  _refreshSharingStats()
+}
+
 // ── Downloads context menu ───────────────────────────────────────────────────
 // Native Electron context menu — bypasses all DOM event issues
 // items: array of { action, label } or 'sep'; handlers: { [action]: fn }
@@ -29383,6 +29474,9 @@ async function _pollAndRenderDownloadsInner() {
     }
   }
   _dlLastFiles = files
+  // The sidebar's incoming pill, painted from the snapshot this poll just
+  // fetched — no second request, no second timer.
+  _paintDownloadPill(files)
   // Every number the page shows comes from this one model (R5).
   _dlModel = window.PapaDlNumbers ? window.PapaDlNumbers.reconcile(files, _dlSchedStats) : null
   // A transfer finishing is exactly when the fast poll stops being worth its
@@ -32767,10 +32861,21 @@ function setupListeners() {
     searchInput.addEventListener('blur', function() { setTimeout(function() { hintBar.style.display = 'none' }, 200) })
   }
 
+  // The sidebar's outgoing pill. Starts the 60 s cached refresh (and paints
+  // once immediately) so the Sharing row is right from the first frame.
+  retuneSharingPoll()
+
   // Sidebar nav
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', () => {
       if (el.dataset.action === 'settings') { openSettings('general'); return }
+      // Sharing is a panel, not a page: there is nothing to navigate to, and
+      // navigating would leave the sidebar highlighting a page that renders
+      // nothing.
+      if (el.dataset.page === 'sharing') {
+        if (typeof _openSharingPanel === 'function') _openSharingPanel()
+        return
+      }
       if (el.dataset.page === 'search') {
         if (slsk.lastQuery) navigate('search', slsk.lastQuery)
         else document.getElementById('tb-search')?.focus()
@@ -38654,6 +38759,10 @@ function _slskBindUploadActivity() {
   window.api.onSlskUploadActivity(function (s) {
     if (!s) return
     _slskUploadStats = Object.assign({}, _slskUploadStats || {}, s)
+    // The sidebar pill rides this push too, so the live count appears the
+    // moment a peer starts pulling rather than up to 60 s later.
+    _sharingStats = Object.assign({}, _sharingStats || {}, s)
+    _paintSharingPill()
     if (state.currentPage === 'soulseek') _paintHubSharing()
   })
 }

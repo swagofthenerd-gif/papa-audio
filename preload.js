@@ -425,7 +425,10 @@ contextBridge.exposeInMainWorld('api', {
   slskScheduleGet:       ()  => ipcRenderer.invoke('slsk-schedule-get'),
   slskScheduleSet:       (p) => ipcRenderer.invoke('slsk-schedule-set', p),
   // Upload awareness (roadmap #54): what you're sharing back right now.
-  slskUploadStats:       ()  => ipcRenderer.invoke('slsk-upload-stats'),
+  // The whole handler result passes through untouched — counters, rows and all.
+  // `opts` carries { cachedOk:true } from the repainting surfaces, which lets
+  // main answer from its last poll instead of asking slskd again.
+  slskUploadStats:       (opts) => ipcRenderer.invoke('slsk-upload-stats', opts || {}),
   onSlskUploadActivity:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-upload-activity', h); return () => ipcRenderer.removeListener('slsk-upload-activity', h) },
   // Peer chat (roadmap #55). List/history/send over slskd's /conversations API,
   // and a dedicated subscriber for the 30s poll's new-incoming-message event. The

@@ -108,7 +108,8 @@
   // ── The pills ──────────────────────────────────────────────────────────────
 
   // downloadPill(transfers) -> { text, active, queued } | null
-  // null means "hide the pill": nothing is coming in.
+  // null means "hide the pill": nothing slskd has taken on is coming in —
+  // files still only Requested or Scheduled are deliberately not counted.
   function downloadPill(transfers) {
     const files = flatten(transfers)
     let active = 0

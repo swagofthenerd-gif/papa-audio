@@ -9367,6 +9367,14 @@ let _uploadActive = false   // last-seen active/idle, for the transition event
 // when slskd is unreachable — the handler answers [] in that case rather than
 // serving a snapshot that may be minutes stale.
 let _lastUploadRows = []
+// The counters and the clock reading from the last successful poll. The sidebar
+// refreshes every 60 s and the open sharing panel every 10 s; without this they
+// would each drive a fresh slskd request, which is exactly the extra traffic the
+// design forbids. Callers that can live with the last poll pass { cachedOk:true }
+// and get this back whenever it is still fresh.
+let _lastUploadResult = null
+let _lastUploadPollAt = 0
+const UPLOAD_CACHE_FRESH_MS = 70 * 1000
 
 // slskd's /transfers/uploads has answered in three shapes over its versions:
 // user -> directories -> files, user -> files, and an already-flat file list.
@@ -9416,6 +9424,8 @@ async function slskUploadPollOnce() {
   const result = uploadStats.ingest(prev, uploads, now)
   sideStores.slskUploadStats.set(result.state)
   _lastUploadRows = slimUploadRows(uploads)
+  _lastUploadResult = result
+  _lastUploadPollAt = now
   const nowActive = result.activeUploads > 0
   // Retune the cadence to match activity, and fire the transition event once when
   // the active/idle state actually flips.
@@ -9452,7 +9462,24 @@ function slskUploadPollStart() {
 // counters (rolled over to today by ingest on the next poll) and the live active
 // count from a fresh poll when slskd answers, degrading to the stored totals when
 // it does not — so the number is never blank just because slskd blinked.
-ipcMain.handle('slsk-upload-stats', async () => {
+ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
+  // The sidebar pill and the open sharing panel repaint on their own clocks and
+  // are happy with the last poll. Serving them from the cache is what keeps
+  // those repaints free: slskd sees the existing 60 s / 5 min poll and nothing
+  // more. A stale cache falls through and polls for real.
+  const cachedOk = !!(opts && opts.cachedOk)
+  if (cachedOk && _lastUploadResult
+      && (Date.now() - _lastUploadPollAt) < UPLOAD_CACHE_FRESH_MS) {
+    return {
+      ok: true,
+      cached: true,
+      activeUploads: _lastUploadResult.activeUploads,
+      totalUploadedToday: _lastUploadResult.totalUploadedToday,
+      distinctPeersToday: _lastUploadResult.distinctPeersToday,
+      filesUploadedToday: _lastUploadResult.filesUploadedToday,
+      rows: _lastUploadRows,
+    }
+  }
   const result = await slskUploadPollOnce()
   if (result) {
     return {
@@ -9460,6 +9487,9 @@ ipcMain.handle('slsk-upload-stats', async () => {
       activeUploads: result.activeUploads,
       totalUploadedToday: result.totalUploadedToday,
       distinctPeersToday: result.distinctPeersToday,
+      // Files delivered today, counted once each by the daily fold — the number
+      // the idle Sharing pill shows.
+      filesUploadedToday: result.filesUploadedToday,
       // Who is taking what, right now — the detail the counters cannot carry.
       rows: _lastUploadRows,
     }
@@ -9473,6 +9503,7 @@ ipcMain.handle('slsk-upload-stats', async () => {
     activeUploads: 0,
     totalUploadedToday: rolled.totalUploadedToday,
     distinctPeersToday: rolled.distinctPeersToday,
+    filesUploadedToday: rolled.filesUploadedToday,
     // Nothing can be in flight through a daemon we cannot reach, and a stale
     // row list would show progress bars that never move.
     rows: [],
