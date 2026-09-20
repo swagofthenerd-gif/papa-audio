@@ -1,0 +1,81 @@
+Input #0, flac, from 'mono.flac':
+  Metadata:
+    track           : 1
+    JR_DATE         : 44820
+    TOOL NAME       : Media Center
+    TOOL VERSION    : 26.0.107
+    ALBUM           : Animals
+    comment         : 2018 Remix from 2022 BluRay
+    title           : Pigs on the Wing (Part One)
+    ARTIST          : Pink Floyd
+    GENRE           : Progressive Rock
+    album_artist    : Pink Floyd
+    DATE            : 1977-01-21
+    encoder         : Lavf62.12.102
+  Duration: 00:00:05.00, start: 0.000000, bitrate: 110 kb/s
+  Stream #0:0: Audio: flac, 48000 Hz, mono, s16
+Stream mapping:
+  Stream #0:0 -> #0:0 (flac (native) -> pcm_s16le (native))
+Press [q] to stop, [?] for help
+Output #0, null, to 'pipe:':
+  Metadata:
+    track           : 1
+    JR_DATE         : 44820
+    TOOL NAME       : Media Center
+    TOOL VERSION    : 26.0.107
+    ALBUM           : Animals
+    comment         : 2018 Remix from 2022 BluRay
+    title           : Pigs on the Wing (Part One)
+    ARTIST          : Pink Floyd
+    GENRE           : Progressive Rock
+    album_artist    : Pink Floyd
+    DATE            : 1977-01-21
+    encoder         : Lavf62.12.102
+  Stream #0:0: Audio: pcm_s16le, 48000 Hz, mono, s16, 768 kb/s
+    Metadata:
+      encoder         : Lavc62.28.102 pcm_s16le
+[Parsed_astats_0 @ 0x7f8438004880] Channel: 1
+[Parsed_astats_0 @ 0x7f8438004880] DC offset: -0.000002
+[Parsed_astats_0 @ 0x7f8438004880] Min level: -1106.000000
+[Parsed_astats_0 @ 0x7f8438004880] Max level: 1129.000000
+[Parsed_astats_0 @ 0x7f8438004880] Min difference: 0.000000
+[Parsed_astats_0 @ 0x7f8438004880] Max difference: 426.000000
+[Parsed_astats_0 @ 0x7f8438004880] Mean difference: 7.881612
+[Parsed_astats_0 @ 0x7f8438004880] RMS difference: 21.148240
+[Parsed_astats_0 @ 0x7f8438004880] Peak level dB: -29.254855
+[Parsed_astats_0 @ 0x7f8438004880] RMS level dB: -49.334387
+[Parsed_astats_0 @ 0x7f8438004880] RMS peak dB: -39.534988
+[Parsed_astats_0 @ 0x7f8438004880] RMS through dB: -inf
+[Parsed_astats_0 @ 0x7f8438004880] Crest factor: 10.091985
+[Parsed_astats_0 @ 0x7f8438004880] Flat factor: 0.000000
+[Parsed_astats_0 @ 0x7f8438004880] Peak count: 2
+[Parsed_astats_0 @ 0x7f8438004880] Abs Peak count: 1
+[Parsed_astats_0 @ 0x7f8438004880] Noise floor dB: -inf
+[Parsed_astats_0 @ 0x7f8438004880] Noise floor count: 144471
+[Parsed_astats_0 @ 0x7f8438004880] Entropy: 0.260230
+[Parsed_astats_0 @ 0x7f8438004880] Bit depth: 11/16/16/16
+[Parsed_astats_0 @ 0x7f8438004880] Dynamic range: 67.074479
+[Parsed_astats_0 @ 0x7f8438004880] Zero crossings: 3828
+[Parsed_astats_0 @ 0x7f8438004880] Zero crossings rate: 0.015950
+[Parsed_astats_0 @ 0x7f8438004880] Overall
+[Parsed_astats_0 @ 0x7f8438004880] DC offset: -0.000002
+[Parsed_astats_0 @ 0x7f8438004880] Min level: -1106.000000
+[Parsed_astats_0 @ 0x7f8438004880] Max level: 1129.000000
+[Parsed_astats_0 @ 0x7f8438004880] Min difference: 0.000000
+[Parsed_astats_0 @ 0x7f8438004880] Max difference: 426.000000
+[Parsed_astats_0 @ 0x7f8438004880] Mean difference: 7.881612
+[Parsed_astats_0 @ 0x7f8438004880] RMS difference: 21.148240
+[Parsed_astats_0 @ 0x7f8438004880] Peak level dB: -29.254855
+[Parsed_astats_0 @ 0x7f8438004880] RMS level dB: -49.334387
+[Parsed_astats_0 @ 0x7f8438004880] RMS peak dB: -39.534988
+[Parsed_astats_0 @ 0x7f8438004880] RMS through dB: -inf
+[Parsed_astats_0 @ 0x7f8438004880] Flat factor: 0.000000
+[Parsed_astats_0 @ 0x7f8438004880] Peak count: 2.000000
+[Parsed_astats_0 @ 0x7f8438004880] Abs Peak count: 1.000000
+[Parsed_astats_0 @ 0x7f8438004880] Noise floor dB: -inf
+[Parsed_astats_0 @ 0x7f8438004880] Noise floor count: 144471.000000
+[Parsed_astats_0 @ 0x7f8438004880] Entropy: 0.260230
+[Parsed_astats_0 @ 0x7f8438004880] Bit depth: 11/16/16/16
+[Parsed_astats_0 @ 0x7f8438004880] Number of samples: 240000
+[out#0/null @ 0x55d743e5b180] video:0KiB audio:469KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+size=N/A time=00:00:05.00 bitrate=N/A speed= 979x elapsed=0:00:00.00    

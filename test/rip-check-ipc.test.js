@@ -34,8 +34,17 @@ test('astatsArgs and probeArgs name the file and ask for the fields the parsers 
   const R = require('../src/rip-check')
   assert.ok(R.astatsArgs('/x/a.flac').includes('/x/a.flac'))
   assert.ok(R.astatsArgs('/x/a.flac').join(' ').includes('astats'))
+  // parseChannels needs one block per channel, and -map pins the same stream
+  // ffprobe described. Note there is no -v error: astats logs at info level and
+  // -v error would silence the whole measurement.
+  assert.ok(R.astatsArgs('/x/a.flac').join(' ').includes('measure_perchannel=all'))
+  assert.ok(R.astatsArgs('/x/a.flac').includes('-map'))
+  assert.ok(!R.astatsArgs('/x/a.flac').includes('-v'))
   const p = R.probeArgs('/x/a.flac')
   assert.ok(p.includes('/x/a.flac'))
   assert.ok(p.join(' ').includes('sample_rate'))
   assert.ok(p.join(' ').includes('bits_per_raw_sample'))
+  assert.ok(p.join(' ').includes('channels'))
+  assert.ok(p.join(' ').includes('channel_layout'))
+  assert.ok(p.join(' ').includes('duration'))
 })
