@@ -39,6 +39,7 @@ function rig(over = {}) {
     _debridConfigured: () => true,
     _debridRateLimited: () => false,
     _debridAnyWorthTrying: () => true,
+    _debridRelayStandingFor: () => false,
     _debridPlayableAny: async () => 'https://rd.example/stream.mkv',
   }, over)
   return { seen, globals }
@@ -226,4 +227,54 @@ test('the on-screen narration outlasts the wait it describes', async () => {
   assert.match(body, /say\('Checking RealDebrid…', DEBRID_BUDGET_MS\)/,
     'four seconds left ten seconds of silence inside a fourteen-second phase')
   assert.match(body, /say\('Connecting to peers…', 20000\)/)
+})
+
+// ── not re-asking a question already answered (2026-09-20 audit) ───────────
+// Every switch spent up to DEBRID_BUDGET_MS on RealDebrid before a single peer
+// was contacted — even for a row the page had already probed and been told
+// RealDebrid does not hold. Fourteen seconds of frozen frame, to re-ask.
+test('a source RealDebrid has already refused goes straight to peers', async () => {
+  const { seen, globals } = rig()
+  await run(globals, { debridKnownMiss: true })
+  assert.equal(seen.torrents.length, 1, 'peers must start at once')
+  assert.equal(seen.loaded.length, 0, 'and no debrid link is waited for')
+  // The rig stubs the miss reporter, so check the message it is handed — the
+  // real _debridReasonFrom maps /not holding any/ to the 'notHeld' reason the
+  // renderer turns into words.
+  assert.ok(seen.misses.some(m => /not holding any/.test(m)),
+    'the viewer is told why, rather than it happening silently: ' + JSON.stringify(seen.misses))
+})
+
+test('a relay already standing beats the known miss, because it costs nothing', async () => {
+  const { seen, globals } = rig({ _debridRelayStandingFor: () => true })
+  await run(globals, { debridKnownMiss: true })
+  assert.deepEqual(seen.loaded, ['https://rd.example/stream.mkv'])
+  assert.equal(seen.torrents.length, 0)
+})
+
+test('a source nobody probed is UNKNOWN, not refused, and still gets the full attempt', async () => {
+  // The page only probes the top few candidates; treating unprobed as refused
+  // would quietly disable debrid for most of the list.
+  const { seen, globals } = rig()
+  await run(globals, { debridKnownMiss: false })
+  assert.deepEqual(seen.loaded, ['https://rd.example/stream.mkv'])
+  const absent = rig()
+  await run(absent.globals)
+  assert.deepEqual(absent.seen.loaded, ['https://rd.example/stream.mkv'],
+    'and so is one with no flag at all')
+})
+
+test('the page tells "asked and refused" apart from "never asked"', () => {
+  const R = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = R.indexOf('function _debridKnownMiss(s)')
+  assert.ok(at > 0, 'the helper must exist')
+  const body = R.slice(at, R.indexOf('\n}\n', at))
+  assert.match(body, /_debridProbed\.indexOf\(s\.magnet\) !== -1/,
+    'only a source that was actually asked about counts')
+  assert.match(body, /if \(_isInstantSource\(s\)\) return false/)
+  // And the probed list is recorded where the asking happens, and cleared with
+  // the rest of the page's choices.
+  assert.match(R, /_debridProbed = candidates\.slice\(\)/)
+  const reset = R.slice(R.indexOf('function _resetDetailPageChoices()'), R.indexOf('function _resetDetailPageChoices()') + 700)
+  assert.match(reset, /_debridProbed = \[\]/)
 })

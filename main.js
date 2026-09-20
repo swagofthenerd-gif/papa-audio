@@ -16468,7 +16468,16 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // download cap it never arrived at all: "I select the instant source and
     // it just sits there" (2026-09-20). A badge the app then ignores is worse
     // than no badge, because it sends people at the slowest path on purpose.
-    if (_debridAnyWorthTrying(result)) {
+    // The page already asked RealDebrid about this exact source and was told
+    // no. Spending the budget to ask again is up to fourteen seconds of frozen
+    // frame before a single peer is contacted — the plainest "laggy" in this
+    // feature. A standing relay still wins, because that costs nothing at all,
+    // and a source nobody probed is UNKNOWN and still gets the full attempt.
+    const knownMiss = result.debridKnownMiss === true && !_debridRelayStandingFor([result.magnet])
+    if (knownMiss) {
+      _sendDebridMiss(current, new Error('RealDebrid is not holding any of these sources'))
+      startTorrent()
+    } else if (_debridAnyWorthTrying(result)) {
       say('Checking RealDebrid…', DEBRID_BUDGET_MS)
       const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
       Promise.race([_debridPlayableAny(result), budget])

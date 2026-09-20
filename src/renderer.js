@@ -4673,6 +4673,10 @@ async function _playerPickSource(key) {
       absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
     })
   }
+  // Whether RealDebrid has already been asked about this source and said no.
+  result = Object.assign({}, result, {
+    debridKnownMiss: typeof _debridKnownMiss === 'function' ? _debridKnownMiss(next) : false,
+  })
   showToast('Switching to ' + (next.source || 'another source') + '…')
   const res = await window.api.videoSwitchStream({ result })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -4751,6 +4755,9 @@ async function _autoSwitchSource() {
       absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(pctx.detail, pctx.state) : null,
     })
   }
+  result = Object.assign({}, result, {
+    debridKnownMiss: typeof _debridKnownMiss === 'function' ? _debridKnownMiss(next) : false,
+  })
   showToast('Source stalled — switching to another…')
   const res = await window.api.videoSwitchStream({ result })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -5520,6 +5527,10 @@ var _DEBRID_PICK_WAIT_MS = 7000
 // Without this the list could not say which was which, so "choose a source"
 // meant choosing blind.
 var _debridHeld = []
+// The magnets the page actually ASKED RealDebrid about. Without this, "not in
+// _debridHeld" is ambiguous — it means "asked, and it is not holding this" and
+// "never asked" alike, and only the first of those is safe to act on.
+var _debridProbed = []
 var _playQuality = ''
 // The source the viewer chose by hand from the hero selector, as a key. Play
 // honours it above everything else — including the debrid pick, because an
@@ -5535,6 +5546,7 @@ function _resetDetailPageChoices() {
   _videoStreams = []
   _debridPick = null
   _debridHeld = []
+  _debridProbed = []
   // The in-flight pick belongs to the page being left. It was cleared only
   // when its own IPC settled — up to 25 s — so a Play on the NEW page could
   // sit waiting on a lookup being done for the old one.
@@ -5586,6 +5598,21 @@ function _isInstantSource(s) {
   if (!s || s.kind !== 'torrent' || !s.magnet) return false
   if (_debridPick && s.magnet === _debridPick) return true
   return _debridHeld.indexOf(s.magnet) !== -1
+}
+
+// The opposite, and it is NOT simply `!_isInstantSource`: this is true only
+// when RealDebrid has already been asked about this exact source and answered
+// no. A source nobody asked about is unknown, and must still be tried —
+// the page only probes the top few candidates.
+//
+// It matters because the switch spends up to DEBRID_BUDGET_MS waiting on
+// RealDebrid before peers are contacted at all. Paying fourteen seconds of
+// frozen frame to re-ask a question already answered is the plainest "laggy"
+// in the whole feature.
+function _debridKnownMiss(s) {
+  if (!s || s.kind !== 'torrent' || !s.magnet) return false
+  if (_isInstantSource(s)) return false
+  return _debridProbed.indexOf(s.magnet) !== -1
 }
 
 // The ONE size formatter for Movies & TV (audit N11). The providers baked a
@@ -13085,6 +13112,9 @@ async function _loadVideoSources(ticket, seasonTicket) {
           // the file Play will actually ask for. Without it the pick warmed a
           // relay stamped "no particular episode", which the play path then
           // rejected — and the first play paid the full cold cost.
+          // These are the ones being asked about; anything outside this list
+          // is simply unknown, never "not held".
+          _debridProbed = candidates.slice()
           _debridPickPending = window.api.videoDebridPick({
             magnets: candidates, titleKey: titleKey,
             season: _videoDetail && _videoDetail.type === 'tv' ? _videoState.season : null,

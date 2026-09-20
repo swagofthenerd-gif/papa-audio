@@ -62,6 +62,11 @@ function harness(over) {
 
     _sourceKey: s => (s && (s.magnet || s.url)) || '',
     _playCtx: () => ({ detail: ctx._videoDetail, state: ctx._videoState, streams: ctx._videoStreams }),
+    // Whether RealDebrid was already asked about this source and said no —
+    // it decides whether the switch waits on debrid or goes straight to peers.
+    // Supplied explicitly so these run against a real value rather than the
+    // renderer's typeof fallback.
+    _debridKnownMiss: () => false,
     _nextUntriedSource: () => over._nextUntried || null,
     _rememberPreferredSource() {},
     _syncSourcesHighlight() {},
