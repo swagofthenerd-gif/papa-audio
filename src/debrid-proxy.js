@@ -295,6 +295,15 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
       target = null; total = 0
       headCache = null; tailCache = null
     },
+    // Whether this relay is still listening and still pointed at a file.
+    //
+    // A relay that has been stopped looks exactly like a running one from the
+    // outside — it is the same object, and its URL is still a well-formed
+    // address that simply nothing answers on. Handing such a URL back to mpv
+    // produces a black picture with no error worth the name, which is what
+    // happened when relays were first made reusable. Anything considering
+    // reusing one has to be able to ask.
+    alive() { return !!server && !!target },
     _cached: () => ({ head: headCache ? headCache.buf.length : 0, tail: tailCache ? tailCache.buf.length : 0 }),
     _total: () => total,
   }
