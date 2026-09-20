@@ -27,18 +27,21 @@ test('the upload poll remembers the current rows in a module-level cache', () =>
     'the poll slims the snapshot it already fetched')
 })
 
-test('the slimmer keeps the seven fields the panel needs, and nothing else', () => {
+test('the slimmer keeps the eight fields the panel needs, and nothing else', () => {
   const start = MAIN.indexOf('function slimUploadRows')
   assert.ok(start > 0, 'slimUploadRows exists')
   const body = MAIN.slice(start, start + 1600)
+  // `id` joined the list when turning Soulseek off had to END the transfers
+  // already running: slskd cancels by username + id, and without it bytes kept
+  // leaving the machine after he asked them to stop.
   for (const field of ['filename', 'username', 'state', 'percentComplete',
-    'averageSpeed', 'bytesTransferred', 'size']) {
+    'averageSpeed', 'bytesTransferred', 'size', 'id']) {
     assert.match(body, new RegExp('\\b' + field + ':'), field + ' is kept')
   }
   // Nothing else rides along: a peer-controlled row must not carry unknown keys
   // across the bridge.
   const kept = body.match(/^\s{6}\w+:/gm) || []
-  assert.equal(kept.length, 7, 'exactly seven fields, got: ' + kept.join(' '))
+  assert.equal(kept.length, 8, 'exactly eight fields, got: ' + kept.join(' '))
 })
 
 // averageSpeed is slskd's running average over the whole transfer; it settles

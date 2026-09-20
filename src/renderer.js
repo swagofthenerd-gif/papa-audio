@@ -30200,9 +30200,14 @@ function _renderSharingPanel() {
   // But an unreachable daemon also has no rows, and saying "nobody is taking
   // anything" then would be a flat lie — main flags that case and it gets said
   // in words instead. The day's counters below are still real either way.
-  const empty = s.daemon === false
-    ? '<div class="sharing-empty">Can’t reach the Soulseek daemon, so there is no way to tell what is going out right now.</div>'
-    : '<div class="sharing-empty">Nobody is taking anything right now.</div>'
+  // Three different silences, three different sentences. Soulseek switched off
+  // on purpose is not a daemon fault and must not be reported as one — that is
+  // his own choice read back to him as a breakage.
+  const empty = s.enabled === false
+    ? '<div class="sharing-empty">Soulseek is off, so nothing is going out. Turn it on above when you want it.</div>'
+    : s.daemon === false
+      ? '<div class="sharing-empty">Can’t reach the Soulseek daemon, so there is no way to tell what is going out right now.</div>'
+      : '<div class="sharing-empty">Nobody is taking anything right now.</div>'
   list.innerHTML = rows.length
     ? rows.map(_sharingRowHtml).join('')
     : empty

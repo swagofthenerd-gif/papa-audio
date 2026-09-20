@@ -323,3 +323,84 @@ test('the wishlist sweep skips while Soulseek is off instead of failing', async 
   // it is a different realm's Array and would never be reference-equal.
   assert.strictEqual(res.results.length, 0)
 })
+
+// ── Off has to actually stop the bytes ──────────────────────────────────────
+// He switched Soulseek off and watched the gigabyte total keep climbing.
+// Disconnecting from the Soulseek server stops NEW work, but the daemon goes on
+// serving the transfers it already has open, so data kept leaving the machine
+// after he asked it to stop — the feature failing at its one job.
+test('turning Soulseek off ends the uploads already in flight', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const off = MAIN.slice(MAIN.indexOf('async function _slskGoOff('),
+                          MAIN.indexOf('async function _slskGoOn('))
+  assert.match(off, /_slskCancelUploadsInFlight\(\)/,
+    'off stops the transfers that are already running')
+  assert.ok(off.indexOf('_slskCancelUploadsInFlight()') < off.indexOf("'DELETE', '/server'"),
+    'and stops them while the daemon is still reachable, not after')
+
+  const fn = MAIN.slice(MAIN.indexOf('async function _slskCancelUploadsInFlight('),
+                        MAIN.indexOf('async function _slskGoOff('))
+  assert.match(fn, /\/transfers\/uploads\/\$\{encodeURIComponent\(r\.username\)\}/,
+    'cancels by peer and transfer id')
+  assert.match(fn, /uploadStats\.isActiveUpload\(r\.state\)/,
+    'and only the ones that are genuinely running')
+})
+
+test('the upload poll does not run while Soulseek is off', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const start = MAIN.indexOf('async function slskUploadPollOnce(')
+  const body = MAIN.slice(start, start + 1400)
+  assert.match(body, /if \(!_slskEnabled\(\)\) return null/,
+    'off means no poll at all')
+  assert.ok(body.indexOf('_slskEnabled()') < body.indexOf('slskdFetch'),
+    'and the gate comes before the request')
+  assert.ok(body.indexOf('_slskEnabled()') < body.indexOf('uploadStats.ingest('),
+    'and before anything is added to today’s counters')
+})
+
+// ── One poll at a time ──────────────────────────────────────────────────────
+// The panel's two-second tick made overlapping polls ordinary. ingest() folds a
+// snapshot into today's counters, so two landing together can count the same
+// transfer twice and the day's total climbs by a whole file that never left the
+// machine — which is what he was watching happen.
+test('two callers arriving together share one request, and it is dated when asked', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const start = MAIN.indexOf('async function slskUploadPollOnce(')
+  const body = MAIN.slice(start, start + 600)
+  assert.match(body, /if \(_uploadPollInFlight\) return _uploadPollInFlight/,
+    'a caller arriving mid-flight waits for the answer already coming')
+  assert.match(body, /_uploadPollInFlight = .*\.finally\(/,
+    'and the slot is always released')
+
+  const run = MAIN.slice(MAIN.indexOf('async function _slskUploadPollRun('),
+                         MAIN.indexOf('async function _slskUploadPollRun(') + 900)
+  assert.ok(run.indexOf('const askedAt = Date.now()') < run.indexOf('slskdFetch'),
+    'the snapshot is dated when it was asked for, not when it arrived')
+  assert.match(run, /const now = askedAt/,
+    'and that is the date the counters and the caller see')
+})
+
+test('the panel says Soulseek is off rather than blaming the daemon', () => {
+  const fs = require('fs')
+  const path = require('path')
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = R.indexOf('const empty = s.enabled === false')
+  assert.ok(at > 0, 'the off state is its own branch')
+  const body = R.slice(at, at + 500)
+  assert.match(body, /Soulseek is off, so nothing is going out/)
+  assert.ok(body.indexOf('s.enabled === false') < body.indexOf('s.daemon === false'),
+    'and it is checked before the daemon-fault wording')
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  // Bounded by the NEXT handler, not by a character count: the handler is
+  // 4,840 characters and a fixed window silently clipped its last return.
+  const hStart = MAIN.indexOf("ipcMain.handle('slsk-upload-stats'")
+  const h = MAIN.slice(hStart, MAIN.indexOf('ipcMain.handle(', hStart + 10))
+  assert.equal((h.match(/enabled: _slskEnabled\(\)/g) || []).length, 3,
+    'every answer says whether Soulseek is on, or the branch above cannot fire')
+})

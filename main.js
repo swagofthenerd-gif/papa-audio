@@ -9800,6 +9800,10 @@ function slimUploadRows(raw) {
       averageSpeed: Number(f.averageSpeed) || 0,
       bytesTransferred: Number(f.bytesTransferred) || 0,
       size: Number(f.size) || 0,
+      // Needed to stop a transfer: slskd cancels by username + id. Carried here
+      // rather than fetched again, because turning Soulseek off has to end the
+      // uploads already in flight or bytes keep leaving after he said stop.
+      id: String(f.id || ''),
     })
   }
   for (const u of (Array.isArray(raw) ? raw : [])) {
@@ -9818,7 +9822,28 @@ function slimUploadRows(raw) {
   return out
 }
 
+// One poll at a time, always. The panel's two-second tick made overlapping
+// polls ordinary, and two of them landing together is not a cosmetic race:
+// ingest() folds a snapshot into today's counters, so the same transfer can be
+// counted twice and the day's total climbs by a whole file that never left the
+// machine. A caller arriving mid-flight waits for the answer already coming
+// rather than asking again.
+let _uploadPollInFlight = null
+
 async function slskUploadPollOnce() {
+  if (!_slskEnabled()) return null
+  // Off means off: no polling a daemon he deliberately stopped, and above all
+  // no ingesting a snapshot into today's counters while it is off.
+  if (_uploadPollInFlight) return _uploadPollInFlight
+  _uploadPollInFlight = _slskUploadPollRun().finally(() => { _uploadPollInFlight = null })
+  return _uploadPollInFlight
+}
+
+async function _slskUploadPollRun() {
+  // Stamped BEFORE the request, so a snapshot is dated when it was asked for.
+  // Dating it on arrival let a slow, older poll carry the newest stamp and
+  // overwrite a fresher picture, which is the bar jumping backwards.
+  const askedAt = Date.now()
   let uploads = null
   try {
     uploads = await slskdFetch('GET', '/transfers/uploads')
@@ -9829,7 +9854,7 @@ async function slskUploadPollOnce() {
     return null
   }
   _uploadDaemonOk = true
-  const now = Date.now()
+  const now = askedAt
   const prev = sideStores.slskUploadStats.get()
   const result = uploadStats.ingest(prev, uploads, now)
   sideStores.slskUploadStats.set(result.state)
@@ -9887,6 +9912,7 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
   if (cachedOk && _lastUploadResult) {
     return {
       ok: true,
+      enabled: _slskEnabled(),
       cached: true,
       cachedAt: _lastUploadPollAt,
       daemon: _uploadDaemonOk,
@@ -9910,6 +9936,7 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
   if (result) {
     return {
       ok: true,
+      enabled: _slskEnabled(),
       daemon: true,
       // The clock reading this snapshot belongs to, on every path, not just the
       // cached one. Two callers race here — the sidebar's 60 s tick asking for
@@ -9933,6 +9960,7 @@ ipcMain.handle('slsk-upload-stats', async (_e, opts) => {
   sideStores.slskUploadStats.set(rolled.state)
   return {
     ok: true,
+    enabled: _slskEnabled(),
     // The counters are real, the live picture is not: nothing could be read
     // from a daemon that did not answer. The panel says that in words rather
     // than reporting an empty list as "nobody is taking anything".
@@ -11202,9 +11230,41 @@ function _slskPollersStop() {
 // The UPnP map at port 2234 is deliberately left in place while disconnected:
 // nothing is listening on it, and re-mapping is the slow part. It is unmapped
 // on a full stop and on quit, as today.
+// Disconnecting from the Soulseek server stops NEW work, but the daemon keeps
+// serving the transfers it already has open, so bytes carry on leaving the
+// machine after he asked for them to stop. He watched the gigabyte total climb
+// with Soulseek switched off, which is the whole feature failing at its one
+// job. Off now ends the uploads in flight too.
+async function _slskCancelUploadsInFlight() {
+  let cancelled = 0
+  let rows = []
+  try { rows = slimUploadRows(await slskdFetch('GET', '/transfers/uploads')) }
+  catch (_) { return 0 }
+  for (const r of rows) {
+    if (!r || !r.username || !r.id) continue
+    // The same state test upload-stats uses for its active count, so the rows
+    // we stop are exactly the rows the app calls active.
+    const live = uploadStats.isActiveUpload(r.state)
+    if (!live) continue
+    try {
+      await slskdFetch('DELETE',
+        `/transfers/uploads/${encodeURIComponent(r.username)}/${encodeURIComponent(r.id)}`)
+      cancelled++
+    } catch (e) {
+      console.warn('[papa] could not stop an upload to ' + r.username + ': ' +
+        String(e && e.message || e))
+    }
+  }
+  if (cancelled) console.log('[papa] Soulseek off: stopped ' + cancelled + ' upload(s) in flight')
+  return cancelled
+}
+
 async function _slskGoOff() {
   let method = 'stopped'
   if (slskdProc || slskdReady) {
+    // Cancel first, while the daemon is still reachable. After a stop there is
+    // nothing left to ask.
+    try { await _slskCancelUploadsInFlight() } catch (_) {}
     try {
       await slskdFetch('DELETE', '/server')
       method = 'disconnected'
