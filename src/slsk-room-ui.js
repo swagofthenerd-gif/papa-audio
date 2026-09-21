@@ -16,6 +16,23 @@
     return `linear-gradient(135deg,hsl(${hue},45%,20%),hsl(${(hue + 40) % 360},35%,12%))`
   }
 
+  // Every folder in the share, not just the root's children. buildTree returns
+  // the ROOT NODE, so its .dirs Map holds only the top level — for a peer whose
+  // whole library hangs off one shared folder that is literally 1, which is the
+  // number the saved-libraries entry was being given. Walked with a stack
+  // rather than recursion: these trees are as deep as the peer's disk.
+  function countDirs(root) {
+    if (!root || !root.dirs) return null
+    let n = 0
+    const stack = [root]
+    while (stack.length) {
+      const node = stack.pop()
+      if (!node.dirs) continue
+      for (const child of node.dirs.values()) { n++; stack.push(child) }
+    }
+    return n
+  }
+
   function modeKey(username) { return 'slsk_lib_mode:' + String(username || '').toLowerCase() }
   function sortKey(username) { return 'slsk_hunt_sort:' + String(username || '').toLowerCase() }
   function audioKey(username) { return 'slsk_folders_audio:' + String(username || '').toLowerCase() }
@@ -104,6 +121,51 @@
     const folders = { audioOnly: true, surroundOnly: false }
     try { const v = localStorage.getItem(audioKey(username)); if (v != null) folders.audioOnly = v === '1' } catch (_) {}
     let lastStatus = null
+
+    // Saved libraries — the ☆ in the header. The old shop carried this and the
+    // Listening Room dropped it on the way over, but nothing behind it moved:
+    // slsk-save-user, the saved-user presence poll and the "Saved libraries"
+    // list all kept working, with no way left in the UI to put anyone on them.
+    // Fetched once, up front, so the star is honest as early as it can be.
+    let savedList = []
+    const savedReady = (window.api && window.api.slskSavedUsers)
+      ? window.api.slskSavedUsers().catch(() => [])
+      : Promise.resolve([])
+    savedReady.then(list => { if (dead) return; savedList = list || []; paintStar() })
+
+    function isSavedNow() {
+      const SU = (typeof window !== 'undefined' && window.PapaSavedUsers) || null
+      return !!(SU && SU.isSaved(savedList, username))
+    }
+
+    // Reads state, never writes it: safe to call before the header is painted
+    // (no button yet) and again on every change afterwards.
+    function paintStar() {
+      const btn = headEl.querySelector('#slr-star')
+      if (!btn) return
+      const on = isSavedNow()
+      btn.textContent = on ? '★' : '☆'
+      btn.classList.toggle('is-on', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+      btn.title = on ? 'Saved — click to remove from your libraries' : 'Save this library'
+      btn.setAttribute('aria-label', on ? 'Remove ' + username + ' from your saved libraries' : 'Save ' + username + "'s library")
+    }
+
+    // The store is the source of truth: the star only moves once the main
+    // process has handed back the new list. A failed write leaves the button
+    // showing what is actually saved rather than what was clicked.
+    async function toggleSaved() {
+      const on = isSavedNow()
+      const next = on
+        ? await window.api.slskUnsaveUser({ username }).catch(() => null)
+        : await window.api.slskSaveUser({ username,
+            fileCount: tree ? tree.fileCount : null,
+            dirCount: countDirs(tree) }).catch(() => null)
+      if (!next) { deps.showSnackbar('Could not change your saved libraries'); return }
+      savedList = next
+      paintStar()
+      deps.showSnackbar(on ? 'Removed ' + username + ' from your saved libraries' : 'Saved ' + username + "'s library")
+    }
     const albumsByPath = new Map()
     // Identity set, so a card can ask "is this one of the ones I lack?" in O(1)
     // instead of an includes() scan per card.
@@ -155,9 +217,11 @@
         <div class="slr-head-tools"><span class="slr-folder-filters" id="slr-folder-filters"${mode === 'folders' ? '' : ' hidden'}>
             <label class="slr-toggle"><input type="checkbox" id="slr-f-audio"${folders.audioOnly ? ' checked' : ''}> Audio only</label>
             <label class="slr-toggle"><input type="checkbox" id="slr-f-surround"${folders.surroundOnly ? ' checked' : ''}> Surround only</label>
-          </span><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
+          </span><button class="slr-btn slr-btn-quiet slr-star" id="slr-star" aria-pressed="false" title="Save this library">☆</button><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
       headPainted = true
       headEl.querySelector('#slr-close').addEventListener('click', () => deps.onClose && deps.onClose())
+      headEl.querySelector('#slr-star').addEventListener('click', toggleSaved)
+      paintStar()
       headEl.querySelectorAll('.slr-mode').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)))
       searchEl = headEl.querySelector('#slr-search')
       let t = null
@@ -570,6 +634,13 @@
     }
     tree = first.tree
     if (!(await buildFromTree())) return
+    savedList = (await savedReady) || savedList
+    if (dead || !host.isConnected) return
+    paintStar()
+    if (isSavedNow() && window.api.slskTouchUser) {
+      savedList = await window.api.slskTouchUser({
+        username, fileCount: tree.fileCount, dirCount: countDirs(tree) }).catch(() => savedList)
+    }
     try {
       const st0 = localStorage.getItem(sortKey(username))
       if (st0) { const [k, d] = st0.split(':'); if (SORT_KEYS.includes(k) && SORT_DIRS.includes(d)) { hunt.sort = k; hunt.dir = d } }
@@ -616,7 +687,7 @@
     }
   }
 
-  const api = { show, headerModel, modeKey, wanderShelves, isCountFallback, headLines }
+  const api = { show, headerModel, modeKey, wanderShelves, isCountFallback, headLines, countDirs }
   if (typeof window !== 'undefined') window.PapaSlskRoomUI = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()
