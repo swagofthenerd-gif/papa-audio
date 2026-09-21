@@ -170,6 +170,7 @@ contextBridge.exposeInMainWorld('api', {
   videoTasteShelf:  (p) => ipcRenderer.invoke('video-taste-shelf', p),
   videoTrailer:     (p) => ipcRenderer.invoke('video-trailer', p),
   videoPackSelect:  (p) => ipcRenderer.invoke('video-pack-select', p),
+  videoTrace:      (p)  => ipcRenderer.invoke('video-trace', p),
   videoSwitchStream:(p) => ipcRenderer.invoke('video-switch-stream', p),
   videoPredownload:         (index) => ipcRenderer.invoke('video-predownload', { index }),
   videoPredownloadCancel:   ()      => ipcRenderer.invoke('video-predownload-cancel'),

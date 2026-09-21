@@ -17,6 +17,7 @@ const dlExplain = require('./src/dl-explain')
 const videoKeep = require('./src/video-keep')
 const { createDebrid } = require('./src/debrid')
 const bandwidth = require('./src/bandwidth-guard')
+const switchTrace = require('./src/switch-trace')
 const trackMemory = require('./src/track-memory')
 const { createWatchdog } = require('./src/memory-watchdog')
 const profilerCapture = require('./src/profiler-capture')
@@ -754,6 +755,9 @@ const USER_DATA = process.env.PAPA_USER_DATA
   ? path.resolve(process.env.PAPA_USER_DATA)
   : path.join(app.getPath('home'), '.config', 'papa-audio')
 app.setPath('userData', USER_DATA)
+// Where a source switch writes down what it actually did
+// (src/switch-trace.js), so the next fault is read rather than guessed at.
+try { switchTrace.setDir(USER_DATA) } catch (_) {}
 
 // ── Single instance lock ─────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
@@ -16435,6 +16439,16 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // Where the viewer is, captured before anything is torn down.
     const state = videoEngine().state
     const resumeAt = Number(state && state.position) || 0
+    switchTrace.begin({
+      magnet: _infoHashOfMagnet(result.magnet),
+      season: result.season ?? null,
+      episode: result.episode ?? null,
+      absoluteEpisode: result.absoluteEpisode ?? null,
+      debridKnownMiss: result.debridKnownMiss === true,
+      playerMode: _videoSettings().playerMode,
+      resumeAt: Math.round(resumeAt),
+      duration: Math.round(Number(state && state.duration) || 0),
+    })
 
     // Tear down ONLY the streamer — mpv stays alive so the window never blanks
     // and the swap reads as a hiccup, not a restart. Deliberately not
@@ -16450,6 +16464,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // switch's own window), and a stale magnet made later warms believe a
     // debrid stream was playing when it was not. _debridPlayableAny writes the
     // new value when debrid serves the new pick.
+    switchTrace.write('torn-down', { hadStreamer: !!_videoSession.streamer })
     try { _debridCacheAheadStop() } catch (_) {}
     _videoSession.debrid = null
 
@@ -16464,6 +16479,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     const fail = e => {
       _videoSession.switching = false
       const msg = (e && e.message) || String(e)
+      switchTrace.write('FAILED', { error: msg })
       say('Could not switch source — ' + msg, 8000)
       if (current()) safeSend('video-event', { kind: 'error', message: msg })
     }
@@ -16485,7 +16501,9 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       // Registered BEFORE the load, or the open can be reported in the gap
       // between the command being accepted and this listener existing.
       const opened = _awaitFileLoaded(videoEngine(), SWITCH_OPEN_TIMEOUT_MS)
+      switchTrace.write('load-start', { url: switchTrace.safeUrl(url), viaStreamer: !!streamer })
       await videoEngine().load(url)
+      switchTrace.write('load-done', {})
       // Deliberately NOT clearing `switching` here. A newer token owns the
       // session now and sets its own flag; clearing it would clear theirs.
       if (!current()) return
@@ -16498,7 +16516,8 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       if (resumeAt > 0) {
         // mpv has accepted the file but may not have opened it yet, and
         // seeking into that window simply fails.
-        await opened
+        const openedOk = await opened
+        switchTrace.write('file-open', { reported: openedOk, waitedUpToMs: SWITCH_OPEN_TIMEOUT_MS })
         let target = resumeAt
         try {
           const dur = Number(videoEngine().state && videoEngine().state.duration) || 0
@@ -16507,7 +16526,9 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
         if (target < resumeAt - 1) say('This copy is a different cut — starting a little earlier.', 8000)
         try {
           await videoEngine().seek(target, 'absolute')
+          switchTrace.write('seek-ok', { target: Math.round(target), from: Math.round(resumeAt) })
         } catch (e) {
+          switchTrace.write('seek-failed', { target: Math.round(target), error: (e && e.message) || String(e) })
           // Never swallowed again: a lost position is this feature's most
           // visible failure, and this catch is why it was never diagnosable.
           console.warn('[papa-video] switch could not restore the position:', (e && e.message) || e)
@@ -16529,6 +16550,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
       // play that superseded it. Without an identity the renderer had to
       // assume, and assuming is how a switch got credited for a source that
       // never started.
+      switchTrace.write('PLAYING-SENT', { switchedTo: _infoHashOfMagnet(result.magnet) })
       safeSend('video-event', { kind: 'playing', switchedTo: result.magnet || result.url || null })
       if (streamer) {
         try {
@@ -16540,9 +16562,13 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
 
     const startTorrent = () => {
       say('Connecting to peers…', 20000)
+      switchTrace.write('peers-start', {})
       _startTorrentStream(result, {
         current, fail,
-        onReady: (url, streamer) => { loadInto(url, streamer).catch(fail) },
+        onReady: (url, streamer) => {
+          switchTrace.write('peers-ready', { url: switchTrace.safeUrl(url) })
+          loadInto(url, streamer).catch(fail)
+        },
       })
     }
 
@@ -16561,16 +16587,25 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // feature. A standing relay still wins, because that costs nothing at all,
     // and a source nobody probed is UNKNOWN and still gets the full attempt.
     const knownMiss = result.debridKnownMiss === true && !_debridRelayStandingFor([result.magnet])
+    switchTrace.write('decide', {
+      knownMiss,
+      worthTrying: _debridAnyWorthTrying(result),
+      relayStanding: _debridRelayStandingFor([result.magnet]),
+      configured: _debridConfigured(),
+      rateLimited: _debridRateLimited(),
+    })
     if (knownMiss) {
       _sendDebridMiss(current, new Error('RealDebrid is not holding any of these sources'))
       startTorrent()
     } else if (_debridAnyWorthTrying(result)) {
       say('Checking RealDebrid…', DEBRID_BUDGET_MS)
+      switchTrace.write('debrid-start', { budgetMs: DEBRID_BUDGET_MS })
       const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
       Promise.race([_debridPlayableAny(result), budget])
         .catch(e => { _sendDebridMiss(current, e); throw e })
         .then(directUrl => {
           if (!current() || !directUrl) throw new Error('debrid unusable')
+          switchTrace.write('debrid-ok', { url: switchTrace.safeUrl(directUrl) })
           return loadInto(directUrl, null).then(() => {
             safeSend('video-event', { kind: 'debrid', ok: true })
             _sendDebridPack(current)
@@ -16596,6 +16631,13 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
+})
+
+// The page's own milestones, written into the same record as main's. A switch
+// crosses two processes, and reading only one half is how it stayed a mystery.
+ipcMain.handle('video-trace', (_, { step, data } = {}) => {
+  try { switchTrace.write('ui:' + String(step || '?'), data || {}) } catch (_) {}
+  return { ok: true }
 })
 
 ipcMain.handle('video-stop', async () => {
