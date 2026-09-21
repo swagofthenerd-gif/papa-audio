@@ -4654,6 +4654,14 @@ function _restorePackStrip(strip) {
 // the same thing on its own; this is the viewer deciding rather than the app
 // noticing. Position is kept — main keeps the player alive across the swap and
 // seeks back.
+// Record one moment of the switch, into the same file main writes. Silent and
+// best-effort: a trace must never be able to break a switch.
+function _switchTrace(step, data) {
+  try {
+    if (window.api && window.api.videoTrace) window.api.videoTrace({ step: step, data: data || {} }).catch(function () {})
+  } catch (_) {}
+}
+
 // A switch main has STARTED but whose picture has not arrived yet.
 //
 // Everything a switch changes used to be applied on `ok`, which means only
@@ -4683,6 +4691,7 @@ var _SWITCH_CONFIRM_MS = 25000
 // The new source is really playing: apply everything the switch was holding.
 function _commitSwitch(p) {
   if (!p) return
+  _switchTrace('commit', { source: p.next && p.next.source, waitedMs: Date.now() - (p.at || Date.now()) })
   if (p.timer) { clearTimeout(p.timer); p.timer = null }
   if (_switchPending === p) _switchPending = null
   _autoSwitchInFlight = false
@@ -4706,6 +4715,7 @@ function _commitSwitch(p) {
 // It did not play. Put back what was taken and say so.
 function _abandonSwitch(p, message) {
   if (!p) return
+  _switchTrace('abandon', { source: p.next && p.next.source, waitedMs: Date.now() - (p.at || Date.now()), said: message || null })
   if (p.timer) { clearTimeout(p.timer); p.timer = null }
   if (_switchPending === p) _switchPending = null
   _autoSwitchInFlight = false
@@ -4772,6 +4782,7 @@ function _adoptPlayingSource(key) {
   if (!s) return
   const cur = _watch.pick
   if (cur && (cur.magnet === key || cur.url === key)) return
+  _switchTrace('adopt', { source: s.source || null, quality: s.quality || null })
   _watch.pick = s
   _playing = { dub: s.dub === true, source: s.source || null, quality: s.quality || null }
   _syncSourcesHighlight()
@@ -4840,6 +4851,7 @@ async function _playerPickSource(key) {
   result = Object.assign({}, result, {
     debridKnownMiss: typeof _debridKnownMiss === 'function' ? _debridKnownMiss(next) : false,
   })
+  _switchTrace('pick', { source: next.source || null, quality: next.quality || null, pending: !!_switchPending })
   showToast('Switching to ' + (next.source || 'another source') + '…')
   const res = await window.api.videoSwitchStream({ result })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
