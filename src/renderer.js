@@ -6447,7 +6447,23 @@ function _videoPlayResult(result, opts) {
   // swarm is silent for ten seconds, main opens the next in parallel and the
   // first stream to become servable wins (2026-09-14). Torrents only — a
   // direct URL has nothing to hedge — and never the pick itself.
-  if (result.kind === 'torrent') {
+  // A source chosen BY HAND is played, and nothing else is.
+  //
+  // Both helpers below hand main OTHER releases: debridCandidates so it can
+  // play whichever RealDebrid already holds, and alternates so the first
+  // torrent to connect wins. Both make a default play faster, and both were
+  // attached to a deliberate pick as well — so pressing Play on a row could
+  // start a completely different release. If RealDebrid happened to hold a
+  // third-season pack while he clicked a first-season one, the third season
+  // played. That is the whole of "it shows the right season on the row and
+  // then plays a completely different one, sometimes the debrid one", and it
+  // is where most of the wrong-episode reports came from: a different release
+  // is a different numbering.
+  //
+  // Speed is worth having when the app is choosing. When he has chosen, it is
+  // not the app's decision to improve on.
+  const chosenByHand = !!(opts && opts.manual === true)
+  if (result.kind === 'torrent' && !chosenByHand) {
     // Everything debrid could serve for this play, so main never has to wait
     // on a background search that may not have finished.
     // Tolerant, like every other read on this path: a ReferenceError here is
