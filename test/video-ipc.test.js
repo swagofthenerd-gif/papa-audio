@@ -539,11 +539,19 @@ test('playback waits for the stage rectangle before starting', () => {
   const RENDERER = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
   const at = RENDERER.indexOf('function _videoPlayResult(')
   assert.ok(at > -1)
-  // The window is generous: the open() payload has grown prefs and callbacks,
-  // the Wave-4 per-show track-memory feature-detect (#31/#32), and now the
-  // watch identity + hedge alternates + rewatch-cache probe (2026-09-14). The
-  // point is the ORDER of ready vs play, not the function's size.
-  const body = RENDERER.slice(at, at + 16000)
+  // The whole function, by brace matching, rather than a fixed number of
+  // characters. The point is the ORDER of ready vs play and never the
+  // function's size — but a fixed window silently turns growth into a failure
+  // (it did, when a comment was added), and worse, could one day exclude the
+  // very line being checked and pass for the wrong reason.
+  const body = (function () {
+    let depth = 0
+    for (let j = RENDERER.indexOf('{', at); j < RENDERER.length; j++) {
+      if (RENDERER[j] === '{') depth++
+      else if (RENDERER[j] === '}') { depth--; if (!depth) return RENDERER.slice(at, j + 1) }
+    }
+    throw new Error('unbalanced _videoPlayResult')
+  })()
   const ready = body.indexOf('_player.ready')
   const play = body.indexOf('api.videoPlay')
   assert.ok(ready > -1, 'the stage rectangle must be reported before playback')
