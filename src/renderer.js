@@ -4726,7 +4726,13 @@ function _abandonSwitch(p, message) {
 // switch has been superseded.
 function _resolveSwitchOnPlaying(payload) {
   const p = _switchPending
-  if (!p) return
+  if (!p) {
+    // No switch is waiting, but main has just named what started — which
+    // happens whenever a switch outlived its own confirmation window. The
+    // list must follow it regardless.
+    _adoptPlayingSource((payload && payload.switchedTo) || null)
+    return
+  }
   const want = (p.next && (p.next.magnet || p.next.url)) || null
   const got = (payload && payload.switchedTo) || null
   // Only a POSITIVE mismatch means this switch was superseded.
@@ -4741,8 +4747,35 @@ function _resolveSwitchOnPlaying(payload) {
   // An unidentified `playing` is simply not this switch's answer. Wait for one
   // that is, or for the error, or for the timer.
   if (!got) return
-  if (want && want === got) _commitSwitch(p)
-  else _abandonSwitch(p, null)
+  if (want && want === got) { _commitSwitch(p); return }
+  _abandonSwitch(p, null)
+  // Fall through: whatever IS playing still has to be what the list names.
+  _adoptPlayingSource(got)
+}
+
+// Whatever main says is playing, the list shows. No exceptions, no pending
+// state required.
+//
+// Holding the change until a switch confirms was right, but it left a hole:
+// a switch that outran its confirmation window was abandoned, and when the
+// picture finally arrived there was no pending switch left to accept it — so
+// the new source played while the list went on naming the old one. Reported,
+// twice, as "its showing a different source then the one its playing".
+//
+// Making the announcement authoritative closes that for good: however the
+// switch got there, late or early, expected or not, the row that is marked is
+// the row that is playing.
+function _adoptPlayingSource(key) {
+  if (!key || !_watch) return
+  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  const s = list.find(function (x) { return x && (x.magnet === key || x.url === key) })
+  if (!s) return
+  const cur = _watch.pick
+  if (cur && (cur.magnet === key || cur.url === key)) return
+  _watch.pick = s
+  _playing = { dub: s.dub === true, source: s.source || null, quality: s.quality || null }
+  _syncSourcesHighlight()
+  if (_player && _player.syncSources) _player.syncSources()
 }
 
 async function _playerPickSource(key) {
