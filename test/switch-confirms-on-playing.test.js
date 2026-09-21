@@ -243,3 +243,45 @@ test('with nothing pinned it still falls back to the page, rather than asking fo
   await ctx._playerPickSource('magnet:new')
   assert.strictEqual(seen.switched[0].result.episode, 7)
 })
+
+// ── the list must name what is PLAYING, however it got there ───────────────
+// "its showing a different source then the one its playing", reported twice.
+//
+// Holding the change until a switch confirms was right, but it left a hole: a
+// switch that outran its confirmation window was abandoned, and when the
+// picture finally arrived there was no pending switch left to accept it — so
+// the new source played while the list went on naming the old one.
+test('a picture arriving after the switch gave up is still adopted', async () => {
+  const { ctx } = harness({ ctx: { _videoStreams: [NEXT] } })
+  await ctx._playerPickSource('magnet:new')
+  // The confirmation window elapses before the picture arrives.
+  ctx._abandonSwitch(ctx._switchPending, null)
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:old', 'nothing was committed, correctly')
+
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:new' })
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:new',
+    'the list must follow what is actually playing')
+  assert.strictEqual(ctx._playing.source, 'nyaa')
+})
+
+test('a picture naming a source nobody asked for is still adopted', async () => {
+  // An automatic recovery inside main, or a play started elsewhere: whatever
+  // it is, the row that is marked has to be the row that is playing.
+  const other = S({ magnet: 'magnet:third', source: 'eztv', quality: '720p', title: '[X] Show - 07.mkv' })
+  const { ctx } = harness({ ctx: { _videoStreams: [NEXT, other] } })
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:third' })
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:third')
+  assert.strictEqual(ctx._playing.quality, '720p')
+})
+
+test('a picture naming something not in the list changes nothing', async () => {
+  const { ctx } = harness({ ctx: { _videoStreams: [NEXT] } })
+  ctx._resolveSwitchOnPlaying({ kind: 'playing', switchedTo: 'magnet:unknown' })
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:old', 'no guessing at what it might be')
+})
+
+test('an unidentified picture still says nothing about which source it is', async () => {
+  const { ctx } = harness({ ctx: { _videoStreams: [NEXT] } })
+  ctx._resolveSwitchOnPlaying({ kind: 'playing' })
+  assert.strictEqual(ctx._watch.pick.magnet, 'magnet:old')
+})
