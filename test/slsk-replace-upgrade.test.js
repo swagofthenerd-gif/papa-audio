@@ -59,22 +59,48 @@ test('the album gone from the library → not ok, nothing to trash', () => {
   assert.strictEqual(r.oldPaths, undefined)
 })
 
-test('the renderer offers Trash only on ok, and trashes exactly the old paths', async () => {
-  const start = RENDERER.indexOf('function _offerUpgradeReplace(')
-  const src = RENDERER.slice(start, RENDERER.indexOf('let _slskVerifyDoneBound', start))
-  const said = [], trashed = []
+test('the renderer offers Trash only on ok, and answers through the store', async () => {
+  // The answer now goes through slsk-replace-resolve, not a bare trash call:
+  // the main process bins the files and records the answer in one step, so a
+  // question he has already answered cannot come back after a restart.
+  const start = RENDERER.indexOf('function _replaceName(')
+  const src = RENDERER.slice(start, RENDERER.indexOf('async function _renderPendingReplacements', start))
+  const said = [], resolved = []
   const sb = {
     showSnackbar: (text, label, fn) => said.push({ text, label, fn }),
-    window: { api: { libraryTrashPaths: async ({ paths }) => { trashed.push(paths); return { ok: true } } } },
+    window: { api: { slskReplaceResolve: async (p) => { resolved.push(p); return { ok: true, moved: 3 } } } },
+    _renderPendingReplacements: () => {},
   }
   vm.runInNewContext(src + '\nthis.offer = _offerUpgradeReplace', sb)
-  sb.offer({ folder: 'F', replace: { ok: false, reason: 'the new copy has 5 tracks, yours has 3 — both kept', artist: 'Camel', album: 'Mirage' } })
-  assert.strictEqual(said.length, 1); assert.strictEqual(said[0].label, '', 'no action on a mismatch')
+
+  sb.offer({ key: 'k1', folder: 'F', replace: { ok: false, reason: 'the new copy has 5 tracks, yours has 3 — both kept', artist: 'Camel', album: 'Mirage' } })
+  assert.strictEqual(said.length, 1)
+  assert.strictEqual(said[0].label, '', 'no action on a mismatch')
   assert.match(said[0].text, /both kept/)
-  sb.offer({ folder: 'F', replace: { ok: true, newCount: 3, artist: 'Camel', album: 'Mirage', oldPaths: ['/m/1.flac', '/m/2.flac', '/m/3.flac'] } })
+
+  sb.offer({ key: 'k2', folder: 'F', replace: { ok: true, newCount: 3, artist: 'Camel', album: 'Mirage', oldPaths: ['/m/1.flac'] } })
   assert.strictEqual(said[1].label, 'Move to Trash')
+  assert.match(said[1].text, /waiting under Downloads/i, 'the durable copy of the question is named')
   await said[1].fn(); await new Promise(r => setTimeout(r, 5))
-  assert.deepStrictEqual(trashed, [['/m/1.flac', '/m/2.flac', '/m/3.flac']])
+  // Objects made inside the vm carry the vm's own Object.prototype, which
+  // deepStrictEqual rejects; compare contents, not realm.
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(resolved)), [{ key: 'k2', action: 'trash' }],
+    'exactly one resolve, naming the record — not a loose path list')
+})
+
+test('the only path files leave by is the guarded trasher', () => {
+  // library-trash-paths used to inline the trashing; it now delegates, and the
+  // replace flow uses the same function. Neither may grow its own copy.
+  assert.match(MAIN, /async function _trashPathsGuarded\(paths\)/)
+  const guarded = MAIN.slice(MAIN.indexOf('async function _trashPathsGuarded('),
+    MAIN.indexOf('ipcMain.handle(\'library-trash-paths\''))
+  assert.ok(guarded.includes('shell.trashItem'), 'it is what actually trashes')
+  assert.ok(guarded.includes('libPathAllowed'), 'and it keeps the allowlist')
+  const handler = MAIN.slice(MAIN.indexOf('ipcMain.handle(\'library-trash-paths\''), MAIN.indexOf('ipcMain.handle(\'library-trash-paths\'') + 300)
+  assert.ok(!handler.includes('shell.trashItem'), 'the handler no longer trashes on its own')
+  assert.ok(handler.includes('_trashPathsGuarded'))
+  const resolve = MAIN.slice(MAIN.indexOf("ipcMain.handle('slsk-replace-resolve'"), MAIN.indexOf("ipcMain.handle('slsk-replace-resolve'") + 900)
+  assert.ok(resolve.includes('_trashPathsGuarded'), 'and so does the replace answer')
 })
 
 test('the shelf sends replaceLibId with every file of a Replace, and main keeps it on the group', () => {

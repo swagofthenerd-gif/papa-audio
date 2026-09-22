@@ -6661,6 +6661,15 @@ input::placeholder, textarea::placeholder { color:var(--text3);opacity:.6 }
 
 /* Wishlist */
 .wishlist-row { display:flex;align-items:center;gap:8px;padding:8px 28px;font-size:13px }
+/* "Ready to replace": a verified upgrade whose old copy is still on disk.
+   Matches the wishlist row's geometry; the destructive answer is the only one
+   that carries colour, and it still goes through a confirm. */
+.dl-replace-row { display:flex;align-items:center;gap:8px;padding:8px 28px;font-size:13px }
+.dl-replace-text { display:flex;flex-direction:column;gap:2px;flex:1;min-width:0 }
+.dl-replace-sub { font-size:10px;color:var(--text3) }
+.dl-replace-btn { background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--r-sm);color:var(--text2);font-size:11px;padding:3px 8px;cursor:pointer;white-space:nowrap }
+.dl-replace-btn:hover { color:var(--text) }
+.dl-replace-btn.dl-replace-trash { color:var(--color-error);border-color:color-mix(in srgb,var(--color-error) 40%,transparent) }
 .wishlist-row span { flex:1 }
 .wishlist-search-btn { background:var(--accent);color:#000;border:none;padding:4px 10px;border-radius:var(--r-sm);font-size:11px;cursor:pointer }
 .wishlist-search-btn:hover { opacity:.85 }

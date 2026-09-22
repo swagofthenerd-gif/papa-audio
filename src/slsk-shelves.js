@@ -997,8 +997,18 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   }
   const surroundFlags = albums.map(isSurroundAlbum)
 
+  // The flag the DECISION used has to be the flag the SCREEN shows. These were
+  // kept apart: surroundFlags fed upgradeReason while the album objects handed
+  // back to the UI kept their own (narrower) `surround`. So a peer's genuine
+  // 5.1 mix rendered as a bare "FLAC 24/88" beside "yours: FLAC 16/44 · 5.1"
+  // under the verdict "upgrade" — which reads as "trade your surround for a
+  // stereo", and is the one reading the 5.1 scar is named after. Measured on
+  // his own peers: all 16 surround-to-surround upgrades looked like that.
+  // Copies, never mutation, so a caller's albums stay untouched.
+  const decided = albums.map((a, i) => (surroundFlags[i] && !a.surround) ? { ...a, surround: true } : a)
+
   for (let i = 0; i < albums.length; i++) {
-    const pa = albums[i]
+    const pa = decided[i]
     // Pre-tokenise the peer side once (its Sets are reused by findMatch and
     // upgradeReason reads the quality fields off the same object).
     const peerComp = albumComparable({
@@ -1021,8 +1031,8 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
     }
   }
 
-  const surround = albums.filter((_a, i) => surroundFlags[i])
-  const hires = albums.filter(a => a.isHiRes)
+  const surround = decided.filter((_a, i) => surroundFlags[i])
+  const hires = decided.filter(a => a.isHiRes)
 
   // Sort helpers. Quality rank: lossless hi-res > lossless > lossy; then size.
   const qualRank = (a) => (a.lossless ? (a.isHiRes ? 3 : 2) : 1)
@@ -1033,7 +1043,7 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   // every comparison, so a 5,000-album shelf lowercased ~250,000 strings to
   // order 5,000 rows. Same ordering — _shelfCollator is a plain Intl.Collator,
   // which is exactly what localeCompare with no options bag uses.
-  const decorated = albums.map(a => ({
+  const decorated = decided.map(a => ({
     a,
     k1: (a.artist || a.album || '').toLowerCase(),
     k2: (a.album || '').toLowerCase(),
@@ -1772,14 +1782,18 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
       sur = !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
     }
     surroundFlags[i] = sur
-    if (sur) surround.push(pa)
     if (await b.tick() && b.aborted()) return null
   }
+
+  // Same rule as buildShelves: the flag the decision used is the flag the
+  // screen shows, on copies rather than by mutating the caller's albums.
+  const decided = albums.map((a, i) => (surroundFlags[i] && !a.surround) ? { ...a, surround: true } : a)
+  for (let i = 0; i < decided.length; i++) if (surroundFlags[i]) surround.push(decided[i])
 
   const upgrades = []
   const missing = []
   for (let i = 0; i < albums.length; i++) {
-    const pa = albums[i]
+    const pa = decided[i]
     const peerComp = albumComparable({
       artist: pa.artist,
       album: pa.album,
@@ -1789,7 +1803,10 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
       surround: surroundFlags[i],
     })
     const match = libIndex.findMatch(peerComp)
-    if (markInLibrary) pa.inLibrary = !!match
+    // markInLibrary's contract is to stamp the CALLER's albums, and for a
+    // surround album pa is now a copy — so stamp both, or the shop's
+    // "In Library" marking silently stops working on exactly those.
+    if (markInLibrary) { pa.inLibrary = !!match; albums[i].inLibrary = !!match }
     if (match) {
       const reason = upgradeReason(peerComp, match)
       if (reason) upgrades.push({ ...pa, upgrade: reason, matchedLibId: match.ref && match.ref.id })
@@ -1801,7 +1818,7 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
 
   const hires = []
   const decorated = []
-  for (const pa of albums) {
+  for (const pa of decided) {
     if (pa.isHiRes) hires.push(pa)
     decorated.push({
       a: pa,

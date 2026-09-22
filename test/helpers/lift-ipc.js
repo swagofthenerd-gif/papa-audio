@@ -206,6 +206,9 @@ const GATED_CHANNELS = [
   // QA twin rewrites the real slskd.yml and disconnects his real daemon — the
   // twin shares port 5030 with the live app.
   'slsk-share-folders-set', 'slsk-enabled-set', 'slsk-upload-limit-set',
+  // Answering a pending replacement moves his OLD copy to the Trash. A twin
+  // must never answer one on his behalf.
+  'slsk-replace-resolve',
 ]
 
 module.exports = { runHandler, callSource, GATED_CHANNELS, MAIN_PATH }

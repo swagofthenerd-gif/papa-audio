@@ -272,9 +272,15 @@
         case 'verify': verify(); break
         case 'download': {
           if (!deps._slskEnqueue) { showSnackbar('Downloads are not wired up'); break }
-          const items = m.tracks.map(x => ({ username, filename: x.fullPath || x.filename || x.name, size: x.size || 0 }))
+          // Same contract as the room's rows: an upgrade download names the
+          // copy it would replace, so the post-verify pass can offer to bin
+          // the old one. Arms the question; never the deletion.
+          const rep = album.matchedLibId ? { replaceLibId: String(album.matchedLibId) } : {}
+          const items = m.tracks.map(x => ({ username, filename: x.fullPath || x.filename || x.name, size: x.size || 0, ...rep }))
           const r = await deps._slskEnqueue(items)
-          showSnackbar(r && r.ok ? 'Downloading ' + m.title : (r && r.reason) || 'Could not start the download')
+          showSnackbar(r && r.ok
+            ? 'Downloading ' + m.title + (rep.replaceLibId ? ' — you will be asked about your old copy once it is checked' : '')
+            : (r && r.reason) || 'Could not start the download')
           if (r && r.ok && deps._scheduleLibRescan) deps._scheduleLibRescan()
           break
         }

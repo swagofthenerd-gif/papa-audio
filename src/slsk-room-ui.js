@@ -271,6 +271,20 @@
       paintBody()
     }
 
+    // Downloading an album that upgrades one he already owns carries the
+    // library id of the copy it would replace. This deletes NOTHING: it only
+    // arms the check that runs after the download finishes and verifies, which
+    // then ASKS. Without it the whole replace path is unreachable from this
+    // page — it was only ever sent by the old shop, so upgrading here quietly
+    // left both copies on disk and the old one had to be hunted down by hand.
+    function itemsFor(a) {
+      if (!a) return []
+      const rep = a.matchedLibId ? { replaceLibId: String(a.matchedLibId) } : {}
+      return (a.files || [])
+        .filter(f => T().AUDIO_RE.test(f.name))
+        .map(f => ({ username, filename: f.fullPath, size: f.size || 0, ...rep }))
+    }
+
     function openDossier(album, opts) {
       const D = typeof window !== 'undefined' ? window.PapaSlskDossier : null
       const Wm = W()
@@ -342,7 +356,7 @@
       }
       bodyEl.querySelector('#slr-dl-picked').addEventListener('click', async () => {
         const picked = [...bodyEl.querySelectorAll('.slr-pick:checked')].map(cb => albumsByPath.get(cb.dataset.path.toLowerCase())).filter(Boolean)
-        const items = picked.flatMap(a => (a.files || []).filter(f => T().AUDIO_RE.test(f.name)).map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        const items = picked.flatMap(itemsFor)
         const r = await deps._slskEnqueue(items)
         deps.showSnackbar(r && r.ok ? 'Downloading ' + picked.length + ' albums' : 'Could not start the download')
         if (r && r.ok && deps._scheduleLibRescan) deps._scheduleLibRescan()
@@ -350,17 +364,24 @@
       const grab = bodyEl.querySelector('#slr-grab-all')
       if (grab) grab.addEventListener('click', () => {
         const go = async () => {
-          const items = shelves.upgrades.flatMap(a => (a.files || []).filter(f => T().AUDIO_RE.test(f.name)).map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+          const items = shelves.upgrades.flatMap(itemsFor)
           const r = await deps._slskEnqueue(items)
           deps.showSnackbar(r && r.ok ? 'Downloading ' + shelves.upgrades.length + ' upgrades' : 'Could not start the download')
           if (r && r.ok && deps._scheduleLibRescan) deps._scheduleLibRescan()
         }
         if (deps._mgConfirm) {
-          deps._mgConfirm({
-            title: 'Download all ' + shelves.upgrades.length + ' upgrades?',
-            body: shelves.upgrades.slice(0, 12).map(a => a.artist + ' – ' + a.album).join('\n') + (shelves.upgrades.length > 12 ? '\n…' : ''),
-            ok: 'Download',
-          }).then(y => y && go())
+          // _mgConfirm is positional and returns nothing — it takes the action
+          // as a callback. Called object-style with .then() on the result, this
+          // threw on every click, so "Grab all upgrades" has never once run.
+          const lines = shelves.upgrades.slice(0, 12).map(a => esc(a.artist + ' – ' + a.album))
+          if (shelves.upgrades.length > 12) lines.push('…')
+          deps._mgConfirm(
+            'Download all ' + shelves.upgrades.length + ' upgrades?',
+            lines.join('<br>') +
+              '<p class="slr-muted">Your old copies stay where they are. Once each download is checked, Downloads will ask whether to bin the copy it replaces.</p>',
+            'Download',
+            go
+          )
         } else go()
       })
       armArt()
