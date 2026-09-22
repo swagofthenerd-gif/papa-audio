@@ -500,6 +500,12 @@ class VideoEngine extends EventEmitter {
     // proc may not carry a stderr stream.
     this._stderr = []
     if (proc.stderr) {
+      // resume() first and unconditionally: draining the pipe is the contract,
+      // and it must hold even where no 'data' listener can be attached. The
+      // capture below is an addition to that, never a replacement for it.
+      try { if (typeof proc.stderr.resume === 'function') proc.stderr.resume() } catch (_) {}
+    }
+    if (proc.stderr && typeof proc.stderr.on === 'function') {
       let tail = ''
       proc.stderr.on('data', chunk => {
         // Belongs to THIS process: an old mpv's dying words must not be read as

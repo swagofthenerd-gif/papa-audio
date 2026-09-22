@@ -66,12 +66,29 @@ function rendererCtx(over) {
     _updatePredownloadControl() { seen.painted++ },
     window: { api: { videoPredownload() {} } },
   }, over || {})
+  ctx.Set = Set
+  ctx.PapaReleaseName = require('../src/release-name')
+  ctx.window.PapaReleaseName = ctx.PapaReleaseName
   vm.createContext(ctx)
   // The real _setPackFiles, _nextEpisodePackFile and _predownloadAvailable.
   const start = RENDERER.indexOf('var _packFiles = []')
   const end = RENDERER.indexOf('function _updatePredownloadControl(')
   assert.ok(start > 0 && end > start, 'found the predownload block')
   vm.runInContext(RENDERER.slice(start, end), ctx)
+  // _nextEpisodePackFile delegates to the one season-aware matcher instead of
+  // repeating an episode-number-only match of its own — a complete-series pack
+  // holds an "episode 2" per season, and the folder has to decide which.
+  for (const fn of ['_packGroupSeason', '_packFileForEpisode']) {
+    const at = RENDERER.indexOf('\nfunction ' + fn + '(')
+    assert.ok(at > -1, fn + ' must still be a top-level function in renderer.js')
+    let depth = 0
+    let body = ''
+    for (let i = RENDERER.indexOf('{', at); i < RENDERER.length; i++) {
+      if (RENDERER[i] === '{') depth++
+      else if (RENDERER[i] === '}') { depth--; if (depth === 0) { body = RENDERER.slice(at, i + 1); break } }
+    }
+    vm.runInContext(body, ctx)
+  }
   return { ctx, seen }
 }
 

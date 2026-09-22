@@ -20,7 +20,7 @@ function fakeProc() {
 // will never exist eventually fails and tears the process reference down, which
 // is correct — but every line mpv writes arrives long before that, in the window
 // this opens.
-async function engineWithProc() {
+async function engineWithProc(t) {
   const proc = fakeProc()
   const engine = new VideoEngine({
     binary: '/nonexistent/mpv',
@@ -29,34 +29,40 @@ async function engineWithProc() {
   })
   const pending = engine.start('/tmp/nothing.mkv')
   pending.catch(() => {})
+  // That start is left deliberately in flight — the stderr handler is attached
+  // before the connect is awaited, and the connect to a socket that will never
+  // exist is what this needs to outlive. It must still be torn down: an engine
+  // left retrying a connection keeps the event loop alive, which held the whole
+  // video suite open when these tests ran alongside the others.
+  t.after(() => { try { engine.stop() } catch (_) {} })
   await new Promise(r => setImmediate(r))
   return { engine, proc }
 }
 
-test('mpv stderr is kept, not discarded', async () => {
-  const { engine, proc } = await engineWithProc()
+test('mpv stderr is kept, not discarded', async t => {
+  const { engine, proc } = await engineWithProc(t)
   proc.stderr.emit('data', 'Failed to recognize file format.\n')
   assert.deepEqual(engine.stderrTail(), ['Failed to recognize file format.'])
 })
 
-test('a partial line is held until its newline arrives', async () => {
-  const { engine, proc } = await engineWithProc()
+test('a partial line is held until its newline arrives', async t => {
+  const { engine, proc } = await engineWithProc(t)
   proc.stderr.emit('data', 'Cannot open ')
   assert.deepEqual(engine.stderrTail(), [], 'half a line is not a line yet')
   proc.stderr.emit('data', 'file\nnext line\n')
   assert.deepEqual(engine.stderrTail(), ['Cannot open file', 'next line'])
 })
 
-test('the ring is bounded, keeping the most recent lines', async () => {
-  const { engine, proc } = await engineWithProc()
+test('the ring is bounded, keeping the most recent lines', async t => {
+  const { engine, proc } = await engineWithProc(t)
   for (let i = 0; i < STDERR_KEEP_LINES + 50; i++) proc.stderr.emit('data', 'line ' + i + '\n')
   const tail = engine.stderrTail()
   assert.equal(tail.length, STDERR_KEEP_LINES)
   assert.equal(tail[tail.length - 1], 'line ' + (STDERR_KEEP_LINES + 49))
 })
 
-test('a replaced process cannot write into the live engine log', async () => {
-  const { engine, proc } = await engineWithProc()
+test('a replaced process cannot write into the live engine log', async t => {
+  const { engine, proc } = await engineWithProc(t)
   const stale = proc
   engine.proc = fakeProc()               // as a newer start() would leave it
   stale.stderr.emit('data', 'dying words of the old mpv\n')
@@ -79,8 +85,8 @@ test('redaction leaves ordinary lines alone', () => {
   assert.equal(redactStderr(''), '')
 })
 
-test('stderrTail redacts what it returns', async () => {
-  const { engine, proc } = await engineWithProc()
+test('stderrTail redacts what it returns', async t => {
+  const { engine, proc } = await engineWithProc(t)
   proc.stderr.emit('data', 'Opening https://host.example/d/TOKEN/f.mkv\n')
   const tail = engine.stderrTail()
   assert.ok(!tail[0].includes('TOKEN'), tail[0])

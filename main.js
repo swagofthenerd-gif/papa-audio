@@ -16317,8 +16317,11 @@ ipcMain.handle('video-play', async (_, { result }) => {
             // token immediately before load() so the old URL is never loaded
             // into the newer engine — mirrors video-switch-stream's post-load
             // guard.
+            // Traced before the guard, not between it and the load: the re-check
+            // has to stay immediately adjacent to the load it protects, so a
+            // rapid double-play cannot load the old URL into the newer engine.
+            if (current()) switchTrace.write('load-start', { via: 'peers' })
             if (!current()) return
-            switchTrace.write('load-start', { via: 'peers' })
             return videoEngine().load(url)
           }).then(() => {
             if (!current()) return
