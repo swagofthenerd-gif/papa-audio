@@ -66,6 +66,34 @@ function parseRange(header, total) {
   return { start, end }
 }
 
+// Whether an answer is the range that was asked for. Returns null when it is,
+// or a short reason when it is not.
+//
+// RFC 9110: a 206 must carry a Content-Range naming the first byte it is
+// sending, and a 200 is the WHOLE representation — which only lines up with
+// the request when the request started at byte zero. Both were accepted
+// unchecked, so an origin that ignored Range handed back byte zero and the
+// relay relabelled it as whatever offset the player had asked for.
+function _rangeAnswerFault(res, start) {
+  if (res.status === 200) {
+    return start === 0 ? null : 'full body for a range starting at ' + start
+  }
+  if (res.status !== 206) return 'status ' + res.status
+  const cr = String((res.headers && res.headers.get && res.headers.get('content-range')) || '')
+  const m = /^\s*bytes\s+(\d+)-(\d+)\//i.exec(cr)
+  // A 206 with no usable Content-Range names no position, so there is nothing
+  // to check. It is malformed either way (RFC 9110 requires the field on a 206),
+  // but refusing it outright would break a well-behaved origin that simply omits
+  // it. The narrower rule is enough: unverifiable bytes are accepted only where
+  // being wrong is impossible — a request that started at byte zero, which is
+  // where any body starts anyway.
+  if (!m) return start === 0 ? null : (cr ? 'unparsable content-range' : 'no content-range') +
+    ' on a range starting at ' + start
+  const from = Number(m[1])
+  if (from !== start) return 'content-range starts at ' + from + ', asked for ' + start
+  return null
+}
+
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
@@ -78,13 +106,43 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   let headCache = null
   let tailCache = null
 
+  // Read at most `limit` bytes of a response body, then stop and close it.
+  //
+  // arrayBuffer() reads whatever the origin decides to send. These servers
+  // sometimes answer a bounded range with the WHOLE file (that is the same
+  // defect _upstream now refuses below), and a relay that calls arrayBuffer()
+  // on a 12 GB body tries to hold 12 GB in memory. Nothing upstream of here can
+  // make that safe, so the limit is enforced at the read itself.
+  async function _readBounded(res, limit) {
+    if (!res.body || typeof res.body.getReader !== 'function') {
+      const buf = Buffer.from(await res.arrayBuffer())
+      return buf.length > limit ? buf.subarray(0, limit) : buf
+    }
+    const reader = res.body.getReader()
+    const parts = []
+    let got = 0
+    try {
+      while (got < limit) {
+        const { done, value } = await reader.read()
+        if (done) break
+        let chunk = Buffer.from(value)
+        if (got + chunk.length > limit) chunk = chunk.subarray(0, limit - got)
+        parts.push(chunk)
+        got += chunk.length
+      }
+    } finally {
+      try { await reader.cancel() } catch (_) {}
+    }
+    return Buffer.concat(parts, got)
+  }
+
   // Read one region into memory, retried. Returns null rather than throwing:
   // an uncached region only costs a round trip later.
   async function _slurp(start, end) {
     try {
       const res = await _upstream(start, end, null)
       if (!res) return null
-      const buf = Buffer.from(await res.arrayBuffer())
+      const buf = await _readBounded(res, end - start + 1)
       return buf.length ? { from: start, buf } : null
     } catch (_) { return null }
   }
@@ -151,7 +209,25 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
         const res = await fetcher(target, Object.assign(
           { stream: true, headers: { Range: `bytes=${start}-${end}` } },
           signal ? { signal } : {}))
-        if (res && (res.status === 206 || res.status === 200)) return res
+        if (res && (res.status === 206 || res.status === 200)) {
+          const bad = _rangeAnswerFault(res, start)
+          if (!bad) return res
+          // The origin answered successfully, but not with the bytes that were
+          // asked for. Serving this body anyway is how a seek into the middle of
+          // a film played the opening titles instead: the relay had already
+          // written `Content-Range: bytes 6000000000-…` and then streamed byte
+          // zero onwards underneath it, and the player has no way to know. Wrong
+          // bytes are worse than no bytes.
+          //
+          // Retried rather than failed outright, because these servers are
+          // inconsistent request to request and the next ask often honours the
+          // range. Never served, whatever the retries do.
+          try { if (res.body && res.body.cancel) await res.body.cancel() } catch (_) {}
+          last = new Error('upstream ignored the range (' + bad + ')')
+          last.code = 'RANGE_IGNORED'
+          await _sleep(RETRY_DELAY_MS * (i + 1))
+          continue
+        }
         // Drain the error body so the socket is returned to the pool rather
         // than left half-read — a leaked connection is what makes these
         // servers start refusing everything.
@@ -232,14 +308,28 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
       if (res.destroyed || res.writableEnded) return
       const up = await _upstream(from, wanted.end, ctrl ? ctrl.signal : null)
       if (res.destroyed || res.writableEnded) { try { await up.body.cancel() } catch (_) {} ; return }
-      if (!up.body) { const buf = Buffer.from(await up.arrayBuffer()); return res.end(buf) }
+      // What is still owed after anything the cache already answered. The
+      // headers promised exactly this many bytes and the body must not exceed
+      // them: an origin that answers `bytes=0-4194303` with the whole 12 GB
+      // file is answering honestly from byte zero (so the bytes are right), but
+      // writing all of it under a 4 MiB Content-Length desynchronises the
+      // connection and buffers a film into memory on the way.
+      const owed = length - served
+      if (!up.body) {
+        const buf = await _readBounded(up, owed)
+        return res.end(buf)
+      }
       const reader = up.body.getReader()
+      let written = 0
       try {
-        for (;;) {
+        while (written < owed) {
           if (res.destroyed || res.writableEnded) break
           const { done, value } = await reader.read()
           if (done) break
-          if (!res.write(Buffer.from(value))) await _drain(res)
+          let chunk = Buffer.from(value)
+          if (written + chunk.length > owed) chunk = chunk.subarray(0, owed - written)
+          written += chunk.length
+          if (!res.write(chunk)) await _drain(res)
         }
       } finally {
         // Whether the player finished, seeked away or vanished, the upstream
@@ -309,4 +399,4 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   }
 }
 
-module.exports = { createDebridProxy, parseRange, UPSTREAM_TRIES, UNSATISFIABLE }
+module.exports = { createDebridProxy, parseRange, UPSTREAM_TRIES, UNSATISFIABLE, _rangeAnswerFault }
