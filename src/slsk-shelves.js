@@ -121,6 +121,25 @@ function isFoldableChild(name) {
   return isDiscFolder(name) || isSurroundFolder(name)
 }
 
+// …but only when it is actually a leaf. isFoldableChild answers a question
+// about a NAME, and the name alone is not enough: a peer whose whole library
+// lives under one folder called "SURROUND" has every folder under it fold into
+// the parent, and the entire share reads as a single album. Measured on one of
+// his cached peers — 6,797 folders, 58,891 files, 1 album, Hunt and Wander both
+// showing one card.
+//
+// A disc or format folder that CONTAINS real albums is a shelf, not a disc, so
+// it folds only when nothing below it is an album in its own right.
+function hasRealSubdirs(node) {
+  if (!node || !node.dirs || !node.dirs.size) return false
+  for (const child of node.dirs.values()) if (!isFoldableChild(child.name)) return true
+  return false
+}
+
+function foldsIntoParent(child) {
+  return isFoldableChild(child.name) && !hasRealSubdirs(child)
+}
+
 // A leaf segment that is ONLY a quality/source label: "44.1", "FLAC", "16-44",
 // "24bit", "WEB". People file these as the last folder of a path
 // ("…\In Rainbows\FLAC\"), and the shop rendered each one as its own
@@ -642,7 +661,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isFoldableChild(child.name)) {
+        if (foldsIntoParent(child)) {
           discCount++
           if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
@@ -665,7 +684,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     for (const f of node.files) if (isAudioName(f.name || f.filename)) n++
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isFoldableChild(child.name)) n += countWithDiscs(child)
+        if (foldsIntoParent(child)) n += countWithDiscs(child)
       }
     }
     return n
@@ -676,7 +695,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     const realSubdirs = []
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (!isFoldableChild(child.name)) realSubdirs.push(child)
+        if (!foldsIntoParent(child)) realSubdirs.push(child)
       }
     }
 
@@ -700,10 +719,15 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
       for (const child of realSubdirs) walk(child, segs.concat(child.name))
       // Edge case: a node with real subdirs but also enough of its own audio to
       // be an album in its own right (e.g. a "Singles" folder). Emit it too.
-      // Note the gate is on the GATHERED count while the album is built from the
-      // node's own audio — faithfully odd, and kept that way on purpose.
-      if (node.path && countWithDiscs(node) >= minTracks) {
-        albums.push(buildAlbum(node, segs, { files: node.files.filter(f => isAudioName(f.name || f.filename)), discCount: 0 }))
+      // The gate is the node's OWN audio, which is also what the card is built
+      // from. It used to count the gathered total instead — so a shelf with no
+      // loose audio of its own, whose disc children held the music, emitted a
+      // card reading 0 tracks, 0 bytes, no format. Measured on his cached
+      // peers: 33 such dead cards, one of them a Chopin box set with 57 FLACs
+      // sitting unreachable underneath it.
+      const ownAudio = node.files.filter(f => isAudioName(f.name || f.filename))
+      if (node.path && ownAudio.length >= minTracks) {
+        albums.push(buildAlbum(node, segs, { files: ownAudio, discCount: 0 }))
       }
     }
   }
@@ -1635,7 +1659,7 @@ async function extractAlbumsChunked(root, opts) {
     let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isFoldableChild(child.name)) {
+        if (foldsIntoParent(child)) {
           discCount++
           if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
@@ -1672,7 +1696,7 @@ async function extractAlbumsChunked(root, opts) {
       const realSubdirs = []
       if (node.dirs && node.dirs.size) {
         for (const child of node.dirs.values()) {
-          if (!isFoldableChild(child.name)) realSubdirs.push(child)
+          if (!foldsIntoParent(child)) realSubdirs.push(child)
         }
       }
       const gathered = gatherWithDiscs(node)
@@ -1680,12 +1704,12 @@ async function extractAlbumsChunked(root, opts) {
       if (isAlbumLeaf && node.path) {
         albums.push(buildAlbum(node, segs, gathered))
       } else {
-        // Mixed node: real subfolders plus enough gathered audio to also be an
-        // album in its own right. Pushed first so it pops (emits) AFTER the
-        // children — the recursive walk's exact order. Note it is gated on the
-        // GATHERED count but built from the node's OWN audio, faithfully
-        // mirroring extractAlbums.
-        if (realSubdirs.length && node.path && gathered.files.length >= minTracks) {
+        // Mixed node: real subfolders plus enough of its OWN audio to also be
+        // an album in its own right. Pushed first so it pops (emits) AFTER the
+        // children — the recursive walk's exact order. Gated on the node's own
+        // audio, which is what the card is built from; see extractAlbums.
+        const ownAudio = node.files.filter(f => isAudioName(f.name || f.filename))
+        if (realSubdirs.length && node.path && ownAudio.length >= minTracks) {
           stack.push({ post: { node, segs } })
         }
         for (let i = realSubdirs.length - 1; i >= 0; i--) {
@@ -1879,7 +1903,7 @@ const shApi = {
   upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
   buildLibraryIndex, tokenScore, tokenScoreSets, normKey, normTokenSet,
   cleanSegment, extractYear,
-  isDiscFolder, isSurroundFolder, isFoldableChild, isQualityLeaf, stripLeafNoise,
+  isDiscFolder, isSurroundFolder, isFoldableChild, foldsIntoParent, hasRealSubdirs, isQualityLeaf, stripLeafNoise,
   groupByLetter, albumQualityLabel, libAlbumToComparable,
   isAudioName, isLosslessName, qualityString, channelSuffix,
   SH_AUDIO_RE, SH_LOSSLESS_EXT,
