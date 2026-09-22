@@ -15954,9 +15954,27 @@ function _startTorrentRace(result, alternates, { current, fail, onReady }) {
     if (winner || i >= contenders.length || !current()) return
     started++
     const mine = contenders[i]
+    // This lane's streamer, readable from the callbacks below. It replaces a read
+    // of the `const streamer` this call is about to return, which sat inside its
+    // own temporal dead zone: _startTorrentStream calls current() before it
+    // returns (the bandwidth-cap warning does). That never actually threw, only
+    // because `winner` is always null here — startNext() returns early when
+    // there is one — so `winner === streamer` short-circuits away unevaluated.
+    // A guard that is safe by accident is worth one line to make safe on purpose.
+    let lane = null
+    // One lane settles ONCE. A dying streamer announces itself twice — it emits
+    // 'error' AND rejects the start() promise (torrent-stream.js does both, by
+    // design) — and both were wired to this fail. With two contenders, one dead
+    // lane counted as two failures, `failed >= started` came true, and the race
+    // declared the whole play failed while the second swarm was still connecting
+    // perfectly happily. Settling once makes a duplicate announcement harmless,
+    // which is the only thing that can be asked of a race.
+    let settled = false
     const streamer = _startTorrentStream(mine, {
-      current: () => current() && (!winner || winner === streamer),
+      current: () => current() && (!winner || winner === lane),
       fail: err => {
+        if (settled) return
+        settled = true
         lastErr = err
         failed++
         if (winner) return
@@ -15974,6 +15992,7 @@ function _startTorrentRace(result, alternates, { current, fail, onReady }) {
       // Buffering words from two swarms would flicker; the lead lane speaks.
       quiet: i > 0,
     })
+    lane = streamer
     racers.push(streamer)
     if (started < contenders.length) {
       timers.push(setTimeout(() => { if (!winner && current()) startNext() }, HEDGE_AFTER_MS))
