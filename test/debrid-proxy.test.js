@@ -112,6 +112,10 @@ test('the ends of the file are cached once and then served with no network wait'
   const proxy = createDebridProxy({ fetchFn })
   try {
     const local = await proxy.serve('https://rd.example/film.mkv')
+    // The warm-up is deliberately NOT awaited by serve() any more — making the
+    // player wait for 12 MiB before it gets a URL was the startup cost. A test
+    // about what the cache holds has to wait for it on purpose.
+    await proxy._warmed()
     const cached = proxy._cached()
     assert.ok(cached.head > 0 && cached.tail > 0, 'both ends held: ' + JSON.stringify(cached))
     const afterWarm = upstream.length

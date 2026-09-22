@@ -107,6 +107,9 @@ async function withRelay(mode, fn) {
   const proxy = createDebridProxy({ fetchFn: origin(mode, log) })
   try {
     const local = await proxy.serve('https://rd.example/film.mkv')
+    // serve() no longer waits for the head/tail warm-up, so these tests do —
+    // otherwise a background fill lands in the middle of what they are counting.
+    await proxy._warmed()
     return await fn(local, proxy, log)
   } finally { proxy.stop() }
 }

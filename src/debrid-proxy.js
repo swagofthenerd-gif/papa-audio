@@ -94,6 +94,34 @@ function _rangeAnswerFault(res, start) {
   return null
 }
 
+// The first task whose answer passes `valid`, or null when none of them does.
+//
+// Deliberately not Promise.any: a task can "succeed" with a useless answer (a
+// HEAD that returns 200 and no Content-Length), and that must not beat a slower
+// task that would have given a real one. A fast failure must not win either.
+// The losers are aborted as soon as there is a winner, so a HEAD nobody is
+// waiting for does not hold a connection open against a server that starts
+// refusing everything once its connections leak.
+function _firstValid(tasks, valid) {
+  return new Promise(resolve => {
+    const ctrls = tasks.map(() => (typeof AbortController === 'function' ? new AbortController() : null))
+    let settled = false
+    let left = tasks.length
+    const done = value => {
+      if (settled) return
+      settled = true
+      for (const c of ctrls) { try { if (c) c.abort() } catch (_) {} }
+      resolve(value)
+    }
+    const lost = () => { if (--left === 0) done(null) }
+    tasks.forEach((task, i) => {
+      let p
+      try { p = Promise.resolve(task(ctrls[i] ? ctrls[i].signal : undefined)) } catch (e) { p = Promise.reject(e) }
+      p.then(v => { if (valid(v)) done(v); else lost() }, lost)
+    })
+  })
+}
+
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
@@ -105,6 +133,18 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   // { from, buf } for the opening and closing regions of the file.
   let headCache = null
   let tailCache = null
+  // Which file the relay is serving. Anything that writes shared state after an
+  // await compares against this first; see serve() and stop().
+  let epoch = 0
+  // The background warm-up, kept only so tests can wait for it deliberately.
+  // Nothing in playback ever awaits it — that is the whole point.
+  let prefill = null
+  // The regions currently being fetched, as { from, to, promise }. A request
+  // landing inside one WAITS for it instead of asking upstream for the same bytes
+  // a second time. Without this, moving the warm-up off the critical path would
+  // simply have doubled the requests: mpv reads the head and the tail the moment
+  // it opens a file, which is exactly what the warm-up is fetching.
+  let fills = []
 
   // Read at most `limit` bytes of a response body, then stop and close it.
   //
@@ -167,16 +207,22 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   // five, and asking them in sequence with backoff was costing seconds on
   // every single play (measured 2026-09-16 — the candidate check took 1 s and
   // then this took over ten).
+  //
+  // "Whichever answers first" is what the comment said and NOT what the code
+  // did: Promise.allSettled waits for both to settle, so a range probe that came
+  // back in 200 ms sat behind a HEAD that had not answered at all until that
+  // request timed out. The whole point of asking twice is to be able to ignore
+  // the slow one, which needs a first-success race, not a wait-for-everything.
   async function _probe(url) {
-    const viaHead = async () => {
-      const res = await fetcher(url, { method: 'HEAD' })
+    const viaHead = async (signal) => {
+      const res = await fetcher(url, { method: 'HEAD', signal })
       if (!res || !res.ok) throw new Error('HEAD ' + (res && res.status))
       const len = Number(res.headers.get('content-length'))
       if (!Number.isFinite(len) || len <= 0) throw new Error('no length')
       return { total: len, type: res.headers.get('content-type') }
     }
-    const viaRange = async () => {
-      const res = await fetcher(url, { headers: { Range: 'bytes=0-0' } })
+    const viaRange = async (signal) => {
+      const res = await fetcher(url, { headers: { Range: 'bytes=0-0' }, signal })
       if (!res || !(res.status === 206 || res.status === 200)) throw new Error('range ' + (res && res.status))
       const cr = res.headers.get('content-range') || ''
       try { if (res.body && res.body.cancel) res.body.cancel() } catch (_) {}
@@ -185,11 +231,10 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
       return { total: Number(m[1]), type: res.headers.get('content-type') }
     }
     for (let round = 0; round < 2; round++) {
-      const results = await Promise.allSettled([viaHead(), viaRange()])
-      const win = results.find(r => r.status === 'fulfilled' && r.value && r.value.total > 0)
+      const win = await _firstValid([viaHead, viaRange], v => v && v.total > 0)
       if (win) {
-        total = win.value.total
-        contentType = win.value.type || contentType
+        total = win.total
+        contentType = win.type || contentType
         return total
       }
       if (round === 0) await _sleep(300)
@@ -300,6 +345,15 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
         'Content-Type': contentType,
         'Accept-Ranges': 'bytes',
       }, req.headers.range ? { 'Content-Range': `bytes ${wanted.start}-${wanted.end}/${total}` } : {}))
+      // If these bytes are already being fetched by the warm-up, wait for THAT
+      // rather than asking upstream for them again. This is what makes handing the
+      // URL over early a win instead of a wash: mpv's process spawn, window and
+      // IPC connect all happen while the fill runs, and mpv's first read joins the
+      // fetch already in flight instead of starting a second one for the same
+      // bytes — which is the thing these servers start refusing over.
+      const pending = fills.find(f => wanted.start >= f.from && wanted.start <= f.to)
+      if (pending) { try { await pending.promise } catch (_) {} }
+      if (res.destroyed || res.writableEnded) return
       // Anything already in memory goes out with no network wait at all —
       // which is most of what opening and seeking actually read.
       const served = _fromCache(res, wanted.start, wanted.end)
@@ -366,21 +420,47 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
           server.listen(0, host, resolve)
         })
       }
-      // Both ends of the file, fetched once, in parallel with each other.
+      // Both ends of the file, fetched once, in parallel with each other — and
+      // NOT waited for.
+      //
+      // This used to be awaited, which meant the player was handed no URL at all
+      // until 12 MiB had been downloaded. It bought a fast first seek at the
+      // price of a slow start on every single play, and a slow start is the thing
+      // being complained about. The warm-up is worth having; making the picture
+      // wait for it is not. A request that arrives before the cache is filled
+      // simply goes upstream, which is what it would have done anyway.
+      //
+      // The epoch is what stops a fill from a previous link writing into the
+      // relay after stop() or a re-serve: the assignment happens after an await,
+      // by which time this may no longer be the file being served.
+      const mine = ++epoch
+      fills = []
       if (total > 0) {
         const headEnd = Math.min(total - 1, HEAD_CACHE_BYTES - 1)
         const tailFrom = Math.max(0, total - TAIL_CACHE_BYTES)
-        const [h, t] = await Promise.all([
-          _slurp(0, headEnd),
-          tailFrom > headEnd ? _slurp(tailFrom, total - 1) : Promise.resolve(null),
-        ])
-        headCache = h
-        tailCache = t
+        const fetchRegion = (from, to, assign) => {
+          const entry = { from, to, promise: null }
+          const retire = () => { fills = fills.filter(f => f !== entry) }
+          entry.promise = _slurp(from, to).then(got => {
+            if (epoch === mine) assign(got)
+            retire()
+          }, retire)
+          fills.push(entry)
+          return entry.promise
+        }
+        const jobs = [fetchRegion(0, headEnd, h => { headCache = h })]
+        if (tailFrom > headEnd) jobs.push(fetchRegion(tailFrom, total - 1, t => { tailCache = t }))
+        prefill = Promise.all(jobs).catch(() => {})
       }
       const addr = server.address()
       return `http://${host}:${addr.port}/stream`
     },
     stop() {
+      // Bumped first: a cache fill still in flight checks this before it writes,
+      // so it cannot repopulate a relay that has just been torn down.
+      epoch++
+      prefill = null
+      fills = []
       if (server) { try { server.close() } catch (_) {} server = null }
       target = null; total = 0
       headCache = null; tailCache = null
@@ -395,6 +475,9 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     // reusing one has to be able to ask.
     alive() { return !!server && !!target },
     _cached: () => ({ head: headCache ? headCache.buf.length : 0, tail: tailCache ? tailCache.buf.length : 0 }),
+    // Tests only: the warm-up is deliberately not on anyone's critical path, so
+    // a test that wants to assert on a filled cache has to say so.
+    _warmed: () => prefill || Promise.resolve(),
     _total: () => total,
   }
 }

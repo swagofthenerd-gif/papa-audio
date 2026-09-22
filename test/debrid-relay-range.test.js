@@ -111,6 +111,10 @@ test('a 5xx is still retried — these servers refuse good ranges intermittently
   })
   const local = await proxy.serve('https://rd.example/big.mkv')
   try {
+    // serve() no longer waits for the head/tail warm-up — making the player wait
+    // for 12 MiB before it got a URL was the startup cost. Its own retries must
+    // finish before this test can start counting, or it counts theirs too.
+    await proxy._warmed()
     attempts = 0
     await fetch(local, { headers: { Range: 'bytes=500000000-500000999' } })
       .then(r => r.arrayBuffer()).catch(() => {})
