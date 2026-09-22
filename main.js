@@ -15756,6 +15756,13 @@ function _wireVideoEngine() {
     safeSend('video-event', { kind: 'key', action: payload && payload.action })
   })
   engine.on('engineDown', () => {
+    // mpv only ever says WHY on stderr. Written down before the teardown, so a
+    // "Playback stopped unexpectedly" in the UI has a reason behind it in the
+    // trace instead of being the whole of what is known. Redacted by the engine.
+    try {
+      const tail = typeof engine.stderrTail === 'function' ? engine.stderrTail(30) : []
+      if (tail.length) switchTrace.write('mpv-stderr', { lines: tail })
+    } catch (_) {}
     if (_videoSession.streamer) {
       try { _videoSession.streamer.stop() } catch (_) {}
       _videoSession.streamer = null
@@ -15770,6 +15777,11 @@ function _wireVideoEngine() {
   // viewer set. Best-effort: an empty style is a no-op and a dead engine throws
   // harmlessly into the catch.
   engine.on('fileLoaded', () => {
+    // The gap between load-done (mpv ACCEPTED the loadfile) and this (mpv has
+    // the file OPEN) was 10.7 seconds on a measured switch — the single largest
+    // cost in the whole operation, and invisible until both were written down.
+    // Recorded on every path, so a play is measurable the same way.
+    try { switchTrace.write('file-open', { via: 'engine-event' }) } catch (_) {}
     try {
       const style = _videoConfig().subStyle
       if (style && Object.keys(style).length) engine.setSubStyle(style).catch(() => {})
@@ -16183,9 +16195,26 @@ ipcMain.handle('video-play', async (_, { result }) => {
     // else cannot hijack the engine or overwrite the newer status.
     const token = ++_videoSession.token
     const current = () => _videoSession.token === token
-    const fail = e => { if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+    // A play is measured the same way a switch is. Before this, the trace could
+    // say why a SWITCH was slow and nothing at all about why a first play was —
+    // which is the one every viewing starts with.
+    switchTrace.begin({
+      op: 'play',
+      title: (result && (result.title || result.label || result.name)) || null,
+      kind: result && result.kind,
+      season: result && result.season,
+      episode: result && result.episode,
+      absoluteEpisode: result && result.absoluteEpisode,
+      quality: result && result.quality,
+    })
+    const fail = e => {
+      if (!current()) return
+      switchTrace.write('FAILED', { error: (e && e.message) || String(e) })
+      safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) })
+    }
     const started = url => {
       if (!current()) return
+      switchTrace.write('PLAYING-SENT', { url: switchTrace.safeUrl(url) })
       safeSend('video-event', { kind: 'playing' })
       _probePlayingAudio(url, current)
     }
@@ -16226,13 +16255,17 @@ ipcMain.handle('video-play', async (_, { result }) => {
           _debridPlayableAny(result),
           new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
         ])
+        switchTrace.write('debrid-start', { budgetMs: DEBRID_BUDGET_MS })
         attempt
-          .catch(e => { _sendDebridMiss(current, e); throw e })
+          .catch(e => { switchTrace.write('debrid-miss', { error: (e && e.message) || String(e) }); _sendDebridMiss(current, e); throw e })
           .then(async directUrl => {
             if (!current() || !directUrl) throw new Error('debrid unusable')
+            switchTrace.write('debrid-ok', { url: switchTrace.safeUrl(directUrl) })
             await spinUp
             if (!current()) throw new Error('superseded')
+            switchTrace.write('load-start', { via: 'debrid' })
             await videoEngine().load(directUrl)
+            switchTrace.write('load-done', {})
             if (!current()) return
             started(directUrl)
             safeSend('video-event', { kind: 'debrid', ok: true })
@@ -16255,6 +16288,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       _startTorrentRace(result, result.alternates, {
         current, fail,
         onReady: (url, streamer) => {
+          switchTrace.write('peers-ready', { url: switchTrace.safeUrl(url) })
           // Wait for the parallel spin-up to finish, then load into the running
           // mpv. If the spin-up raced ahead and already failed, fail() has
           // fired and there is nothing left to load into.
@@ -16265,9 +16299,11 @@ ipcMain.handle('video-play', async (_, { result }) => {
             // into the newer engine — mirrors video-switch-stream's post-load
             // guard.
             if (!current()) return
+            switchTrace.write('load-start', { via: 'peers' })
             return videoEngine().load(url)
           }).then(() => {
             if (!current()) return
+            switchTrace.write('load-done', {})
             started(url)
             // A season pack already contains every episode. Telling the UI what
             // is in it turns episode switching into a file change on a torrent
