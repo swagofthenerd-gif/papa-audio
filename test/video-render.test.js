@@ -581,10 +581,15 @@ function predlCtx(api) {
     _packVia: 'torrent',
     _videoDetail: { type: 'tv' },
     _videoState: { season: 1, episode: 1 },
-    window: { api: api || {} },
+    window: { api: api || {}, PapaReleaseName: require('../src/release-name') },
+    PapaReleaseName: require('../src/release-name'),
+    Number, String, Array, Set,
   }
   vm.createContext(ctx)
-  for (const fn of ['_nextEpisodePackFile', '_predownloadAvailable', '_nextEpisodeOf']) {
+  // _nextEpisodePackFile delegates to the one season-aware matcher rather than
+  // repeating an episode-number-only match of its own, so the harness needs it.
+  for (const fn of ['_nextEpisodePackFile', '_predownloadAvailable', '_nextEpisodeOf',
+    '_packFileForEpisode', '_packGroupSeason']) {
     vm.runInContext(extract(fn), ctx)
   }
   return ctx

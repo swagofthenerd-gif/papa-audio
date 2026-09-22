@@ -1022,15 +1022,37 @@ const { newStreamDir: _newStreamDir } = require('../torrent-stream')
     // The window also has to clear the switch-flag reset that now opens the
     // function (a switch's flag must not outlive the switch, or every later
     // end-of-file is swallowed and auto-advance dies for the session).
-    const teardown = main.slice(main.indexOf('function _videoTeardown()'),
-      main.indexOf('function _videoTeardown()') + 2400)
+    // Brace-matched, not a character count: a 2400-character window stops
+    // covering the end of the function as soon as anything above it grows, and
+    // then asserts nothing while still passing.
+    const teardown = (() => {
+      const at = main.indexOf('function _videoTeardown()')
+      let depth = 0
+      for (let i = main.indexOf('{', at); i < main.length; i++) {
+        if (main[i] === '{') depth++
+        else if (main[i] === '}') { depth--; if (depth === 0) return main.slice(at, i + 1) }
+      }
+      return main.slice(at)
+    })()
     assert.match(teardown, /_videoSession\.switching = false/,
       'a superseded switch must not leave its flag set')
     assert.match(teardown, /streamer\.stop\(\)/)
     // The stop verb (the player's stop button), quitting, and mpv dying.
     assert.match(main, /case 'stop':[\s\S]{0,200}_videoTeardown\(\)/)
     assert.match(main, /will-quit[\s\S]{0,400}_videoTeardown\(\)/)
-    assert.match(main, /engineDown[\s\S]{0,300}streamer\.stop\(\)/)
+    // The engineDown handler in full, not the first 300 characters of it: mpv
+    // dying must stop the streamer wherever in that handler the stop sits.
+    const engineDown = (() => {
+      const at = main.indexOf("engine.on('engineDown'")
+      let depth = 0
+      for (let i = main.indexOf('{', at); i < main.length; i++) {
+        if (main[i] === '{') depth++
+        else if (main[i] === '}') { depth--; if (depth === 0) return main.slice(at, i + 1) }
+      }
+      return main.slice(at)
+    })()
+    assert.match(engineDown, /streamer\.stop\(\)/,
+      'mpv dying must tear the streamer down')
   })
 
 // ── Giving up ──────────────────────────────────────────────────────────────

@@ -17,6 +17,22 @@ function engineWithFakeClient() {
   return { engine, sent }
 }
 
+
+// The whole of a block, found by matching its braces rather than by slicing a
+// fixed number of characters off the front. A character count silently stops
+// covering what it was written to cover the moment anything above grows — a
+// comment is enough — and the test then passes because it is reading nothing.
+function blockAt(src, needle) {
+  const at = src.indexOf(needle)
+  if (at < 0) return ''
+  let depth = 0
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1) }
+  }
+  return src.slice(at)
+}
+
 test('setSubStyle maps friendly keys to their mpv properties', async () => {
   const { engine, sent } = engineWithFakeClient()
   await engine.setSubStyle({ fontSize: 55, color: '#ffffff', pos: 90 })
@@ -69,7 +85,7 @@ test('the persisted sub-style is re-applied on fileLoaded', () => {
   const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
   const at = MAIN.indexOf("engine.on('fileLoaded'")
   assert.ok(at > -1, 'the engine wiring must re-apply the sub-style on fileLoaded')
-  const body = MAIN.slice(at, at + 400)
+  const body = blockAt(MAIN, "engine.on('fileLoaded'")
   assert.match(body, /_videoConfig\(\)\.subStyle/)
   assert.match(body, /setSubStyle/)
 })

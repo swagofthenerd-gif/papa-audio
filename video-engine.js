@@ -139,6 +139,21 @@ const { ytdlPathArg, ytdlJsRuntimeArg } = require('./src/ytdlp-manager')
 // The properties mpv must push back. Observation mirrors mpv-engine.js:52 so the
 // two engines stay the same shape; the video engine adds everything the theatre
 // needs that a music player never asked about (tracks, chapters, codecs).
+// How many of mpv's last stderr lines are kept. Enough to hold the reason a
+// file was refused and the lines of context around it, bounded so a long film's
+// chatter cannot grow without limit.
+const STDERR_KEEP_LINES = 200
+
+// mpv prints the URL it is opening. For a RealDebrid link that URL contains the
+// account's token, so the kept lines are stripped of every URL's path and query
+// before anything can read them. The host stays: which server refused is the
+// useful half, and it is not a secret.
+function redactStderr(line) {
+  return String(line == null ? '' : line)
+    .replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#]*)([^\s]*)/gi,
+      (_m, scheme, host, rest) => scheme + '://' + host + (rest ? '/\u2026(' + rest.length + ' chars)' : ''))
+}
+
 const OBSERVED_PROPS = [
   'time-pos', 'duration', 'pause', 'volume', 'mute', 'speed',
   'track-list', 'sid', 'aid', 'chapter-list', 'eof-reached',
@@ -294,6 +309,12 @@ class VideoEngine extends EventEmitter {
     // be delivered to the mpv that replaced it.
     this._gen = 0
     this._socketPath = null
+    // The last few lines mpv wrote to stderr. When mpv refuses a file it says
+    // why on stderr and nowhere else — no IPC event carries it — so draining
+    // the pipe into nothing (which is what this did, to stop the pipe buffer
+    // filling and blocking the process) threw away the only account of the
+    // failure that exists. Kept bounded because mpv is chatty over a long film.
+    this._stderr = []
     // Whether mpv is embedded is not known until start(), and the mouse
     // binding differs between the two, so the embedded config is resolved then
     // rather than here. An explicit inputConf from the caller wins in both.
@@ -427,6 +448,14 @@ class VideoEngine extends EventEmitter {
     return a
   }
 
+  // mpv's last words, redacted. Empty when nothing was said or no process ran.
+  stderrTail(limit) {
+    const n = Number(limit)
+    const lines = Array.isArray(this._stderr) ? this._stderr : []
+    const take = Number.isFinite(n) && n > 0 ? lines.slice(-n) : lines.slice()
+    return take.map(redactStderr)
+  }
+
   _guard(op) {
     const gen = this._gen
     return (...args) => {
@@ -466,9 +495,33 @@ class VideoEngine extends EventEmitter {
     const proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
     this.proc = proc
     // mpv is chatty on stderr; without a drain the pipe buffer fills and the
-    // process blocks. The log content is not needed here. Optional: a test's
-    // injected proc may not carry a stderr stream.
-    proc.stderr?.resume()
+    // process blocks. Draining it into a bounded ring keeps that property and
+    // keeps the last words of a process that died. Optional: a test's injected
+    // proc may not carry a stderr stream.
+    this._stderr = []
+    if (proc.stderr) {
+      // resume() first and unconditionally: draining the pipe is the contract,
+      // and it must hold even where no 'data' listener can be attached. The
+      // capture below is an addition to that, never a replacement for it.
+      try { if (typeof proc.stderr.resume === 'function') proc.stderr.resume() } catch (_) {}
+    }
+    if (proc.stderr && typeof proc.stderr.on === 'function') {
+      let tail = ''
+      proc.stderr.on('data', chunk => {
+        // Belongs to THIS process: an old mpv's dying words must not be read as
+        // the replacement's, for the same reason its 'exit' must not be.
+        if (this.proc !== proc) return
+        tail += String(chunk)
+        const lines = tail.split(/\r?\n/)
+        tail = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          this._stderr.push(line)
+          if (this._stderr.length > STDERR_KEEP_LINES) this._stderr.shift()
+        }
+      })
+      proc.stderr.on('error', () => {})
+    }
     // Bound to THIS process, by identity. stop() SIGTERMs the old mpv and drops
     // its reference but cannot remove listeners it never held, and start()
     // clears _stopping in the same tick — while a real mpv takes far longer
@@ -975,6 +1028,8 @@ module.exports = {
   APP_KEYS,
   EngineGone,
   OBSERVED_PROPS,
+  STDERR_KEEP_LINES,
+  redactStderr,
   STATE_THROTTLE_MS,
   STALL_MS,
   OSD_FLASH_MS,

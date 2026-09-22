@@ -98,11 +98,24 @@ test('the ends of the file are cached once and then served with no network wait'
     const start = Number(m[1]); const end = Number(m[2])
     upstream.push([start, end])
     const slice = body.subarray(start, end + 1)
-    return { ok: true, status: 206, body: null, arrayBuffer: async () => slice, headers: { get: () => null } }
+    // A 206 names the bytes it is sending. RFC 9110 requires it, every real
+    // server sends it, and the relay now CHECKS it — a 206 whose Content-Range
+    // starts somewhere other than where the range asked is how a seek served the
+    // opening titles. This fake omitted the field, which made it a model of a
+    // server that does not exist.
+    return {
+      ok: true, status: 206, body: null,
+      arrayBuffer: async () => slice,
+      headers: { get: k => (k === 'content-range' ? `bytes ${start}-${end}/${TOTAL}` : null) },
+    }
   }
   const proxy = createDebridProxy({ fetchFn })
   try {
     const local = await proxy.serve('https://rd.example/film.mkv')
+    // The warm-up is deliberately NOT awaited by serve() any more — making the
+    // player wait for 12 MiB before it gets a URL was the startup cost. A test
+    // about what the cache holds has to wait for it on purpose.
+    await proxy._warmed()
     const cached = proxy._cached()
     assert.ok(cached.head > 0 && cached.tail > 0, 'both ends held: ' + JSON.stringify(cached))
     const afterWarm = upstream.length
