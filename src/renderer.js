@@ -5532,7 +5532,10 @@ function _nextEpisodePackFile() {
   if (!_videoDetail || _videoDetail.type === 'movie') return null
   const next = _nextEpisodeOf(_videoDetail, _videoState)
   if (!next) return null
-  return _packFiles.find(function (f) { return f && f.episode === next.episode && f.index != null }) || null
+  // One matcher, not two. This was a second copy of the episode-number-only
+  // match, so the download-next-episode button could offer to fetch season 1's
+  // episode 2 while season 2 was playing — the same bug in a second place.
+  return _packFileForEpisode(_packFiles, next)
 }
 
 // Whether the predownload surface can exist at all: the IPC has to be wired,
@@ -6091,17 +6094,83 @@ async function _playPrevEpisode() {
   }
 }
 
-// The pack file for a given next-episode target, matched by episode number.
+// The season a pack's folder declares, or null when it names none.
+// "Season 2", "S02", "2nd Season" and "…Slime S2" all answer; "Specials",
+// "Extras" and "Season Two" answer null, which is the honest answer — a folder
+// that names no season must not be read as naming season one.
+function _packGroupSeason(group) {
+  const R = (typeof PapaReleaseName !== 'undefined' && PapaReleaseName) ||
+    (typeof window !== 'undefined' && window.PapaReleaseName) || null
+  if (!R || typeof R.declaredSeason !== 'function') return null
+  try { return R.declaredSeason(String(group || '')) } catch (_) { return null }
+}
+
+// The pack file for a given next-episode target.
+//
 // Pure: the caller passes the pack's file list and the target so the decision
 // ("is the next episode already inside the torrent we're streaming?") can be
 // tested without the renderer's globals. Returns the file, or null when the
 // pack is empty, the target is unknown, or the pack does not carry it (a
 // single-file torrent, or the season finale).
+//
+// This used to match on the episode number and nothing else, which is the last
+// hiding place of the wrong-episode bug. A complete-series batch numbers every
+// season from 01 again, each in its own folder — torrent-stream's files() carries
+// that folder as `group` for exactly this reason — so a pack holding four seasons
+// holds four files that all answer to "episode 2", and the first one won. Watch
+// season 2, press Next, get season 1.
+//
+// The rule: one candidate is the answer. Several means the pack spans seasons,
+// and then the folder has to agree — either by declaring the season asked for, or
+// by being the folder the file now playing came from. If neither settles it, this
+// returns null and the caller resolves fresh sources, which carry the season
+// explicitly. Refusing beats guessing; a guess here is the bug.
 function _packFileForEpisode(packFiles, next) {
   if (!Array.isArray(packFiles) || !packFiles.length || !next) return null
-  return packFiles.find(function (f) {
-    return f && f.episode === next.episode && f.index != null
-  }) || null
+  const usable = packFiles.filter(function (f) { return f && f.index != null })
+  const candidates = usable.filter(function (f) { return f.episode === next.episode })
+  if (!candidates.length) return null
+
+  // Several files answering to the same episode in the SAME season is a v1/v2 or
+  // a dual encode, not a season mix-up. Largest wins, as in every other picker.
+  const largest = function (list) {
+    return list.reduce(function (best, f) {
+      return (!best || (Number(f.length) || 0) > (Number(best.length) || 0)) ? f : best
+    }, null)
+  }
+
+  // A pack that lives in one folder cannot confuse two seasons, so none of the
+  // rules below apply to it — which is most packs, and they behave exactly as
+  // they always did.
+  const folders = new Set(usable.map(function (f) { return String(f.group == null ? '' : f.group) }))
+  if (folders.size <= 1) return largest(candidates)
+
+  // From here the pack spans folders, so a bare episode number identifies
+  // nothing. Note there is deliberately no "only one file matches, take it"
+  // shortcut: in a four-season batch, the ONLY file numbered 03 may well be
+  // season one's, asked for because season two ended at 02 — and playing it is
+  // the wrong-episode bug in its purest form.
+  const wantSeason = next.season == null ? null : Number(next.season)
+  if (Number.isFinite(wantSeason)) {
+    const declared = candidates.filter(function (f) { return _packGroupSeason(f.group) === wantSeason })
+    if (declared.length) return largest(declared)
+  }
+
+  // No folder declares the season, or none was asked for (anime entries are one
+  // season in the catalog and name none). Stay where the file now playing lives:
+  // within a complete-series pack that folder IS the season being watched.
+  const playing = usable.find(function (f) { return f.current })
+  if (playing) {
+    const sameFolder = candidates.filter(function (f) {
+      return String(f.group == null ? '' : f.group) === String(playing.group == null ? '' : playing.group)
+    })
+    if (sameFolder.length) return largest(sameFolder)
+  }
+
+  // Nothing here identifies the episode. Saying so sends the caller to resolve
+  // fresh sources, which carry the season explicitly; guessing sends the viewer
+  // to another season.
+  return null
 }
 
 // Resolves sources for the next episode and starts the best one. The source
