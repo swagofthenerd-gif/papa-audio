@@ -30174,23 +30174,86 @@ function _hydrateVerdicts(groups, repaint) {
 // verdict with matching track counts gets the Trash offer; anything else is
 // said plainly and both copies stay. The old copy goes to Trash (recoverable
 // from Manage → Recently Deleted), never a hard delete.
+function _replaceName(r, folder) {
+  return (r && r.artist ? r.artist + ' — ' : '') + ((r && r.album) || folder || 'this album')
+}
+
 function _offerUpgradeReplace(rec) {
   var r = rec.replace
-  var name = (r.artist ? r.artist + ' — ' : '') + (r.album || rec.folder)
+  var name = _replaceName(r, rec.folder)
   if (!r.ok) {
     showSnackbar('Upgrade of ' + name + ' downloaded, but ' + (r.reason || 'it could not be checked') + '.', '', function () {}, 9000)
     return
   }
-  showSnackbar('Upgrade of ' + name + ' verified (' + r.newCount + ' tracks). Move your old copy to Trash?',
-    'Move to Trash', function () { _trashReplacedAlbum(r, name) }, 15000)
+  // The snackbar is the fast path, not the only one: the same question is
+  // waiting on the Downloads page until it is answered, so missing this or
+  // closing the app no longer loses it.
+  showSnackbar('Upgrade of ' + name + ' verified (' + r.newCount + ' tracks). Move your old copy to Trash? It is also waiting under Downloads.',
+    'Move to Trash', function () { _resolveReplacement(rec.key, 'trash', name) }, 15000)
 }
 
-async function _trashReplacedAlbum(r, name) {
-  if (!r || !Array.isArray(r.oldPaths) || !r.oldPaths.length) { showSnackbar('Nothing to move — the old copy has no files on disk.'); return }
-  var out = await window.api.libraryTrashPaths({ paths: r.oldPaths }).catch(function (e) { return { ok: false, error: String(e && e.message || e) } })
-  if (!out || out.ok === false) { showSnackbar('Could not move the old copy: ' + ((out && out.error) || 'unknown error')); return }
-  showSnackbar('Old copy of ' + name + ' moved to Trash (' + r.oldPaths.length + ' files). Recoverable from Manage → Recently Deleted.', '', function () {}, 8000)
-  if (typeof _scheduleLibRescan === 'function') _scheduleLibRescan()
+// Both answers go through the main process, which trashes (never unlinks) and
+// records the answer in the same step. A renderer-side trash would have left
+// the question pending for ever, because nothing would have written down that
+// he had already answered it.
+async function _resolveReplacement(key, action, name) {
+  if (!window.api || !window.api.slskReplaceResolve) { showSnackbar('This build cannot resolve replacements'); return }
+  var out = await window.api.slskReplaceResolve({ key: key, action: action })
+    .catch(function (e) { return { ok: false, error: String(e && e.message || e) } })
+  if (!out || out.ok === false) {
+    showSnackbar('Could not move the old copy: ' + ((out && out.error) || 'unknown error'))
+  } else if (action === 'keep') {
+    showSnackbar('Keeping both copies of ' + name + '.', '', function () {}, 6000)
+  } else {
+    showSnackbar('Old copy of ' + name + ' moved to Trash (' + (out.moved || 0) + ' files). Recoverable from Manage \u2192 Recently Deleted.', '', function () {}, 8000)
+    if (typeof _scheduleLibRescan === 'function') _scheduleLibRescan()
+  }
+  _renderPendingReplacements()
+}
+
+// The durable half of the question. Reads what main still has outstanding and
+// paints one row per album with both answers spelled out.
+async function _renderPendingReplacements() {
+  var host = document.getElementById('dl-replace-body')
+  if (!host) return
+  var list = []
+  if (window.api && window.api.slskReplacePending) {
+    list = await window.api.slskReplacePending().catch(function () { return [] }) || []
+  }
+  var section = document.getElementById('dl-replace-section')
+  if (section) section.style.display = list.length ? '' : 'none'
+  if (!list.length) { host.innerHTML = ''; return }
+  host.innerHTML = list.map(function (e, i) {
+    var name = _replaceName(e, e.folder)
+    return '<div class="dl-replace-row" data-i="' + i + '">' +
+      '<div class="dl-replace-text"><b>' + esc(name) + '</b>' +
+      '<span class="dl-replace-sub">New copy verified, ' + e.newCount + ' track' + (e.newCount === 1 ? '' : 's') +
+      ' \u00b7 your old copy is ' + e.oldPaths.length + ' file' + (e.oldPaths.length === 1 ? '' : 's') + ' on disk</span></div>' +
+      '<button class="dl-replace-btn dl-replace-trash" data-i="' + i + '">Move old copy to Trash</button>' +
+      '<button class="dl-replace-btn" data-i="' + i + '">Keep both</button></div>'
+  }).join('')
+  host.querySelectorAll('.dl-replace-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var e = list[Number(b.dataset.i)]
+      if (!e) return
+      var trash = b.classList.contains('dl-replace-trash')
+      var name = _replaceName(e, e.folder)
+      if (!trash) { _resolveReplacement(e.key, 'keep', name); return }
+      var go = function () { _resolveReplacement(e.key, 'trash', name) }
+      if (typeof _mgConfirm === 'function') {
+        var shown = e.oldPaths.slice(0, 8).map(function (x) { return esc(x) })
+        if (e.oldPaths.length > 8) shown.push('\u2026')
+        _mgConfirm(
+          'Move your old copy of ' + name + ' to the Trash?',
+          '<p>' + e.oldPaths.length + ' file' + (e.oldPaths.length === 1 ? '' : 's') +
+            ' will go to the Trash, recoverable from Manage \u2192 Recently Deleted.</p>' +
+            '<ul class="mg-offender-list"><li>' + shown.join('</li><li>') + '</li></ul>',
+          'Move to Trash',
+          go
+        )
+      } else go()
+    })
+  })
 }
 
 let _slskVerifyDoneBound = false
@@ -30202,6 +30265,7 @@ function _slskBindVerifyDone() {
     if (!rec || !rec.folder) return
     _slskVerdicts.set(_verdictKey(rec.username, rec.folder), rec)
     if (rec.replace) _offerUpgradeReplace(rec)
+    if (state.currentPage === 'downloads') _renderPendingReplacements()
     if (state.currentPage === 'downloads' && _dlTab === 'completed') {
       _pollAndRenderDownloads().catch(function () {})
     }
@@ -32275,6 +32339,7 @@ function renderDownloads() {
   // back. (Stop All is what "Pause All" has always actually done.)
   // Offered enabled with nothing to act on, it reads as a control that does
   // nothing. Driven by whether there is anything running.
+  setTimeout(function () { if (state.currentPage === 'downloads') _renderPendingReplacements() }, 0)
   var _anyActive = (_dlLastFiles || []).some(function (f) { return _dlCategory(f.state) === 'active' })
   var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px">' +
     '<button class="dl-action-btn" id="dl-pause-all"' + (_anyActive ? '' : ' disabled title="Nothing is downloading right now"') +
@@ -32312,6 +32377,10 @@ function renderDownloads() {
     </div>
     ${dashHTML}
     ${batchBtns}
+    <div class="dl-replace-section" id="dl-replace-section" style="display:none">
+      <div class="section-header"><span class="section-title">Ready to replace</span><span class="wishlist-cadence">Your old copy is still on disk. Nothing is deleted until you say so.</span></div>
+      <div id="dl-replace-body"></div>
+    </div>
     ${wishlistHTML}
     <details class="dl2-sched-panel" id="dl2-sched-panel">
       <summary class="dl2-sched-summary">Bandwidth schedule</summary>

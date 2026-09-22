@@ -5,7 +5,7 @@
   const SH = () => (typeof window !== 'undefined' && window.PapaSlskShelves) ||
     (typeof require === 'function' ? require('./slsk-shelves.js') : null)
 
-  const VERDICT_ORDER = { upgrade: 0, surround: 0, missing: 1, same: 2, worse: 3 }
+  const VERDICT_ORDER = { upgrade: 0, surround: 0, missing: 1, keepsurround: 2, same: 2, worse: 3 }
 
   function tierOf(a) {
     if (a.surround) return 'surround'
@@ -33,6 +33,18 @@
     return a.lossless ? 'same' : 'worse'
   }
 
+  // upgradeReason refuses to call a stereo copy an upgrade over a surround
+  // master — gate 0a, the 5.1 scar. But refusing left the row reading "same as
+  // yours", which says nothing about WHY a 24/192 peer copy is not being
+  // offered. He asked to be told, so the row says it: his copy is the bigger
+  // record, and the peer's is not the same thing at a higher bitrate.
+  // Requires a KNOWN channel count on his side; an album we never read makes
+  // no claim, exactly as gate 0a does.
+  function keepsMySurround(album, lib) {
+    const mineChannels = Number(lib && lib.maxChannels) || 0
+    return mineChannels >= 5 && !album.surround
+  }
+
   function verdictText(row) {
     switch (row.verdictKind) {
       case 'surround': return 'surround you lack'
@@ -41,6 +53,7 @@
         if (u.better != null && u.of != null) return 'upgrade · ' + u.better + '/' + u.of + ' tracks'
         return 'upgrade · all tracks'
       }
+      case 'keepsurround': return 'yours is surround · theirs is not'
       case 'missing': return 'not in library'
       case 'worse': return 'yours is better'
       default: return 'same as yours'
@@ -69,7 +82,7 @@
         // Matched but not an upgrade: find my copy the same way the shelves did.
         const m = idx ? idx.findMatch(s.albumComparable(a)) : null
         lib = m && m.ref ? m.ref : null
-        verdictKind = sameOrWorse(a, lib)
+        verdictKind = keepsMySurround(a, lib) ? 'keepsurround' : sameOrWorse(a, lib)
         yours = lib && s ? s.qualityString(s.libAlbumToComparable(lib)) : '—'
       }
       const row = { album: up || a, key, theirs: qualityOf(a), yours, verdictKind, size: a.totalSize || 0,
@@ -108,7 +121,7 @@
     ]
   }
 
-  const api = { buildRows, verdictText, sortRows, filterRows, tiles, tierOf, keyOf }
+  const api = { buildRows, verdictText, sortRows, filterRows, tiles, tierOf, keyOf, keepsMySurround }
   if (typeof window !== 'undefined') window.PapaSlskHunt = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 })()

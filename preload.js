@@ -358,6 +358,8 @@ contextBridge.exposeInMainWorld('api', {
   slskCachedPeerAlbums: (p) => ipcRenderer.invoke('slsk-cached-peer-albums', p),
   // Post-download verification verdict for one completed album group (#49).
   slskVerifyStatus:   (p) => ipcRenderer.invoke('slsk-verify-status', p),
+  slskReplacePending: ()  => ipcRenderer.invoke('slsk-replace-pending'),
+  slskReplaceResolve: (p) => ipcRenderer.invoke('slsk-replace-resolve', p),
   // A completed album group finished verification. Dedicated subscriber, returns
   // an unsubscribe function.
   onSlskVerifyDone:   (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify-done', h); return () => ipcRenderer.removeListener('slsk-verify-done', h) },

@@ -6446,8 +6446,10 @@ ipcMain.handle('library-restore-trashed', async (_, { paths }) => {
   return { results, restored, failed: results.length - restored }
 })
 
-ipcMain.handle('library-trash-paths', async (_, { paths }) => {
-  if (DRY_RUN) return _dryRunRefusal('moving these files to the trash')
+// The one guarded way files leave the library. Both the Manage trash button
+// and the upgrade-replace flow go through here, so the allowlist, the
+// trash-never-unlink rule and the rescan cannot drift apart.
+async function _trashPathsGuarded(paths) {
   const results = []
   for (const p of paths || []) {
     if (!libPathAllowed(p)) {
@@ -6466,6 +6468,11 @@ ipcMain.handle('library-trash-paths', async (_, { paths }) => {
   const moved = results.filter(r => r.ok).length
   if (moved) _scheduleLibraryRescan()
   return { results, moved, failed: results.length - moved }
+}
+
+ipcMain.handle('library-trash-paths', async (_, { paths }) => {
+  if (DRY_RUN) return _dryRunRefusal('moving these files to the trash')
+  return _trashPathsGuarded(paths)
 })
 
 // ── Operation journal (roadmap 091) ─────────────────────────────────────────
@@ -9673,6 +9680,66 @@ ipcMain.handle('slsk-verify-status', (_, { username, folder } = {}) => {
     }
     return null
   } catch (_) { return null }
+})
+
+// ── Pending replacements ─────────────────────────────────────────────────────
+// A verified upgrade whose old copy is still on disk is a QUESTION, not a
+// deletion. The verdict record already persisted; what did not was any way to
+// ask again. The offer was a 15-second snackbar and nothing else — miss it, or
+// close the app before answering, and the old copy simply stayed for ever with
+// no sign it was ever meant to go.
+//
+// Nothing here deletes on its own. A pending entry is only ever cleared by him
+// answering it, and an entry whose files have already gone is dropped rather
+// than asked about.
+function _replacePending() {
+  let verdicts = {}
+  try { verdicts = sideStores.slskVerify.get() || {} } catch (_) { return [] }
+  const out = []
+  for (const key of Object.keys(verdicts)) {
+    const rec = verdicts[key]
+    const r = rec && rec.replace
+    if (!r || !r.ok || r.resolved) continue
+    const oldPaths = (r.oldPaths || []).filter(p => { try { return fs.existsSync(p) } catch (_) { return false } })
+    if (!oldPaths.length) continue
+    out.push({
+      key, username: rec.username || '', folder: rec.folder || '', at: rec.at || 0,
+      artist: r.artist || '', album: r.album || '',
+      newCount: r.newCount, oldCount: r.oldCount, oldPaths,
+    })
+  }
+  return out.sort((a, b) => (b.at || 0) - (a.at || 0))
+}
+
+function _replaceMarkResolved(key, how) {
+  try {
+    sideStores.slskVerify.update(prev => {
+      const next = prev && typeof prev === 'object' ? { ...prev } : {}
+      const rec = next[key]
+      if (!rec || !rec.replace) return next
+      next[key] = { ...rec, replace: { ...rec.replace, resolved: how, resolvedAt: Date.now() } }
+      return next
+    })
+  } catch (_) {}
+}
+
+ipcMain.handle('slsk-replace-pending', () => _replacePending())
+
+// 'trash' moves the OLD copy's files to the Trash and records the answer;
+// 'keep' records that he wants both and stops the asking. The answer is
+// written whether or not every file moved, so a partly-failed trash does not
+// re-ask for ever — the result says what actually happened.
+ipcMain.handle('slsk-replace-resolve', async (_, { key, action } = {}) => {
+  if (!key || (action !== 'trash' && action !== 'keep')) return { ok: false, error: 'bad request' }
+  // Refused before any work: a dry-run twin must neither bin his files nor
+  // write an answer into the verdict store his real app reads.
+  if (DRY_RUN) return _dryRunRefusal('answering a pending replacement')
+  const entry = _replacePending().find(e => e.key === key)
+  if (!entry) return { ok: false, error: 'that replacement is no longer pending' }
+  if (action === 'keep') { _replaceMarkResolved(key, 'keep'); return { ok: true, action: 'keep' } }
+  const out = await _trashPathsGuarded(entry.oldPaths)
+  _replaceMarkResolved(key, 'trash')
+  return { ok: out.failed === 0, action: 'trash', moved: out.moved, failed: out.failed, results: out.results }
 })
 
 // Aggregate throughput sampled once per tick, so the tuner can tell a rising
