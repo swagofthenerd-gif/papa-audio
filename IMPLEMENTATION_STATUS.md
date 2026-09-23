@@ -87,6 +87,78 @@ started and none should be described as underway.
 * **F14's resume-from-offset.** A body that breaks after the headers destroys the
   socket (deliberate — mpv sees an error at once) but does not resume.
 
+## Measured on the running app, 23 Sep 2026
+
+Two reports, both diagnosed against the live app and the real indexers rather
+than reasoned about.
+
+### "Sources are not loading for an anime" — fixed (`1b4588e`)
+
+The app had started into a network blip; its log recorded AniList failing and
+`video-seasons` / `video-enrich` timing out. So the detail page kept only the
+English title. Nearly every release of that show is named in romaji, and the
+source search correctly refuses a release that names a different show.
+
+    asked with the English title alone     0 sources
+    asked with the romaji title too       19 sources
+
+A search that has an AniList id but no alternate titles now fetches them first.
+
+### "Fewer sources showing" — not a defect. Kaiji season 1, episode 12
+
+Measured end to end through the app's own `resolveStream`:
+
+| Source | Results | Time |
+|---|---|---|
+| nyaa | 5 | 10.3 s |
+| AnimeTosho | 5 | 13.5 s |
+| Knaben | 2 | 0.7 s |
+| apibay | 1 | 0.4 s |
+| solidtorrents | 0 | 35.7 s |
+
+13 raw → **5 unique** after dedupe → 5 shown, **0 hidden**. AnimeTosho mirrors
+nyaa, so it contributes no unique torrents for this show. Five is every torrent
+that exists for a 2007 series, all of them batches. The app is showing
+everything it found; nothing is being filtered out or capped.
+
+The season demoter sank 10 of 19 on a Frieren test, and was **right** to:
+AniList 154587 is the finished season 1 entry, so season 2 releases do not
+belong to that page. Nearly "fixed" that and would have broken it.
+
+### Open, measured, not fixed
+
+**A dead source costs 7 seconds on every search.** solidtorrents has returned 0
+results in every run measured (35.7 s, 12.0 s, 11.6 s) and its durable record is
+`failStreak=28`. Because aggregation is `Promise.allSettled` with a per-backend
+deadline, the whole search waits for it:
+
+    with solidtorrents      5 streams in 20.0 s
+    without solidtorrents   5 streams in 13.2 s
+
+**The obvious fix is unsafe on the current data, and this is why.** Giving a
+source with a bad record a shorter leash was implemented and then reverted,
+because the persisted health store says:
+
+    nyaaProvider           ok=False  failStreak=3
+    animetoshoProvider     ok=False  failStreak=4
+    solidTorrentsProvider  ok=False  failStreak=28
+
+nyaa and AnimeTosho are the two best anime sources and answer Kaiji in 10.3 s
+and 13.5 s. A 6 s leash returns nothing from either. Their failing records are
+scars from the AniList outage above: the search went out under a useless title,
+they honestly answered "nothing", and `resolveStream` records an empty answer as
+a source failure — `recordSourceResult(name, list.length > 0)`, under a comment
+saying health is about whether the source itself answered.
+
+That conflation was also changed and then reverted. It is **deliberate**:
+`test/providers-index.test.js` and `test/dead-anime-provider.test.js` assert it
+so a resolver-less adapter stays visible and demoted (plan F01). Separating
+"answered" from "found something" is a product decision, not a bug fix, so it
+is left for the user rather than changed unilaterally.
+
+Any future work on source latency needs that separation first. Acting on the
+current record would cut off the sources that work.
+
 ## Next step
 
 Merge M1 into `feature/papa-video`, push the backlog to GitHub, and get a fresh
