@@ -81,9 +81,17 @@ test('the anime list is real indexers only', () => {
   const names = backends()('anime', { torrentSources: true })
   assert.ok(!names.includes('animeProvider'),
     'an adapter with nothing to run has no place in the list: ' + names.join(', '))
-  for (const real of ['nyaa', 'animetosho', 'apibay', 'knaben', 'solidtorrents']) {
+  // solidtorrents left this list on 2026-09-23, on evidence rather than taste:
+  // its API redirects to bitsearch.to, which answers HTTP 429 / Cloudflare 1015,
+  // so it returned 0 results in 11-17s for every content type and -1 (never
+  // answered) in every search logged from the running app. The aggregation waits
+  // for every backend, so it cost the search 20.0s where 13.2s was enough. See
+  // test/dead-source-not-wired.test.js.
+  for (const real of ['nyaa', 'animetosho', 'apibay', 'knaben']) {
     assert.ok(names.includes(real), 'the real indexers are untouched — missing ' + real)
   }
+  assert.ok(!names.includes('solidtorrents'),
+    'a source that cannot answer has no place in the list either: ' + names.join(', '))
 })
 
 test('turning torrent sources off leaves anime with nothing, and says so plainly', () => {

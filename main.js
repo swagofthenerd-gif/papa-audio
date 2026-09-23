@@ -15016,6 +15016,25 @@ async function checkAiringNotifications() {
 // Only the backends that can actually answer for this media type are asked.
 // Previously every TV episode also queried YTS, which indexes movies only —
 // one guaranteed-empty network round-trip per episode click.
+// SolidTorrents is not wired into any lineup: the service is gone.
+//
+// Its API now redirects to bitsearch.to, which answers HTTP 429 with Cloudflare
+// error 1015 — a rate-limit ban, not a hiccup. The .eu mirror answers a 308
+// redirect loop and takes 14 s to do it. Measured 2026-09-23, every content type:
+//
+//     movie  0 results in 11.7 s
+//     tv     0 results in 17.6 s
+//     anime  0 results in 11.6 s
+//
+// and -1 (never answered) in all four of the searches logged from the running
+// app. Because the aggregation waits for every backend, this cost the whole
+// search its time budget for nothing: 20.0 s with it against 13.2 s without, on
+// a Kaiji search whose five results were all in after 10 s. It also crowded the
+// network enough to push AnimeTosho, which needs 13.3 s, past the 20 s deadline
+// — so a dead source was costing a live one.
+//
+// The provider itself is kept, tests and all. Reviving it needs a host that
+// serves the search API without a 1015; bitsearch.to is the place to look.
 function _videoBackends(type, settings) {
   const torrents = settings.torrentSources !== false
   // Jackett/Prowlarr (roadmap #39) rides the torrent tier when the user has
@@ -15031,13 +15050,13 @@ function _videoBackends(type, settings) {
   // an empty list while being recorded as a failing source. With torrent
   // sources off there is genuinely no anime backend, and an empty list says
   // that instead of pretending.
-  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben(), solidtorrents()]) : []
+  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben()]) : []
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
   // so the specialist's better metadata wins where both have the same torrent
   // and the broad one fills in everything the specialist never carried.
-  if (type === 'tv') return torrents ? withJackett([eztv(), apibay(), knaben(), solidtorrents(), movieTv()]) : [movieTv()]
-  return torrents ? withJackett([yts(), apibay(), knaben(), solidtorrents(), movieTv()]) : [movieTv()]
+  if (type === 'tv') return torrents ? withJackett([eztv(), apibay(), knaben(), movieTv()]) : [movieTv()]
+  return torrents ? withJackett([yts(), apibay(), knaben(), movieTv()]) : [movieTv()]
 }
 
 // The preferred-quality setting was stored and read by nothing. It is applied
