@@ -2353,7 +2353,12 @@ async function _runSourceCanary({ force = false } = {}) {
 // and, when every backend came back empty, kick an out-of-band canary (a real
 // all-zero is the strongest possible signal a mirror set has gone dark). The
 // canary is itself throttled, so a run of empty searches cannot spawn a storm.
-function _onSearchSweep({ results, allZero } = {}) {
+// The per-source entry counts of the most recent sweep, for the search log line
+// above. Written by the hook below because resolveStream is the only thing that
+// knows them, and read once immediately afterwards.
+let _lastSweepCounts = null
+function _onSearchSweep({ results, allZero, counts } = {}) {
+  try { _lastSweepCounts = counts || results || null } catch (_) {}
   try {
     if (results && Object.keys(results).length) sourceHealthStore.recordBatch(results)
   } catch (_) {}
@@ -15248,6 +15253,28 @@ ipcMain.handle('video-streams', async (_, req) => {
       onSweep: _onSearchSweep,
     })
     const streams = _applyQualityPreference(ranked, settings.preferredQuality)
+    // What this search actually asked and actually got, in one line.
+    //
+    // "Sources are back but fewer are showing" could not be closed by
+    // measurement from outside the app: the same query run against the same
+    // indexers gave five where he was seeing three, and every filter between
+    // them accounted for nothing. The difference is in the session, so the
+    // session writes it down — which names the titles the search went out
+    // under (the whole of the last fault), the per-source counts, and what
+    // survived. Names only, never URLs or magnets.
+    try {
+      const names = Object.keys(_lastSweepCounts || {}).map(n => n + '=' + _lastSweepCounts[n]).join(' ')
+      console.log('[papa-video] search ' + JSON.stringify(String(title || '')) +
+        ' s' + (season == null ? '-' : season) + 'e' + (episode == null ? '-' : episode) +
+        (absoluteEpisode ? ' abs' + absoluteEpisode : '') +
+        ' type=' + sourceType +
+        ' titles=' + JSON.stringify(searchTitles
+          ? [searchTitles.romaji, searchTitles.english, searchTitles.native].filter(Boolean)
+          : null) +
+        ' dub=' + (dub === true) +
+        ' | ' + (names || 'no per-source counts') +
+        ' | merged=' + ranked.length + ' shown=' + streams.length)
+    } catch (_) { /* a log line must never fail a search */ }
     // An empty result is almost always a mirror being briefly unreachable.
     // Caching it pinned "No sources found" on that title for the full 15-minute
     // TTL even after the indexer came back.

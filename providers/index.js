@@ -242,12 +242,18 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
   // persist durable health and notice an all-backends-zero run. Keyed by source
   // name; a backend that ran twice in one list keeps its last verdict.
   const sweep = {}
+  // How MANY entries each source returned, purely additively — `sweep` keeps its
+  // boolean meaning and every existing consumer is untouched. A caller that wants
+  // to log why a search was thin needs the numbers, and resolveStream is the only
+  // place that has them.
+  const counts = {}
   for (let i = 0; i < settled.length; i++) {
     const result = settled[i]
     const name = ordered[i].name
     if (result.status !== 'fulfilled' || !Array.isArray(result.value)) {
       recordSourceResult(name, false)
       sweep[name] = false
+      counts[name] = result.status === 'fulfilled' ? 0 : -1   // -1: threw or timed out
       continue
     }
     const list = result.value
@@ -265,6 +271,7 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
     // healthy even if every entry was a duplicate of another source's.
     recordSourceResult(name, list.length > 0)
     sweep[name] = list.length > 0
+    counts[name] = list.length
     void produced
   }
   // Best-effort durable-health hook: a caller (main.js) records the sweep and,
@@ -274,7 +281,7 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
     try {
       const names = Object.keys(sweep)
       const allZero = names.length > 0 && names.every(n => !sweep[n])
-      onSweep({ results: sweep, allZero })
+      onSweep({ results: sweep, allZero, counts })
     } catch (_) { /* health bookkeeping must not fail a search */ }
   }
   // The request's own dub flag drives the merged ranking, so the Dub toggle
