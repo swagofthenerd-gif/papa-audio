@@ -15101,6 +15101,51 @@ function _applyQualityPreference(streams, preferred) {
 // lookup; any doubt — a gap in the counts, a non-TV entry asked about, a cold
 // cache — returns null and the seasonal query stands alone, where a wrong
 // guess would have cost nothing but a harmless extra query anyway.
+// The names a show actually goes by, fetched if the page could not supply them.
+//
+// Anime releases are named in romaji far more often than in English: nearly every
+// release of "Frieren: Beyond Journey's End" is called "Sousou no Frieren". The
+// source search knows this and matches against every title AniList reports — but
+// only if it HAS them, and they arrive with the detail page. When AniList is
+// briefly unreachable at the moment that page loads, the page keeps the English
+// title and nothing else, and then every search for that show returns NOTHING,
+// silently and for as long as the page stays open. Measured 2026-09-23 on the
+// running app: 0 results without the romaji name, 19 with it.
+//
+// So a search that has an AniList id but no alternate titles fetches them here
+// rather than going out crippled. One call per show per run, cached, and any
+// failure returns what the caller already had — a search with the English name
+// is still better than no search.
+const _animeTitleCache = new Map()
+async function _animeTitlesFor(anilistId, titles) {
+  const has = titles && typeof titles === 'object' &&
+    (titles.romaji || titles.native || (Array.isArray(titles.synonyms) && titles.synonyms.length))
+  if (has) return titles
+  const id = Number(anilistId)
+  if (!Number.isFinite(id) || id <= 0) return titles || null
+  if (_animeTitleCache.has(id)) return _animeTitleCache.get(id) || titles || null
+  try {
+    const media = await anilist().byId(id)
+    const got = media && media.titles && typeof media.titles === 'object' ? media.titles : null
+    if (got && (got.romaji || got.native)) {
+      // Keep whatever the page did have: its English title may be the one the
+      // viewer is reading, and losing it would change what the list says.
+      const merged = Object.assign({}, got, titles || {})
+      if (got.romaji) merged.romaji = got.romaji
+      if (got.native) merged.native = got.native
+      if (Array.isArray(got.synonyms) && got.synonyms.length) merged.synonyms = got.synonyms
+      _animeTitleCache.set(id, merged)
+      console.log('[papa-video] recovered ' + (got.romaji || got.native) + ' for anilist ' + id +
+        ' — the page had no alternate titles, so the search would have found nothing')
+      return merged
+    }
+  } catch (e) {
+    // Never fatal: AniList being down is why we are here in the first place.
+    console.warn('[papa-video] could not recover alternate titles for anilist ' + id + ':', (e && e.message) || e)
+  }
+  return titles || null
+}
+
 function _animeAbsoluteEpisode(anilistId, episode) {
   try {
     // In-memory first; fall back to the persistent outage cache so absolute
@@ -15172,8 +15217,16 @@ ipcMain.handle('video-streams', async (_, req) => {
     const absoluteEpisode = (sourceType === 'anime' && anilistId && episode)
       ? _animeAbsoluteEpisode(anilistId, episode)
       : null
+    // Anime is searched by the name release groups print, which is usually the
+    // romaji one. If the page arrived without it — AniList unreachable when the
+    // detail loaded — recover it here rather than searching with a name no
+    // release uses and reporting "no sources" for a show with dozens.
+    const searchTitles = sourceType === 'anime'
+      ? await _animeTitlesFor(anilistId, titles)
+      : titles
     const request = {
-      type: sourceType, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub,
+      type: sourceType, tmdbId, anilistId, imdbId, title, titles: searchTitles,
+      year, season, episode, sub, dub,
       absoluteEpisode,
     }
     // Key on the request plus the settings that change the answer, so a
