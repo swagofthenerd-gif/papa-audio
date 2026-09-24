@@ -169,3 +169,86 @@ test('searchTerms tries romaji first — this host indexes under it', () => {
     searchTerms({ title: FRIEREN.english, titles: FRIEREN }),
     ['Sousou no Frieren', FRIEREN.english])
 })
+
+// ── What audio a stream actually carries ───────────────────────────────────
+//
+// "There is only japanese language available. There does exist the eng version
+// and its in the torrents, so it has to be there too." Measured: the streaming
+// host has 13 Japanese episodes of that show and zero English, while nyaa has
+// dozens of dual-audio releases. Both true at once. What the app could not do
+// was SAY so — an entry announced "Sub" or "Dub" from what had been asked for,
+// never from what the manifest held, so a stream carrying nine languages and
+// one carrying Japanese alone were indistinguishable until it was playing.
+
+const { audioTracksOf, hasEnglishAudio, hasJapaneseAudio } = require('../providers/kickassanime')
+
+const MULTI = `#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="English",LANGUAGE="eng",URI="a/playlist.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Japanese",DEFAULT=YES,LANGUAGE="jpn",URI="b/playlist.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,AUDIO="stereo"
+v/playlist.m3u8`
+const JA_ONLY = `#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Japanese",DEFAULT=YES,LANGUAGE="jpn",URI="b/playlist.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,AUDIO="stereo"
+v/playlist.m3u8`
+
+function hostWithManifest(manifest) {
+  const ok = b => ({ ok: true, text: async () => (typeof b === 'string' ? b : JSON.stringify(b)) })
+  return async url => {
+    if (url.endsWith('/api/search')) return ok([{ slug: 's1', title: 'Sousou no Frieren' }])
+    if (/\/episodes\?/.test(url)) return ok({ result: [{ slug: 'e5', episode_number: 5 }] })
+    if (/\/episode\/ep-/.test(url)) return ok({ servers: [{ name: 'VidStreaming', src: 'https://krussdomi.com/p?id=1' }] })
+    if (/\.m3u8/.test(url)) return ok(manifest)
+    return ok(PLAYER_HTML)
+  }
+}
+const ANY = { type: 'anime', title: 'Frieren', episode: 5, titles: { romaji: 'Sousou no Frieren', english: 'Frieren' } }
+
+test('audioTracksOf reads every audio track a manifest declares', () => {
+  const t = audioTracksOf(MULTI)
+  assert.deepStrictEqual(t.map(x => x.label), ['English', 'Japanese'])
+  assert.strictEqual(hasEnglishAudio(t), true)
+  assert.strictEqual(hasJapaneseAudio(t), true)
+  assert.strictEqual(hasEnglishAudio(audioTracksOf(JA_ONLY)), false)
+})
+
+test('audioTracksOf is empty, never a throw, on anything unexpected', () => {
+  for (const bad of ['', null, '<html>nope</html>', '#EXTM3U\n#EXT-X-MEDIA:TYPE=SUBTITLES,NAME="English"']) {
+    assert.deepStrictEqual(audioTracksOf(bad), [])
+  }
+})
+
+test('a stream carrying English satisfies a dub request', async () => {
+  // It did not before: dub was set from what was ASKED, so a manifest holding
+  // a perfectly good English track was offered as a sub and ranked beneath
+  // every dubbed torrent.
+  const provider = createKickAssAnimeProvider({ fetchFn: hostWithManifest(MULTI) })
+  const [e] = await provider(Object.assign({}, ANY, { dub: true }))
+  assert.strictEqual(e.dub, true)
+  assert.strictEqual(e.sub, true, 'one manifest holding both is honestly both — the player switches')
+  assert.match(e.label, /incl\. English/)
+  assert.deepStrictEqual(e.audioLanguages, ['English', 'Japanese'])
+})
+
+test('a Japanese-only stream says Japanese and does not claim a dub', async () => {
+  const provider = createKickAssAnimeProvider({ fetchFn: hostWithManifest(JA_ONLY) })
+  const [e] = await provider(Object.assign({}, ANY, { dub: true }))
+  assert.strictEqual(e.dub, false, 'claiming a dub it does not have is how the row lies')
+  assert.match(e.label, /Japanese/)
+  assert.ok(!/languages/.test(e.label), 'one track is named, not counted')
+})
+
+test('a manifest that will not load leaves the audio unknown, not the entry lost', async () => {
+  const ok = b => ({ ok: true, text: async () => (typeof b === 'string' ? b : JSON.stringify(b)) })
+  const provider = createKickAssAnimeProvider({ fetchFn: async url => {
+    if (/\.m3u8/.test(url)) throw new Error('CDN hiccup')
+    if (url.endsWith('/api/search')) return ok([{ slug: 's1', title: 'Sousou no Frieren' }])
+    if (/\/episodes\?/.test(url)) return ok({ result: [{ slug: 'e5', episode_number: 5 }] })
+    if (/\/episode\/ep-/.test(url)) return ok({ servers: [{ name: 'V', src: 'https://krussdomi.com/p?id=1' }] })
+    return ok(PLAYER_HTML)
+  } })
+  const [e] = await provider(Object.assign({}, ANY, { dub: true }))
+  assert.ok(e, 'a stream that plays must not be dropped because its languages could not be counted')
+  assert.strictEqual(e.dub, true, 'falls back to what was asked for')
+  assert.deepStrictEqual(e.audioLanguages, [])
+})

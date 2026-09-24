@@ -84,6 +84,45 @@ function episodeRef(episodeNumber, episodeSlug) {
   return 'ep-' + n + '-' + slug
 }
 
+// The audio languages a master manifest carries, in the order it lists them.
+//
+// An adaptive stream can hold every dub inside ONE manifest — measured on this
+// CDN: Frieren carries nine (Japanese, English, Hindi, Tamil, German, Spanish,
+// French, Italian, Portuguese) and the player switches between them without
+// re-downloading anything, while The Elusive Samurai carries Japanese alone.
+// Nothing outside the manifest says which, so an entry could not tell the
+// viewer what it was about to play, and a stream holding a perfectly good
+// English track was never offered when a dub was asked for.
+function audioTracksOf(manifestText) {
+  const out = []
+  const text = String(manifestText == null ? '' : manifestText)
+  const re = /^#EXT-X-MEDIA:([^\r\n]*TYPE=AUDIO[^\r\n]*)$/gim
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const attrs = m[1]
+    const name = /NAME="([^"]+)"/i.exec(attrs)
+    const lang = /LANGUAGE="([^"]+)"/i.exec(attrs)
+    const label = (name && name[1]) || (lang && lang[1])
+    if (!label) continue
+    if (out.some(t => t.label === label)) continue
+    out.push({ label, lang: lang ? lang[1].toLowerCase() : null })
+  }
+  return out
+}
+
+// Whether a track list holds an English dub. The CDN spells it "eng"/"English";
+// a name check as well as a code check, because a manifest that names a track
+// without coding it is still naming English.
+function hasEnglishAudio(tracks) {
+  return (Array.isArray(tracks) ? tracks : [])
+    .some(t => t && (/^en/i.test(String(t.lang || '')) || /english/i.test(String(t.label || ''))))
+}
+
+function hasJapaneseAudio(tracks) {
+  return (Array.isArray(tracks) ? tracks : [])
+    .some(t => t && (/^(ja|jp)/i.test(String(t.lang || '')) || /japanese/i.test(String(t.label || ''))))
+}
+
 // The scheme-and-host of a URL, as an Origin header value (no trailing slash,
 // which is what the header wants). Null for anything unparsable, so a caller
 // sends no Origin rather than a broken one.
@@ -216,6 +255,27 @@ function createKickAssAnimeProvider({
         } catch (_) { continue }
         const stream = extractStream(page)
         if (!stream) continue
+
+        // Read the manifest for the languages it carries. One small fetch —
+        // measured at 0.7–1.8 KB — and it is what lets the row say what it is
+        // about to play instead of the viewer finding out afterwards.
+        // A manifest that will not load leaves the languages unknown rather
+        // than losing an otherwise good entry.
+        let tracks = []
+        try {
+          const mres = await fetcher(stream.url, {
+            headers: Object.assign({}, HEADERS, { Origin: _originOf(server.src) || undefined }),
+          })
+          if (mres && mres.ok) tracks = audioTracksOf(await mres.text())
+        } catch (_) { /* unknown audio is not a reason to drop the stream */ }
+
+        // What the stream ACTUALLY holds decides these, not which language was
+        // asked for. A single manifest carrying both is honestly both, and the
+        // player switches between them; saying otherwise hid a perfectly good
+        // English track whenever a dub was wanted.
+        const english = hasEnglishAudio(tracks)
+        const japanese = hasJapaneseAudio(tracks)
+        const known = tracks.length > 0
         entries.push({
           kind: 'http',
           url: stream.url,
@@ -229,9 +289,18 @@ function createKickAssAnimeProvider({
           // "Departure" reads as a different work entirely.
           title: (show.title || '') + ' - ' + String(episode).padStart(2, '0') +
             (ep && ep.episode_title ? ' — ' + ep.episode_title : ''),
-          label: (server.name ? server.name + ' · ' : '') + (wantDub ? 'Dub' : 'Sub'),
-          sub: !wantDub,
-          dub: wantDub,
+          // Say what it holds. "Japanese" reads very differently from
+          // "9 languages · incl. English" when choosing a row to press, and
+          // the difference was invisible until now.
+          label: (server.name ? server.name + ' · ' : '') + (
+            !known ? (wantDub ? 'Dub' : 'Sub')
+              : tracks.length === 1 ? tracks[0].label
+                : tracks.length + ' languages' + (english ? ' · incl. English' : '')),
+          sub: known ? japanese : !wantDub,
+          dub: known ? english : wantDub,
+          // Every language inside this one manifest, so the player can offer
+          // them and the UI can say so without opening anything.
+          audioLanguages: tracks.map(t => t.label),
           // Plays at once off a CDN — no swarm, no waiting for peers. The list
           // marks these so the difference is visible before pressing anything.
           instant: true,
@@ -258,6 +327,9 @@ function createKickAssAnimeProvider({
 
 module.exports = {
   createKickAssAnimeProvider,
+  audioTracksOf,
+  hasEnglishAudio,
+  hasJapaneseAudio,
   extractStream,
   episodeRef,
   searchTerms,
