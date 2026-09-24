@@ -13287,6 +13287,24 @@ async function _loadVideoSources(ticket, seasonTicket) {
   const box = document.getElementById('video-sources')
   if (!box) return
   if (seasonTicket == null) seasonTicket = _videoSeasonTicket
+  // An entry that has not aired is not a search that failed. This ran the full
+  // twenty-second fan-out across every indexer for a season whose episodes do
+  // not exist anywhere, then said "No sources found" — which reads as the app
+  // being broken, and was reported as exactly that (Steel Ball Run 2nd-3rd
+  // STAGE, status NOT_YET_RELEASED, 2026-09-24). Say what is actually true and
+  // spare the wait. AniList's exact status string only: TMDB spells its
+  // statuses differently and those pages keep their current behaviour.
+  if (_videoDetail && _videoDetail.d && _videoDetail.d.status === 'NOT_YET_RELEASED') {
+    const start = _videoDetail.d.startDate
+    const when = start && start.year
+      ? ' First episode expected ' + (start.month ? start.year + '-' + String(start.month).padStart(2, '0') + (start.day ? '-' + String(start.day).padStart(2, '0') : '') : String(start.year)) + '.'
+      : ''
+    box.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
+      '<div class="yt-status">This has not aired yet — there is nothing to find.' + esc(when) + '</div>'
+    _videoStreams = []
+    _videoStreamsHidden = []
+    return
+  }
   box.innerHTML = '<div class="yt-status">Looking for sources…</div>'
   const res = await window.api.videoStreams(_videoStreamRequest()).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
   if (_videoDetailTicket !== ticket || _videoSeasonTicket !== seasonTicket) return
