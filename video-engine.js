@@ -350,7 +350,7 @@ class VideoEngine extends EventEmitter {
     this._stallMs = opts.stallMs ?? STALL_MS
   }
 
-  _args(socketPath, { wid } = {}) {
+  _args(socketPath, { wid, extraArgs } = {}) {
     const a = [
       '--no-terminal',
       '--idle=yes',
@@ -445,6 +445,14 @@ class VideoEngine extends EventEmitter {
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
     }
+    // Per-play arguments the caller measured a source to need — a direct HTTP
+    // stream's Origin header, its demuxer allowances, its subtitle URLs. Last,
+    // so a caller can override anything above; only ever --long-form flags.
+    if (Array.isArray(extraArgs)) {
+      for (const arg of extraArgs) {
+        if (typeof arg === 'string' && arg.startsWith('--')) a.push(arg)
+      }
+    }
     return a
   }
 
@@ -466,7 +474,7 @@ class VideoEngine extends EventEmitter {
     }
   }
 
-  async start(url, { wid } = {}) {
+  async start(url, { wid, extraArgs } = {}) {
     // A second start() must never leave the previous mpv running. Without this
     // every play stacked another process (and another audio output) on top of
     // the last one, because start() simply overwrote this.proc.
@@ -492,7 +500,7 @@ class VideoEngine extends EventEmitter {
     // engine, not this one.
     this._stallCount = 0
     this._clearStallTimer()
-    const proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
+    const proc = this._spawnFn(this.binary, this._args(socketPath, { wid, extraArgs }), { stdio: ['ignore', 'ignore', 'pipe'] })
     this.proc = proc
     // mpv is chatty on stderr; without a drain the pipe buffer fills and the
     // process blocks. Draining it into a bounded ring keeps that property and

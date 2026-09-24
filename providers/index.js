@@ -98,6 +98,16 @@ function rankStreams(entries, { preferSurround = true, isDead = null, preferDub 
       const dubB = b.entry.dub === true
       if (dubA !== dubB) return dubA ? -1 : 1
     }
+    // A stream that starts the moment it is pressed leads the merged list.
+    // These are CDN-hosted HTTP streams (the way the streaming sites play):
+    // no swarm, no peers, adaptive quality inside one manifest. Judged by the
+    // score below they would sink — no seeds, no parsed resolution — which
+    // ranked "plays now" beneath "might play after finding peers". Below the
+    // dead/cam/dub tiers on purpose: an instant SUB must not outrank the dub
+    // that was asked for.
+    const instA = a.entry.instant === true
+    const instB = b.entry.instant === true
+    if (instA !== instB) return instA ? -1 : 1
     if (b.score !== a.score) return b.score - a.score
     if (b.surround !== a.surround) return b.surround ? 1 : -1
     if (b.quality !== a.quality) return b.quality - a.quality

@@ -5795,6 +5795,9 @@ function _renderQualityPicker(streams) {
 // Is RealDebrid holding this source? A held source starts almost at once; the
 // rest have to find peers first.
 function _isInstantSource(s) {
+  // A direct HTTP stream plays off a CDN the moment it is pressed — the badge
+  // is the whole point of having it. The provider marks these itself.
+  if (s && s.kind === 'http' && s.instant === true) return true
   if (!s || s.kind !== 'torrent' || !s.magnet) return false
   if (_debridPick && s.magnet === _debridPick) return true
   return _debridHeld.indexOf(s.magnet) !== -1
