@@ -252,3 +252,77 @@ test('a manifest that will not load leaves the audio unknown, not the entry lost
   assert.strictEqual(e.dub, true, 'falls back to what was asked for')
   assert.deepStrictEqual(e.audioLanguages, [])
 })
+
+// ── Picture quality ────────────────────────────────────────────────────────
+//
+// "Miruro even has quality selectors, and that's the kind of functionality I
+// expect." The app already had one — it just could not see these streams.
+// An entry declared `quality: null`, because an adaptive manifest carries every
+// resolution at once, so the picker (which selects BETWEEN entries by quality,
+// exactly as it does for torrents) had nothing to offer for an instant source.
+// The manifest lists each resolution as its own variant playlist, so a row can
+// point straight at one — which is what every torrent row already is.
+
+const { variantsOf, qualityOfHeight } = require('../providers/kickassanime')
+
+const THREE_QUALITIES = `#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Japanese",DEFAULT=YES,LANGUAGE="jpn",URI="a/playlist.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="stereo"
+hi/playlist.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO="stereo"
+mid/playlist.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360,AUDIO="stereo"
+low/playlist.m3u8`
+
+test('variantsOf reads every resolution, best first', () => {
+  assert.deepStrictEqual(variantsOf(THREE_QUALITIES).map(v => v.height), [1080, 720, 360])
+  assert.deepStrictEqual(variantsOf(THREE_QUALITIES).map(v => v.url), ['hi/playlist.m3u8', 'mid/playlist.m3u8', 'low/playlist.m3u8'])
+})
+
+test('variantsOf is empty, never a throw, on anything unexpected', () => {
+  for (const bad of ['', null, '<html>nope</html>', '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nnoresolution.m3u8']) {
+    assert.deepStrictEqual(variantsOf(bad), [])
+  }
+})
+
+test('qualityOfHeight speaks the app’s own vocabulary', () => {
+  assert.deepStrictEqual([2160, 1080, 720, 480].map(qualityOfHeight), ['2160p', '1080p', '720p', '480p'])
+  // 360p is named honestly rather than promoted into a bracket it is not in;
+  // the picker simply will not list it, which is the correct outcome.
+  assert.strictEqual(qualityOfHeight(360), '360p')
+  assert.strictEqual(qualityOfHeight(0), null)
+  assert.strictEqual(qualityOfHeight('nonsense'), null)
+})
+
+test('a stream becomes one row per quality, each pointing at its own playlist', async () => {
+  const provider = createKickAssAnimeProvider({ fetchFn: hostWithManifest(THREE_QUALITIES) })
+  const out = await provider(ANY)
+  assert.deepStrictEqual(out.map(e => e.quality), ['1080p', '720p', '360p'])
+  // Absolute, resolved against the master's own address — a relative line here
+  // would be handed to the player as-is and simply not play.
+  assert.ok(out.every(e => /^https:\/\/hls\.krussdomi\.com\/manifest\//.test(e.url)), out.map(e => e.url).join(' '))
+  assert.match(out[0].url, /hi\/playlist\.m3u8$/)
+  assert.match(out[1].url, /mid\/playlist\.m3u8$/)
+  // Same stream, so every row still reports the same audio.
+  assert.ok(out.every(e => e.sub === true && e.dub === false))
+})
+
+test('the app’s quality picker can now offer these', () => {
+  // The picker needs two or more distinct qualities across the entries; that
+  // is precisely what one row per variant provides.
+  const qualities = variantsOf(THREE_QUALITIES).map(v => qualityOfHeight(v.height))
+  const known = ['480p', '720p', '1080p', '2160p'].filter(q => qualities.includes(q))
+  assert.ok(known.length >= 2, 'the picker shows itself only with a real choice: ' + known.join(', '))
+})
+
+test('a manifest without variants still yields one playable row', async () => {
+  // Nothing this fixture declares is a variant, so there is no quality to point
+  // a row at — the master is offered and the player picks the height itself,
+  // exactly as it did before rows had qualities at all.
+  const NO_VARIANTS = '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Japanese",LANGUAGE="jpn",URI="a/playlist.m3u8"'
+  const provider = createKickAssAnimeProvider({ fetchFn: hostWithManifest(NO_VARIANTS) })
+  const out = await provider(ANY)
+  assert.strictEqual(out.length, 1)
+  assert.strictEqual(out[0].quality, null, 'no variants read means the player chooses, as before')
+  assert.match(out[0].url, /master\.m3u8/)
+})

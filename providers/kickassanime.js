@@ -110,6 +110,50 @@ function audioTracksOf(manifestText) {
   return out
 }
 
+// The picture qualities a master manifest offers, best first.
+//
+// An adaptive stream carries every resolution as its own variant playlist —
+// measured on this CDN, every stream seen offers 1080p, 720p and 360p. Saying
+// "quality: null" left these out of the app's quality picker entirely, so an
+// instant source could not be asked for a particular resolution while every
+// torrent beside it could. `url` is relative to the master's own address.
+function variantsOf(manifestText) {
+  const out = []
+  const text = String(manifestText == null ? '' : manifestText)
+  const re = /^#EXT-X-STREAM-INF:([^\r\n]*)\r?\n([^\r\n#][^\r\n]*)$/gim
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const res = /RESOLUTION=(\d+)x(\d+)/i.exec(m[1])
+    if (!res) continue
+    const height = Number(res[2])
+    if (!Number.isFinite(height) || height <= 0) continue
+    const url = m[2].trim()
+    if (!url || out.some(v => v.height === height)) continue
+    out.push({ height, url })
+  }
+  return out.sort((a, b) => b.height - a.height)
+}
+
+// A variant's address. A manifest gives it relative to the master's own URL.
+// Null for anything unparsable, so a bad line drops its row instead of
+// becoming an entry that cannot play.
+function _resolveUrl(baseUrl, relative) {
+  try { return new URL(String(relative), String(baseUrl)).toString() } catch (_) { return null }
+}
+
+// A height as the app spells qualities. Its vocabulary is 480p/720p/1080p/2160p,
+// so a stream's 360p is named honestly rather than promoted into a bracket it
+// does not belong in — the picker simply will not list it, which is correct.
+function qualityOfHeight(height) {
+  const h = Number(height)
+  if (!Number.isFinite(h) || h <= 0) return null
+  if (h >= 2000) return '2160p'
+  if (h >= 1000) return '1080p'
+  if (h >= 700) return '720p'
+  if (h >= 440) return '480p'
+  return h + 'p'
+}
+
 // Whether a track list holds an English dub. The CDN spells it "eng"/"English";
 // a name check as well as a code check, because a manifest that names a track
 // without coding it is still naming English.
@@ -262,11 +306,16 @@ function createKickAssAnimeProvider({
         // A manifest that will not load leaves the languages unknown rather
         // than losing an otherwise good entry.
         let tracks = []
+        let variants = []
         try {
           const mres = await fetcher(stream.url, {
             headers: Object.assign({}, HEADERS, { Origin: _originOf(server.src) || undefined }),
           })
-          if (mres && mres.ok) tracks = audioTracksOf(await mres.text())
+          if (mres && mres.ok) {
+            const manifest = await mres.text()
+            tracks = audioTracksOf(manifest)
+            variants = variantsOf(manifest)
+          }
         } catch (_) { /* unknown audio is not a reason to drop the stream */ }
 
         // What the stream ACTUALLY holds decides these, not which language was
@@ -276,49 +325,61 @@ function createKickAssAnimeProvider({
         const english = hasEnglishAudio(tracks)
         const japanese = hasJapaneseAudio(tracks)
         const known = tracks.length > 0
-        entries.push({
-          kind: 'http',
-          url: stream.url,
-          source: 'KickAssAnime',
-          // An adaptive stream carries every rendition in one manifest, so the
-          // player picks the height — saying "1080p" here would be a guess.
-          quality: null,
-          // Named like a release: the SHOW first, then the episode. The
-          // renderer's plausibility filter rightly hides an entry whose name
-          // does not carry the show's title — an entry titled only
-          // "Departure" reads as a different work entirely.
-          title: (show.title || '') + ' - ' + String(episode).padStart(2, '0') +
-            (ep && ep.episode_title ? ' — ' + ep.episode_title : ''),
-          // Say what it holds. "Japanese" reads very differently from
-          // "9 languages · incl. English" when choosing a row to press, and
-          // the difference was invisible until now.
-          label: (server.name ? server.name + ' · ' : '') + (
-            !known ? (wantDub ? 'Dub' : 'Sub')
-              : tracks.length === 1 ? tracks[0].label
-                : tracks.length + ' languages' + (english ? ' · incl. English' : '')),
-          sub: known ? japanese : !wantDub,
-          dub: known ? english : wantDub,
-          // Every language inside this one manifest, so the player can offer
-          // them and the UI can say so without opening anything.
-          audioLanguages: tracks.map(t => t.label),
-          // Plays at once off a CDN — no swarm, no waiting for peers. The list
-          // marks these so the difference is visible before pressing anything.
-          instant: true,
-          // The header the CDN actually enforces, measured against it:
-          // Origin, naming the PLAYER's host — not the catalogue site, and not
-          // the stream's own host. Everything else gets a 403 on every segment,
-          // and mpv answers a 403 on segments by hanging silently forever, so
-          // the wrong value here is indistinguishable from a dead source.
-          //
-          // Derived from the server URL rather than written down, so a host
-          // that moves its player keeps working.
-          headers: { Origin: _originOf(server.src) },
-          subtitles: stream.subtitles,
-          // Free from this host and worth having: the skip model can use them
-          // instead of detecting an opening from the picture.
-          intro: (ep && ep.intro) || null,
-          outro: (ep && ep.outro) || null,
-        })
+
+        // One row per picture quality, each pointing at that quality's own
+        // playlist — which is how the app already presents torrents, so its
+        // existing quality picker works on these with nothing added to it.
+        // A manifest that could not be read leaves one row playing the master,
+        // where the player chooses the height for itself, exactly as before.
+        const rows = variants.length
+          ? variants.map(v => ({ url: _resolveUrl(stream.url, v.url), quality: qualityOfHeight(v.height) }))
+          : [{ url: stream.url, quality: null }]
+
+        for (const row of rows) {
+          if (entries.length >= maxResults) break
+          if (!row.url) continue
+          entries.push({
+            kind: 'http',
+            url: row.url,
+            source: 'KickAssAnime',
+            quality: row.quality,
+            // Named like a release: the SHOW first, then the episode. The
+            // renderer's plausibility filter rightly hides an entry whose name
+            // does not carry the show's title — an entry titled only
+            // "Departure" reads as a different work entirely.
+            title: (show.title || '') + ' - ' + String(episode).padStart(2, '0') +
+              (ep && ep.episode_title ? ' — ' + ep.episode_title : ''),
+            // Say what it holds. "Japanese" reads very differently from
+            // "9 languages · incl. English" when choosing a row to press, and
+            // the difference was invisible until now.
+            label: (server.name ? server.name + ' · ' : '') + (
+              !known ? (wantDub ? 'Dub' : 'Sub')
+                : tracks.length === 1 ? tracks[0].label
+                  : tracks.length + ' languages' + (english ? ' · incl. English' : '')),
+            sub: known ? japanese : !wantDub,
+            dub: known ? english : wantDub,
+            // Every language inside this one manifest, so the player can offer
+            // them and the UI can say so without opening anything.
+            audioLanguages: tracks.map(t => t.label),
+            // Plays at once off a CDN — no swarm, no waiting for peers. The list
+            // marks these so the difference is visible before pressing anything.
+            instant: true,
+            // The header the CDN actually enforces, measured against it:
+            // Origin, naming the PLAYER's host — not the catalogue site, and not
+            // the stream's own host. Everything else gets a 403 on every segment,
+            // and mpv answers a 403 on segments by hanging silently forever, so
+            // the wrong value here is indistinguishable from a dead source.
+            //
+            // Derived from the server URL rather than written down, so a host
+            // that moves its player keeps working.
+            headers: { Origin: _originOf(server.src) },
+            subtitles: stream.subtitles,
+            // Free from this host and worth having: the skip model can use them
+            // instead of detecting an opening from the picture.
+            intro: (ep && ep.intro) || null,
+            outro: (ep && ep.outro) || null,
+          })
+        }
       }
     }
     return entries.slice(0, maxResults)
@@ -328,6 +389,8 @@ function createKickAssAnimeProvider({
 module.exports = {
   createKickAssAnimeProvider,
   audioTracksOf,
+  variantsOf,
+  qualityOfHeight,
   hasEnglishAudio,
   hasJapaneseAudio,
   extractStream,
