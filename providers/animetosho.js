@@ -115,7 +115,15 @@ async function tryMirror(baseUrl, query, fetcher, signal) {
   }
 }
 
-function createAnimetoshoProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults = 20 } = {}) {
+// The same clock nyaa's loop keeps, for the same reason: the query list
+// multiplies out and this loop is what resolveStream kills at 20 s, taking
+// everything found so far with it. Measured 2026-09-23/24: a full healthy run
+// here takes 13.3 s, and with the Dub toggle adding two forms per title variant
+// it tips over — episode 17, same minute, dub off answered 7 and dub on
+// answered nothing. A partial answer beats a timeout answering nothing.
+const QUERY_TIME_BUDGET_MS = 14000
+
+function createAnimetoshoProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults = 20, timeBudgetMs = QUERY_TIME_BUDGET_MS } = {}) {
   const fetcher = fetchFn || fetch
   const urls = Array.isArray(baseUrls) && baseUrls.length > 0 ? baseUrls : DEFAULT_BASE_URLS
 
@@ -182,11 +190,19 @@ function createAnimetoshoProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxRe
     const ENOUGH = 8
     const entries = []
     const tried = new Set()
+    const deadline = timeBudgetMs > 0 ? Date.now() + timeBudgetMs : Infinity
     for (const query of queries) {
       if (!query || tried.has(query)) continue
       tried.add(query)
+      // Out of time: answer with what is already found. The race below is capped
+      // by the time left so a hung mirror cannot spend the whole budget; clamped
+      // to at least 1 ms because raceMirrors reads a non-positive timeout as
+      // "no backstop".
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
       const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
-        tryMirror(baseUrl, query, fetcher, signal))
+        tryMirror(baseUrl, query, fetcher, signal),
+        { timeoutMs: Math.max(1, Math.min(10000, remaining)) })
       if (won) _lastGoodMirror = won.baseUrl
       const items = won ? won.result : null
       if (!items || !items.length) continue

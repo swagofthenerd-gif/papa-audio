@@ -305,7 +305,24 @@ async function tryMirror(baseUrl, query, fetcher, signal) {
   }
 }
 
-function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults = 20 } = {}) {
+// How long one search run may spend before it answers with what it has.
+//
+// The query list multiplies out (title variants x episode/absolute/pack forms,
+// plus two dub forms per variant when a dub is wanted), and nyaa serialises
+// requests at its end at ~500 ms each — parallelising was measured to change
+// nothing (6 queries: 3.2 s parallel, 3.0 s sequential). So a five-variant show
+// with the Dub toggle on runs ~30 queries and needs ~15 s, and resolveStream
+// kills any backend at 20 s taking EVERYTHING it had found. Logged from the
+// running app, Kaiji e17, same minute: dub off -> nyaa=7; dub on -> nyaa=-1,
+// with a whole list of 1. Seven results were in hand and were thrown away.
+//
+// So the loop keeps its own clock and, when the budget is spent, returns what
+// it has: a partial answer beats a timeout answering nothing. 14 s leaves six
+// seconds of margin under resolveStream's 20 s and is above the ~13.3 s a full
+// healthy run was measured to take, so on a good day nothing changes at all.
+const QUERY_TIME_BUDGET_MS = 14000
+
+function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults = 20, timeBudgetMs = QUERY_TIME_BUDGET_MS } = {}) {
   const fetcher = fetchFn || fetch
   const urls = Array.isArray(baseUrls) && baseUrls.length > 0 ? baseUrls : DEFAULT_BASE_URLS
 
@@ -379,13 +396,23 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
     const ENOUGH = 8
     const entries = []
     const tried = new Set()
+    const deadline = timeBudgetMs > 0 ? Date.now() + timeBudgetMs : Infinity
     for (const query of queries) {
       if (!query || tried.has(query)) continue
       tried.add(query)
+      // Out of time: answer with what is already found rather than being killed
+      // from outside with nothing. The queries are ordered most-valuable-first
+      // (dub forms when a dub is wanted, then episode, then pack rescue), so
+      // what is in hand by now is the best of what was coming.
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
       // All mirrors race per query; the first usable feed wins and the rest
-      // are aborted.
+      // are aborted. The race is capped by the time this run has left, so one
+      // hung mirror cannot spend the whole budget — clamped to at least 1 ms
+      // because raceMirrors reads a non-positive timeout as "no backstop".
       const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
-        tryMirror(baseUrl, query, fetcher, signal))
+        tryMirror(baseUrl, query, fetcher, signal),
+        { timeoutMs: Math.max(1, Math.min(10000, remaining)) })
       if (won) _lastGoodMirror = won.baseUrl
       const items = won ? won.result : null
       if (!items || !items.length) continue
