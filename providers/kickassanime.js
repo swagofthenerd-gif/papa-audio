@@ -84,6 +84,17 @@ function episodeRef(episodeNumber, episodeSlug) {
   return 'ep-' + n + '-' + slug
 }
 
+// The scheme-and-host of a URL, as an Origin header value (no trailing slash,
+// which is what the header wants). Null for anything unparsable, so a caller
+// sends no Origin rather than a broken one.
+function _originOf(url) {
+  try {
+    const u = new URL(String(url))
+    if (!/^https?:$/.test(u.protocol)) return null
+    return u.protocol + '//' + u.host
+  } catch (_) { return null }
+}
+
 // The stream and its subtitles out of a server's player page.
 //
 // The page carries its configuration as HTML-escaped JSON, so the manifest and
@@ -224,8 +235,15 @@ function createKickAssAnimeProvider({
           // Plays at once off a CDN — no swarm, no waiting for peers. The list
           // marks these so the difference is visible before pressing anything.
           instant: true,
-          // The CDN checks where a request claims to come from, nothing more.
-          headers: { Referer: 'https://kaa.lt/' },
+          // The header the CDN actually enforces, measured against it:
+          // Origin, naming the PLAYER's host — not the catalogue site, and not
+          // the stream's own host. Everything else gets a 403 on every segment,
+          // and mpv answers a 403 on segments by hanging silently forever, so
+          // the wrong value here is indistinguishable from a dead source.
+          //
+          // Derived from the server URL rather than written down, so a host
+          // that moves its player keeps working.
+          headers: { Origin: _originOf(server.src) },
           subtitles: stream.subtitles,
           // Free from this host and worth having: the skip model can use them
           // instead of detecting an opening from the picture.

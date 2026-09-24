@@ -60,7 +60,11 @@ test('the full chain: a request becomes a playable entry', async () => {
   assert.strictEqual(e.instant, true, 'the badge is the point of the source')
   assert.strictEqual(e.sub, true)
   assert.strictEqual(e.dub, false)
-  assert.ok(e.headers && typeof e.headers.Referer === 'string', 'mpv needs the headers the CDN checks')
+  // Origin naming the PLAYER host. This asserted a Referer until 2026-09-24 —
+  // it was asserting the wrong header, which is how a source that could never
+  // play shipped with a green suite.
+  assert.strictEqual(e.headers.Origin, 'https://krussdomi.com',
+    'the CDN 403s every segment without this, and mpv hangs silently on that')
   assert.ok(e.subtitles.length >= 1, 'the player page lists subtitle tracks in the clear')
   assert.ok(e.subtitles.every(s => !/preview/i.test(s.url)), 'the thumbnail strip is not a subtitle')
 })

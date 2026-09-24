@@ -77,6 +77,63 @@ test('an http entry yields the demuxer allowance and its measured headers', () =
   assert.ok(args.includes('--sub-files-append=https://subs.x/eng.vtt'))
 })
 
+// The gap that shipped a broken source, 2026-09-24. Every test above feeds
+// _httpStreamArgs a HAND-WRITTEN entry carrying the right header — so they all
+// passed while the provider was emitting a different one ("Referer: kaa.lt"
+// where the CDN enforces "Origin: <player host>"). mpv answers a 403 on
+// segments by hanging silently, so the wrong value looked exactly like a dead
+// source, and the user found it instead of the suite.
+//
+// The fix is to stop hand-writing the entry: this runs the PROVIDER's own
+// output through the args builder, which is the pair that actually ships.
+test('the provider’s own entry produces args that carry the header the CDN enforces', async () => {
+  const { createKickAssAnimeProvider } = require('../providers/kickassanime.js')
+  const PLAYER = fs.readFileSync(path.join(__dirname, 'fixtures', 'kaa-player-page.html'), 'utf8')
+  const ok = b => ({ ok: true, text: async () => (typeof b === 'string' ? b : JSON.stringify(b)) })
+  const provider = createKickAssAnimeProvider({
+    fetchFn: async url => {
+      if (url.endsWith('/api/search')) return ok([{ slug: 's1', title: 'Sousou no Frieren' }])
+      if (/\/episodes\?/.test(url)) return ok({ result: [{ slug: 'e5', episode_number: 5 }] })
+      if (/\/episode\/ep-/.test(url)) {
+        return ok({ servers: [{ name: 'VidStreaming', src: 'https://krussdomi.com/cat-player/player?id=abc' }] })
+      }
+      return ok(PLAYER)
+    },
+  })
+  const [entry] = await provider({
+    type: 'anime', title: 'Frieren', episode: 5,
+    titles: { romaji: 'Sousou no Frieren', english: 'Frieren' },
+  })
+  assert.ok(entry, 'the provider must produce an entry for this fixture')
+
+  const args = httpArgs()(entry)
+  assert.ok(args.includes('--http-header-fields-append=Origin: https://krussdomi.com'),
+    'the provider emitted ' + JSON.stringify(entry.headers) +
+    ' — the CDN 403s every segment without Origin naming the PLAYER host, and mpv hangs silently on that')
+  assert.ok(!args.some(a => /Referer/i.test(a)),
+    'a Referer is not what this CDN checks; sending the catalogue site as one is what broke it')
+})
+
+test('the Origin follows the player host rather than being written down', async () => {
+  const { createKickAssAnimeProvider } = require('../providers/kickassanime.js')
+  const PLAYER = fs.readFileSync(path.join(__dirname, 'fixtures', 'kaa-player-page.html'), 'utf8')
+  const ok = b => ({ ok: true, text: async () => (typeof b === 'string' ? b : JSON.stringify(b)) })
+  const provider = createKickAssAnimeProvider({
+    fetchFn: async url => {
+      if (url.endsWith('/api/search')) return ok([{ slug: 's1', title: 'Sousou no Frieren' }])
+      if (/\/episodes\?/.test(url)) return ok({ result: [{ slug: 'e5', episode_number: 5 }] })
+      if (/\/episode\/ep-/.test(url)) return ok({ servers: [{ name: 'X', src: 'https://moved-player.example/p?id=1' }] })
+      return ok(PLAYER)
+    },
+  })
+  const [entry] = await provider({
+    type: 'anime', title: 'Frieren', episode: 5,
+    titles: { romaji: 'Sousou no Frieren', english: 'Frieren' },
+  })
+  assert.strictEqual(entry.headers.Origin, 'https://moved-player.example',
+    'a host that moves its player keeps working without a code change')
+})
+
 test('subtitles are capped so a dozen languages do not stack downloads', () => {
   const subs = Array.from({ length: 9 }, (_, i) => ({ url: 'https://s.x/' + i + '.vtt' }))
   const args = httpArgs()({ kind: 'http', url: 'https://x', subtitles: subs })
