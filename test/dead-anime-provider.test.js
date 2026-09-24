@@ -59,6 +59,7 @@ function backends() {
   }
   const ctx = {
     Array, Object,
+    kickassanime: () => tag('kickassanime'),
     nyaa: () => tag('nyaa'),
     animetosho: () => tag('animetosho'),
     apibay: () => tag('apibay'),
@@ -87,19 +88,25 @@ test('the anime list is real indexers only', () => {
   // answered) in every search logged from the running app. The aggregation waits
   // for every backend, so it cost the search 20.0s where 13.2s was enough. See
   // test/dead-source-not-wired.test.js.
-  for (const real of ['nyaa', 'animetosho', 'apibay', 'knaben']) {
+  // kickassanime joined 2026-09-24: a direct HTTP stream source, verified end
+  // to end against the live host and mpv before wiring (providers/kickassanime.js).
+  for (const real of ['kickassanime', 'nyaa', 'animetosho', 'apibay', 'knaben']) {
     assert.ok(names.includes(real), 'the real indexers are untouched — missing ' + real)
   }
   assert.ok(!names.includes('solidtorrents'),
     'a source that cannot answer has no place in the list either: ' + names.join(', '))
 })
 
-test('turning torrent sources off leaves anime with nothing, and says so plainly', () => {
+test('turning torrent sources off leaves anime the http source, and only that', () => {
+  // This asserted an EMPTY list until 2026-09-24, when it was the honest
+  // answer: every anime source was a torrent. The http stream source is not —
+  // no swarm, no seeding, nothing the torrent switch was built to turn off —
+  // so it stays, and with torrents off it is the one way anime plays at all.
   // Length, not deepStrictEqual: the array is built inside the vm and carries
   // the vm's own Array.prototype.
   const names = backends()('anime', { torrentSources: false })
-  assert.strictEqual(names.length, 0,
-    'there is no non-torrent anime source, and an empty list is the honest way to say it')
+  assert.strictEqual(names.length, 1, 'exactly the http source: ' + names.join(', '))
+  assert.strictEqual(names[0], 'kickassanime')
 })
 
 // Movie and TV are deliberately untouched here: movieTv is the same empty

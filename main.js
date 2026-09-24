@@ -255,6 +255,7 @@ const { createNyaaProvider } = require('./providers/nyaa')
 const { createAnimetoshoProvider } = require('./providers/animetosho')
 const { createApibayProvider } = require('./providers/apibay')
 const { createKnabenProvider } = require('./providers/knaben')
+const { createKickAssAnimeProvider } = require('./providers/kickassanime')
 const { createSolidTorrentsProvider } = require('./providers/solidtorrents')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot, matchesWantedEpisode } = require('./torrent-stream')
@@ -12973,6 +12974,11 @@ function _rebuildMirrorProviders() {
 // The two meta-indexers: one query fans out across dozens of upstream
 // trackers, which is where most of the source count now comes from.
 const knaben = _lazy(() => createKnabenProvider({ fetchFn: fetchWithTimeout(15000) }))
+// Direct HTTP anime streams, the way the streaming sites play (2026-09-24).
+// CDN-hosted HLS that starts in a second or two — the whole chain is in
+// providers/kickassanime.js, verified end to end against the live host and
+// against mpv itself before it was wired in.
+const kickassanime = _lazy(() => createKickAssAnimeProvider({ fetchFn: fetchWithTimeout(15000), baseUrls: _mirrorsFor('kickassanime') }))
 const solidtorrents = _lazy(() => createSolidTorrentsProvider({ fetchFn: fetchWithTimeout(15000) }))
 // Jackett/Prowlarr (roadmap #39): a user-hosted second tier of torrent sources,
 // config-gated and OFF by default. Built against the user's own base URL + api
@@ -15035,6 +15041,39 @@ async function checkAiringNotifications() {
 //
 // The provider itself is kept, tests and all. Reviving it needs a host that
 // serves the search API without a 1015; bitsearch.to is the place to look.
+// The extra mpv arguments a direct HTTP stream needs, measured against the
+// live CDN (2026-09-24) rather than guessed:
+//
+//   * Its segment host answers 403 to everything except requests carrying the
+//     right Origin header — the provider measured which and put it on the
+//     entry as `headers`.
+//   * Its segments are video wearing a picture's file name ("000.jpg", first
+//     byte 0x47 — the MPEG transport-stream sync byte): an anti-hotlinking
+//     disguise. ffmpeg's HLS reader refuses unknown segment extensions unless
+//     told the disguise is expected, and refuses SILENTLY — mpv just hangs.
+//   * Subtitle tracks come as URLs on the entry; mpv fetches a .vtt URL the
+//     same as a file. Capped so a host listing every language does not stack
+//     a dozen downloads in front of the picture.
+//
+// Torrent, debrid and local plays get [] — their bytes come from our own
+// relay or disk, where none of this applies.
+function _httpStreamArgs(result) {
+  if (!result || result.kind !== 'http') return []
+  const args = ['--demuxer-lavf-o=allowed_extensions=ALL,extension_picky=0']
+  const headers = result.headers && typeof result.headers === 'object' ? result.headers : {}
+  for (const [name, value] of Object.entries(headers)) {
+    if (!name || typeof value !== 'string' || !value) continue
+    args.push(`--http-header-fields-append=${name}: ${value}`)
+  }
+  const subs = Array.isArray(result.subtitles) ? result.subtitles.slice(0, 4) : []
+  for (const s of subs) {
+    if (s && typeof s.url === 'string' && /^https?:\/\//i.test(s.url)) {
+      args.push(`--sub-files-append=${s.url}`)
+    }
+  }
+  return args
+}
+
 function _videoBackends(type, settings) {
   const torrents = settings.torrentSources !== false
   // Jackett/Prowlarr (roadmap #39) rides the torrent tier when the user has
@@ -15050,7 +15089,10 @@ function _videoBackends(type, settings) {
   // an empty list while being recorded as a failing source. With torrent
   // sources off there is genuinely no anime backend, and an empty list says
   // that instead of pretending.
-  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben()]) : []
+  // The HTTP stream source rides in every anime lineup, torrents on or off:
+  // it is not a torrent, and with torrent sources disabled it is the one way
+  // anime can play at all.
+  if (type === 'anime') return torrents ? withJackett([kickassanime(), nyaa(), animetosho(), apibay(), knaben()]) : [kickassanime()]
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
   // so the specialist's better metadata wins where both have the same torrent
@@ -16439,7 +16481,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       } // _startDebridFallbackTorrent
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
-      videoEngine().start(result.url, { wid }).then(() => started(result.url)).catch(fail)
+      videoEngine().start(result.url, { wid, extraArgs: _httpStreamArgs(result) }).then(() => started(result.url)).catch(fail)
     }
     return { ok: true }
   } catch (e) {
