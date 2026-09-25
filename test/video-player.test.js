@@ -2932,3 +2932,80 @@ test('the corner tap relayed from mpv reaches the lock', () => {
   }
   assert.match(block, /payload\.action === 'corner'[\s\S]{0,80}toggleLock/)
 })
+
+// ── Locked keeps the episode picker ─────────────────────────────────────────
+// First evening's report: "the corner click works but the episodes selection
+// at the bottom from packs is hidden." Locked hid every row, the episode strip
+// included, so changing episode meant unlock, pick, lock again. The ask was for
+// the play bar and the settings to stay away; the episode picker is neither.
+
+const _cssLock = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+
+test('the root says locked, so the CSS can keep one row', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.toggleLock()
+  assert.ok(h.nodes.vtheatre.classList.contains('locked'))
+  assert.ok(h.nodes.vtheatre.classList.contains('idle'), 'still idle: deck and skip strip stay hidden')
+  h.p.toggleLock()
+  assert.strictEqual(h.nodes.vtheatre.classList.contains('locked'), false)
+})
+
+test('leaving fullscreen clears the locked class along with the lock', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.toggleLock()
+  h.p.toggleFullscreen(false)
+  await Promise.resolve()
+  assert.strictEqual(h.nodes.vtheatre.classList.contains('locked'), false)
+})
+
+test('the episode strip is exempt from locked-idle hiding, only when it has content', () => {
+  // Idle hides the three rows; locked-idle lets the pack row back through.
+  assert.match(_cssLock, /\.vtheatre\.fullscreen\.idle \.vt-pack,\s*\n\.vtheatre\.fullscreen\.idle \.vt-strip,\s*\n\.vtheatre\.fullscreen\.idle \.vt-deck \{ display:none; \}/)
+  assert.match(_cssLock, /\.vtheatre\.fullscreen\.idle\.locked \.vt-pack:not\(\[hidden\]\) \{ display:flex; \}/,
+    'the exception is for a strip WITH episodes — a held-but-empty row is a dead black band')
+  // And nothing lets the deck or the skip strip back through while locked.
+  assert.ok(!/\.locked[^{]*\.vt-deck[^{]*\{[^}]*display:(flex|block)/.test(_cssLock), 'the deck stays away')
+  assert.ok(!/\.locked[^{]*\.vt-strip[^{]*\{[^}]*display:(flex|block)/.test(_cssLock), 'so does the skip strip')
+})
+
+test('locking after the idle already fired still re-sends the stage bounds', async t => {
+  // The pack row coming back is a resize. _applyIdle only reports bounds when
+  // the idle state changes, and here it does not — the five seconds had
+  // already passed — so the lock has to report them itself, or the picture
+  // keeps a rectangle the strip now overlaps.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let bounds = 0
+  const h = harness({ fullscreen: true, apiExtra: {
+    videoSurfaceBounds: () => { bounds++; return Promise.resolve({ ok: true }) },
+  } })
+  h.p.toggleFullscreen(true)
+  await Promise.resolve()
+  h.p.noteActivity(); t.mock.timers.tick(5000)
+  assert.ok(idle(h), 'idle fired on its own first')
+  t.mock.timers.tick(100)              // drain any bounds already scheduled
+  const before = bounds
+  h.p.toggleLock()
+  t.mock.timers.tick(100)              // scheduleBounds is a 60ms debounce
+  assert.ok(bounds > before, 'the lock re-sent the bounds for the row it brought back')
+})
+
+test('a refused fullscreen does not leave the lock armed for the next F', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let refuse = true
+  const h = harness({ apiExtra: {
+    videoFullscreen: (a) => refuse
+      ? Promise.reject(new Error('no'))
+      : Promise.resolve({ ok: true, fullscreen: !!(a && a.value) }),
+  } })
+  h.p.toggleLock()                     // from a window: arms, asks, is refused
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(h.p.isLocked(), false)
+  refuse = false
+  h.p.toggleFullscreen(true)           // an ordinary F later
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(h.p.isLocked(), false, 'the earlier, refused lock must not fire now')
+})

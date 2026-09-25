@@ -2412,7 +2412,11 @@
         else noteActivity()
         // The layout has changed, so the stage rectangle has too.
         scheduleBounds()
-      }).catch(function () {})
+      }).catch(function () {
+        // Fullscreen refused: a lock waiting on it must not stay armed, or the
+        // next ordinary F would lock the controls away unasked.
+        pendingLock = false
+      })
     }
 
     // ── Idle chrome ─────────────────────────────────────────────────────────
@@ -2480,6 +2484,8 @@
       locked = false
       pendingLock = false
       syncLockButton()
+      const root = $('vtheatre')
+      if (root) root.classList.remove('locked')
       _applyIdle(false)
     }
 
@@ -2493,21 +2499,41 @@
 
     function lock() {
       if (!isFullscreen) return
+      // Locked FIRST. closeMenu() below ends with noteActivity(), and with the
+      // lock not yet set that call un-idled and re-idled the chrome in the same
+      // tick — invisible, but it was also what happened to re-send the stage
+      // bounds, which hid the fact that nothing else did. With the lock set,
+      // that call returns early and the resize below is reported on purpose.
+      locked = true
+      syncLockButton()
       // An open menu is a question mid-answer; it is closed rather than
       // stranded under a picture nothing can be brought back over.
       closeMenu()
-      locked = true
-      syncLockButton()
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
       _applyIdle(true)
+      // The episode strip stays. He asked for the play bar and the settings to
+      // stay away; the episode picker is neither, and locking it away turned
+      // "change episode" into "unlock, pick, lock again" (reported on the first
+      // evening). The root says locked so the idle CSS can keep that one row.
+      // Bounds are re-sent explicitly: _applyIdle only does so when the idle
+      // state changes, and if the five-second idle had already fired before
+      // the lock, the row reappearing here is a resize it would not see.
+      _setLockedClass(true)
       osd('Controls locked — click the bottom-right corner of the picture to bring them back', 2500)
     }
 
     function unlock() {
       locked = false
       syncLockButton()
+      _setLockedClass(false)
       noteActivity()
       osd('Controls unlocked', 900)
+    }
+
+    function _setLockedClass(on) {
+      const root = $('vtheatre')
+      if (root) root.classList.toggle('locked', !!on)
+      scheduleBounds()
     }
 
     // The lock button, deck or corner. From a window it goes fullscreen first

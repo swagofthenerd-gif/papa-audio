@@ -9203,6 +9203,13 @@ body.video-fullscreen .vtheatre { top:0; }
 .vtheatre.fullscreen.idle .vt-strip,
 .vtheatre.fullscreen.idle .vt-deck { display:none; }
 .vtheatre.fullscreen.idle { cursor:none; }
+/* Locked is idle with one exception: the episode picker stays. He asked for
+   the play bar and the settings to stay away; the episode strip is neither,
+   and taking it too made changing episode a three-step chore. Only a strip
+   with content — a held-but-empty row would be a dead black band. The cursor
+   comes back too, since there is now something to point at. */
+.vtheatre.fullscreen.idle.locked .vt-pack:not([hidden]) { display:flex; }
+.vtheatre.fullscreen.idle.locked { cursor:auto; }
 .vtheatre.fullscreen .vt-deck { padding:8px 20px 12px; }
 .vtheatre.fullscreen .vt-strip { padding-bottom:8px; }
 
