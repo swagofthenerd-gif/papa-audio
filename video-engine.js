@@ -154,6 +154,32 @@ function redactStderr(line) {
       (_m, scheme, host, rest) => scheme + '://' + host + (rest ? '/\u2026(' + rest.length + ' chars)' : ''))
 }
 
+// Whether a click landed on the invisible corner button.
+//
+// He asked for "a button that's transparent at the lower right corner of the
+// player". Embedded, mpv's window sits above the page and takes every pointer
+// event, so no HTML button can live over the picture — but mpv reports where
+// the pointer is (mouse-pos) and how big its surface is (osd-dimensions), both
+// in the same coordinate space, and it already relays a click. So the corner
+// is a region rather than an element: a click inside it is the button, and it
+// draws nothing at all, which is exactly what was asked for. Sized to the
+// picture so it is the same reach on a laptop panel and a 4K monitor, with a
+// floor so it can always be hit.
+function cornerTap(mouse, osd) {
+  if (!mouse || !osd) return false
+  const w = Number(osd.w), h = Number(osd.h), x = Number(mouse.x), y = Number(mouse.y)
+  if (![w, h, x, y].every(Number.isFinite) || w <= 0 || h <= 0) return false
+  const side = Math.max(56, Math.round(Math.min(w, h) * 0.08))
+  return x >= w - side && x <= w && y >= h - side && y <= h
+}
+
+// A corner tap that arrives as the first half of a double-click must not be
+// followed by the second half undoing it: mpv fires MBTN_LEFT then
+// MBTN_LEFT_DBL, and the DBL is relayed as 'fullscreen', which would leave
+// fullscreen a beat after the tap entered it. Inside this window the DBL is
+// the same gesture and is swallowed.
+const CORNER_DBL_SWALLOW_MS = 500
+
 const OBSERVED_PROPS = [
   'time-pos', 'duration', 'pause', 'volume', 'mute', 'speed',
   'track-list', 'sid', 'aid', 'chapter-list', 'eof-reached',
@@ -165,6 +191,9 @@ const OBSERVED_PROPS = [
   // the one place the user is looking is invisible to the document. mpv does
   // see it, and reports it here.
   'mouse-pos',
+  // The surface size, in the same coordinates as mouse-pos, so a click can
+  // be placed on the picture. See cornerTap.
+  'osd-dimensions',
   // cache-duration, not cache-time. cache-time is the ABSOLUTE timestamp of the
   // end of the cache; the UI wants seconds ahead of the playhead. Measured on a
   // 120-second file at position 32.96: cache-time 119.98, cache-duration 86.77.
@@ -315,6 +344,10 @@ class VideoEngine extends EventEmitter {
     // filling and blocking the process) threw away the only account of the
     // failure that exists. Kept bounded because mpv is chatty over a long film.
     this._stderr = []
+    // Where the pointer last was and how big the surface is, for cornerTap.
+    this._mouse = null
+    this._osd = null
+    this._cornerAt = 0
     // Whether mpv is embedded is not known until start(), and the mouse
     // binding differs between the two, so the embedded config is resolved then
     // rather than here. An explicit inputConf from the caller wins in both.
@@ -833,7 +866,16 @@ class VideoEngine extends EventEmitter {
     // way an action that lives in the app — skip intro, next episode — can be
     // triggered from the video window, which owns the keyboard while focused.
     if (e.event === 'client-message' && Array.isArray(e.args) && e.args[0] === 'papa') {
-      this.emit('appKey', { action: e.args[1] || null })
+      let action = e.args[1] || null
+      // A click in the corner is the invisible lock button, never play/pause.
+      if (action === 'playPause' && cornerTap(this._mouse, this._osd)) {
+        action = 'corner'
+        this._cornerAt = Date.now()
+      } else if (action === 'fullscreen' && Date.now() - this._cornerAt < CORNER_DBL_SWALLOW_MS) {
+        // The second half of a double-click on the corner: same gesture.
+        return
+      }
+      this.emit('appKey', { action })
     }
   }
 
@@ -848,6 +890,9 @@ class VideoEngine extends EventEmitter {
     // is wanted, so only that is emitted -- and at most five times a second,
     // which is far more than a five-second idle timer needs.
     if (name === 'mouse-pos') {
+      if (data && Number.isFinite(Number(data.x)) && Number.isFinite(Number(data.y))) {
+        this._mouse = { x: Number(data.x), y: Number(data.y) }
+      }
       if (!data || data.hover !== true) return
       const now = Date.now()
       if (now - this._lastActivity < 200) return
@@ -911,6 +956,12 @@ class VideoEngine extends EventEmitter {
       }
       case 'eof-reached':
         s.eof = data === true
+        break
+      case 'osd-dimensions':
+        // Not playback state and not emitted: read only when a click arrives.
+        if (data && Number.isFinite(Number(data.w)) && Number.isFinite(Number(data.h))) {
+          this._osd = { w: Number(data.w), h: Number(data.h) }
+        }
         break
       case 'video-params':
         if (data) {
@@ -1036,6 +1087,8 @@ module.exports = {
   APP_KEYS,
   EngineGone,
   OBSERVED_PROPS,
+  cornerTap,
+  CORNER_DBL_SWALLOW_MS,
   STDERR_KEEP_LINES,
   redactStderr,
   STATE_THROTTLE_MS,

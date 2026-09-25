@@ -9779,6 +9779,9 @@ body.video-active .np-byline { font-size:10.5px; }
 }
 .vt-chip:hover { background:var(--glass-hi); }
 .vt-chip.on { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
+/* The lock button lit while the controls are locked away — the one deck
+   control whose state matters most when it is the only one you can reach. */
+#vt-lock[aria-pressed="true"] { color:var(--accent); }
 .vt-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
 .vt-time { font-size:12px; font-variant-numeric:tabular-nums; color:var(--text2); margin:0 6px; white-space:nowrap; }

@@ -5146,6 +5146,10 @@ function _handleVideoEvent(payload) {
     }
     if (payload.action === 'skip') _player.skipNow()
     else if (payload.action === 'next') _playNextEpisode()
+    // A click in the bottom-right corner of the picture: the invisible lock
+    // button. mpv reroutes it before it can double as play/pause. Meaningless
+    // on the mini card, where there is no chrome to lock away.
+    else if (payload.action === 'corner') { if (!mini && _player.toggleLock) _player.toggleLock() }
     // Single click on the picture. The click lands on mpv, never the page.
     else if (payload.action === 'playPause') _player.togglePlay?.()
     // Double-clicking the picture. The click lands on mpv, never on the page,

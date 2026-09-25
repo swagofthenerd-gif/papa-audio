@@ -1276,3 +1276,98 @@ test('the CURRENT mpv dying is still reported as the engine going down', async (
   assert.strictEqual(down.length, 1, 'and said so exactly once')
   f.close()
 })
+
+// ── The invisible corner button ─────────────────────────────────────────────
+// "A button that's transparent at the lower right corner of the player."
+// Embedded, mpv's window takes every pointer event, so no HTML can sit over the
+// picture; but mpv reports the pointer's place and its own surface size in one
+// coordinate space, and already relays a click. The corner is therefore a
+// region, not an element — and a click in it is rerouted before it can double
+// as play/pause.
+{
+  const { cornerTap, CORNER_DBL_SWALLOW_MS } = require('../video-engine')
+
+  test('cornerTap: inside the bottom-right box, and nowhere else', () => {
+    const osd = { w: 1920, h: 1080 }
+    assert.strictEqual(cornerTap({ x: 1900, y: 1070 }, osd), true)
+    assert.strictEqual(cornerTap({ x: 1920, y: 1080 }, osd), true, 'the very corner counts')
+    assert.strictEqual(cornerTap({ x: 960, y: 540 }, osd), false, 'the centre is play/pause')
+    assert.strictEqual(cornerTap({ x: 1900, y: 20 }, osd), false, 'top-right is not it')
+    assert.strictEqual(cornerTap({ x: 20, y: 1070 }, osd), false, 'nor bottom-left')
+  })
+
+  test('cornerTap: sized to the picture, with a floor so it can always be hit', () => {
+    // 8% of the shorter side on a 1080p surface is 86px; on a tiny surface the
+    // 56px floor holds.
+    assert.strictEqual(cornerTap({ x: 1920 - 80, y: 1080 - 80 }, { w: 1920, h: 1080 }), true)
+    assert.strictEqual(cornerTap({ x: 1920 - 100, y: 1080 - 100 }, { w: 1920, h: 1080 }), false)
+    assert.strictEqual(cornerTap({ x: 640 - 50, y: 360 - 50 }, { w: 640, h: 360 }), true, 'floor: 56 > 8% of 360')
+  })
+
+  test('cornerTap: nothing known means no tap, never a throw', () => {
+    assert.strictEqual(cornerTap(null, { w: 1, h: 1 }), false)
+    assert.strictEqual(cornerTap({ x: 1, y: 1 }, null), false)
+    assert.strictEqual(cornerTap({ x: 'a', y: 1 }, { w: 10, h: 10 }), false)
+    assert.strictEqual(cornerTap({ x: 1, y: 1 }, { w: 0, h: 0 }), false)
+  })
+
+  test('a click in the corner is relayed as the lock, not as play/pause', () => {
+    const eng = new VideoEngine({ config: {} })
+    const seen = []
+    eng.on('appKey', a => seen.push(a.action))
+    eng._onProp('osd-dimensions', { w: 1920, h: 1080 })
+    eng._onProp('mouse-pos', { x: 1900, y: 1070, hover: true })
+    eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+    eng._onProp('mouse-pos', { x: 960, y: 540, hover: true })
+    eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+    assert.deepStrictEqual(seen, ['corner', 'playPause'])
+  })
+
+  test('the pointer’s last place is kept even after it leaves the picture', () => {
+    // mpv sends hover:false on the way out with the last coordinates; a click
+    // a moment later still has a place to be judged against.
+    const eng = new VideoEngine({ config: {} })
+    const seen = []
+    eng.on('appKey', a => seen.push(a.action))
+    eng._onProp('osd-dimensions', { w: 1920, h: 1080 })
+    eng._onProp('mouse-pos', { x: 1900, y: 1070, hover: false })
+    eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+    assert.deepStrictEqual(seen, ['corner'])
+  })
+
+  test('without a surface size a click is ordinary play/pause', () => {
+    const eng = new VideoEngine({ config: {} })
+    const seen = []
+    eng.on('appKey', a => seen.push(a.action))
+    eng._onProp('mouse-pos', { x: 1900, y: 1070, hover: true })
+    eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+    assert.deepStrictEqual(seen, ['playPause'], 'no geometry, no corner — never a wrong reroute')
+  })
+
+  test('a double-click on the corner is one tap, not a tap then a fullscreen toggle', t => {
+    // mpv fires MBTN_LEFT then MBTN_LEFT_DBL, relayed as 'playPause' then
+    // 'fullscreen'. The tap enters fullscreen and locks; the DBL would leave
+    // fullscreen a beat later and undo it. Inside the window it is swallowed.
+    t.mock.timers.enable({ apis: ['Date'] })
+    const eng = new VideoEngine({ config: {} })
+    const seen = []
+    eng.on('appKey', a => seen.push(a.action))
+    eng._onProp('osd-dimensions', { w: 1920, h: 1080 })
+    eng._onProp('mouse-pos', { x: 1900, y: 1070, hover: true })
+    eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+    t.mock.timers.tick(200)
+    eng._onEvent({ event: 'client-message', args: ['papa', 'fullscreen'] })
+    assert.deepStrictEqual(seen, ['corner'], 'the second half of the gesture is the same gesture')
+    t.mock.timers.tick(CORNER_DBL_SWALLOW_MS + 1)
+    eng._onEvent({ event: 'client-message', args: ['papa', 'fullscreen'] })
+    assert.deepStrictEqual(seen, ['corner', 'fullscreen'], 'a later double-click is its own gesture')
+  })
+
+  test('osd-dimensions is observed, and stays out of the state stream', () => {
+    assert.ok(OBSERVED_PROPS.includes('osd-dimensions'))
+    const eng = new VideoEngine({ config: {} })
+    eng._onProp('osd-dimensions', { w: 1920, h: 1080 })
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(eng.getState(), 'osd'), false,
+      'the surface size is for placing a click, not for the UI')
+  })
+}

@@ -42,7 +42,7 @@ function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false,
   const nodes = {}
   const ids = ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-skip-btn', 'vt-skip-count',
     'vt-play', 'vt-back10', 'vt-fwd10', 'vt-next', 'vt-prev', 'vt-stop', 'vt-back', 'vt-pos', 'vt-dur',
-    'vt-mute', 'vt-vol', 'vt-speed', 'vt-subs', 'vt-audio', 'vt-shot', 'vt-settings', 'vt-full', 'vt-deck',
+    'vt-mute', 'vt-vol', 'vt-speed', 'vt-subs', 'vt-audio', 'vt-shot', 'vt-settings', 'vt-full', 'vt-lock', 'vt-deck',
     'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks', 'vt-seek-chapters',
     'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu', 'vt-stats',
     'vt-stat-pos', 'vt-stat-speed', 'vt-stat-vol', 'vt-stat-tracks',
@@ -2834,4 +2834,101 @@ test('Escape with a video playing still minimises, as it always did', () => {
   assert.ok(body.classList.contains('video-active'),
     'a minimised video is still a video: the bar stays out of the way')
   assert.ok(!nodes['vmini'].classList.contains('hidden'), 'and the card is up')
+})
+
+// ── Locked chrome ───────────────────────────────────────────────────────────
+// "A button … that puts the player to the full screen and when the mouse
+// moves, the play bar and settings don't show up until I press that button."
+// The idle machinery above hides the chrome after five still seconds and brings
+// it back on any activity. Locked, the second half is switched off: presence is
+// still counted (the still-watching prompt), but nothing comes back until the
+// lock itself is pressed — from the deck, or from the invisible corner of the
+// picture, which arrives here as the same call.
+
+test('locking hides the chrome at once, and no movement brings it back', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity()
+  assert.strictEqual(idle(h), false)
+  h.p.toggleLock()
+  assert.strictEqual(idle(h), true, 'no five-second wait: the lock IS the request')
+  assert.strictEqual(h.p.isLocked(), true)
+  h.fire('mousemove')
+  assert.strictEqual(idle(h), true, 'a mousemove on the page is ignored')
+  h.p.noteActivity()                // movement relayed from the picture
+  assert.strictEqual(idle(h), true, 'movement over the picture is ignored')
+  t.mock.timers.tick(60000)
+  assert.strictEqual(idle(h), true)
+})
+
+test('the button again brings everything back, and ordinary idling resumes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.toggleLock()
+  assert.strictEqual(idle(h), true)
+  h.p.toggleLock()
+  assert.strictEqual(h.p.isLocked(), false)
+  assert.strictEqual(idle(h), false, 'unlocked means shown, at once')
+  t.mock.timers.tick(5000)
+  assert.strictEqual(idle(h), true, 'and the normal five-second idle is back in charge')
+  h.fire('mousemove')
+  assert.strictEqual(idle(h), false, 'with movement bringing the chrome back as before')
+})
+
+test('leaving fullscreen unlocks: a lock never outlives the screen it was made on', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.toggleLock()
+  assert.strictEqual(h.p.isLocked(), true)
+  h.p.toggleFullscreen(false)
+  await Promise.resolve()
+  assert.strictEqual(h.p.isLocked(), false)
+  assert.strictEqual(idle(h), false, 'a window has room for its own controls')
+})
+
+test('pressed from a window, the button goes fullscreen first and locks on arrival', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness({ fullscreen: true })   // windowed until asked
+  assert.strictEqual(h.p.isLocked(), false)
+  h.p.toggleLock()
+  await Promise.resolve()
+  await Promise.resolve()
+  const fs = h.sent.filter(x => x.verb === 'fullscreen')
+  assert.ok(fs.length && fs[fs.length - 1].args.value === true, 'fullscreen was asked for')
+  assert.strictEqual(h.p.isLocked(), true, 'and the lock landed once it arrived')
+  assert.strictEqual(idle(h), true)
+})
+
+test('the deck button says whether the controls are locked', async () => {
+  const h = fsHarness()
+  await Promise.resolve()
+  assert.strictEqual(h.nodes['vt-lock'].attrs['aria-pressed'], 'false')
+  h.p.toggleLock()
+  assert.strictEqual(h.nodes['vt-lock'].attrs['aria-pressed'], 'true')
+  h.p.toggleLock()
+  assert.strictEqual(h.nodes['vt-lock'].attrs['aria-pressed'], 'false')
+})
+
+test('the deck button is wired to the lock', async () => {
+  const h = fsHarness()
+  await Promise.resolve()
+  h.nodes['vt-lock'].fire('click')
+  assert.strictEqual(h.p.isLocked(), true)
+})
+
+test('the corner tap relayed from mpv reaches the lock', () => {
+  // The renderer maps the engine's 'corner' action to toggleLock inside its
+  // relayed-key handler. Read by brace-matching the block, not a fixed slice.
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = R.indexOf("if (payload.kind === 'key') {")
+  assert.ok(at > -1)
+  let depth = 0, block = ''
+  for (let i = R.indexOf('{', at); i < R.length; i++) {
+    if (R[i] === '{') depth++
+    else if (R[i] === '}') { depth--; if (depth === 0) { block = R.slice(at, i + 1); break } }
+  }
+  assert.match(block, /payload\.action === 'corner'[\s\S]{0,80}toggleLock/)
 })

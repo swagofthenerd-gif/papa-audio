@@ -461,6 +461,7 @@
         full.setAttribute('aria-pressed', isFullscreen ? 'true' : 'false')
         full.setAttribute('aria-label', isFullscreen ? 'Leave fullscreen' : 'Fullscreen')
       }
+      syncLockButton()
 
       paintBadges()
       syncChapterButton()
@@ -2381,6 +2382,16 @@
     // deck and the skip offer stay reachable. Fullscreening the video window
     // itself would cover them, which is the whole problem this avoids.
     let isFullscreen = false
+    // The controls locked away (V-lock). While locked, nothing the pointer does
+    // brings the chrome back: not a mousemove on the page, not movement relayed
+    // from the picture. Only the lock button itself — the deck's, or the
+    // invisible one in the picture's bottom-right corner — unlocks. He asked
+    // for exactly this: "when the mouse moves, the play bar and settings don't
+    // show up until I press that button."
+    let locked = false
+    // Set when the button is pressed from a window: fullscreen has to arrive
+    // first, and the lock lands once it has.
+    let pendingLock = false
     function toggleFullscreen(force) {
       if (!api || !api.videoFullscreen) return
       const want = typeof force === 'boolean' ? force : !isFullscreen
@@ -2396,8 +2407,9 @@
         if (btn) btn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Fullscreen')
         // Leaving fullscreen must put the chrome back unconditionally, or the
         // deck stays hidden in a window where nothing will ever hide it again.
-        if (isFullscreen) noteActivity()
-        else stopIdle()
+        if (!isFullscreen) stopIdle()
+        else if (pendingLock) { pendingLock = false; lock() }
+        else noteActivity()
         // The layout has changed, so the stage rectangle has too.
         scheduleBounds()
       }).catch(function () {})
@@ -2451,6 +2463,9 @@
       // This is the reset half of the #20 contract: three untouched
       // auto-advances trigger the prompt, and any activity at all clears them.
       autoAdvances = 0
+      // Locked: a person is here, and the chrome still stays away. The count
+      // above is cleared regardless — presence is presence.
+      if (locked) return
       _applyIdle(false)
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
       if (!_idleEligible()) return
@@ -2462,7 +2477,46 @@
 
     function stopIdle() {
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+      locked = false
+      pendingLock = false
+      syncLockButton()
       _applyIdle(false)
+    }
+
+    // ── Locked chrome ───────────────────────────────────────────────────────
+    function syncLockButton() {
+      const b = $('vt-lock')
+      if (!b) return
+      b.setAttribute('aria-pressed', locked ? 'true' : 'false')
+      b.setAttribute('aria-label', locked ? 'Unlock the controls' : 'Lock the controls away')
+    }
+
+    function lock() {
+      if (!isFullscreen) return
+      // An open menu is a question mid-answer; it is closed rather than
+      // stranded under a picture nothing can be brought back over.
+      closeMenu()
+      locked = true
+      syncLockButton()
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+      _applyIdle(true)
+      osd('Controls locked — click the bottom-right corner of the picture to bring them back', 2500)
+    }
+
+    function unlock() {
+      locked = false
+      syncLockButton()
+      noteActivity()
+      osd('Controls unlocked', 900)
+    }
+
+    // The lock button, deck or corner. From a window it goes fullscreen first
+    // and locks on arrival; in fullscreen it locks at once; locked, it unlocks.
+    function toggleLock() {
+      if (locked) return unlock()
+      if (isFullscreen) return lock()
+      pendingLock = true
+      toggleFullscreen(true)
     }
 
     function bindIdle() {
@@ -2841,6 +2895,10 @@
       $('vt-shot')?.addEventListener('click', takeScreenshot)
       $('vt-settings')?.addEventListener('click', openSettingsMenu)
       $('vt-full')?.addEventListener('click', toggleFullscreen)
+      $('vt-lock')?.addEventListener('click', toggleLock)
+      // Right from mount, not from the first state tick: a control that says
+      // nothing until something plays is a control that lies while idle.
+      syncLockButton()
       // The wheel works anywhere over the deck, not only on the 88px slider:
       // volume is the thing people reach for mid-scene, and the pointer is
       // rarely parked on the one control that takes it.
@@ -3254,6 +3312,10 @@
       // Relayed from mpv when the picture is double-clicked: the click never
       // reaches the page, so the gesture has to arrive this way.
       toggleFullscreen: toggleFullscreen,
+      // The lock button: the deck's, or relayed from a click in the picture's
+      // bottom-right corner (the invisible one).
+      toggleLock: toggleLock,
+      isLocked: function () { return locked },
       // Relayed from mpv when the picture is single-clicked, same reason.
       togglePlay: togglePlay,
       // Relayed from mpv: the pointer moved over the picture, which the page
