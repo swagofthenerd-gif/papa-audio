@@ -294,17 +294,34 @@ test('qualityOfHeight speaks the app’s own vocabulary', () => {
   assert.strictEqual(qualityOfHeight('nonsense'), null)
 })
 
-test('a stream becomes one row per quality, each pointing at its own playlist', async () => {
+// This test used to assert the opposite, and asserting it is what let the bug
+// ship: it demanded each row point at its OWN variant playlist. On this CDN the
+// audio tracks are separate renditions listed only in the master, so a variant
+// URL is video with no sound — measured on the show he was watching, master 8
+// audio tracks including English, variant 0. The same mistake put the English
+// dub out of reach, since that track exists only through the master.
+test('every row plays the master, and asks for its quality by bandwidth', async () => {
   const provider = createKickAssAnimeProvider({ fetchFn: hostWithManifest(THREE_QUALITIES) })
   const out = await provider(ANY)
   assert.deepStrictEqual(out.map(e => e.quality), ['1080p', '720p', '360p'])
-  // Absolute, resolved against the master's own address — a relative line here
-  // would be handed to the player as-is and simply not play.
-  assert.ok(out.every(e => /^https:\/\/hls\.krussdomi\.com\/manifest\//.test(e.url)), out.map(e => e.url).join(' '))
-  assert.match(out[0].url, /hi\/playlist\.m3u8$/)
-  assert.match(out[1].url, /mid\/playlist\.m3u8$/)
+  assert.ok(out.every(e => /\/master\.m3u8$/.test(e.url)),
+    'a variant URL plays silent video: ' + out.map(e => e.url).join(' '))
+  assert.deepStrictEqual(out.map(e => e.hlsBitrate), [5000000, 2000000, 500000],
+    'the rendition is requested by bandwidth, applied to the master')
   // Same stream, so every row still reports the same audio.
   assert.ok(out.every(e => e.sub === true && e.dub === false))
+})
+
+test('variantsOf reads each rendition’s bandwidth, not just its size', () => {
+  const v = variantsOf(THREE_QUALITIES)
+  assert.deepStrictEqual(v.map(x => x.bandwidth), [5000000, 2000000, 500000])
+  // BANDWIDTH is usually the FIRST attribute, with nothing before it — a
+  // pattern needing a leading comma read every bandwidth as absent, and the
+  // quality rows silently stopped meaning anything.
+  const firstAttr = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1234,RESOLUTION=640x360\nlow.m3u8'
+  assert.strictEqual(variantsOf(firstAttr)[0].bandwidth, 1234)
+  const noBandwidth = '#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=640x360\nlow.m3u8'
+  assert.strictEqual(variantsOf(noBandwidth)[0].bandwidth, null, 'absent is null, never a guess')
 })
 
 test('the app’s quality picker can now offer these', () => {

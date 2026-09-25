@@ -129,16 +129,17 @@ function variantsOf(manifestText) {
     if (!Number.isFinite(height) || height <= 0) continue
     const url = m[2].trim()
     if (!url || out.some(v => v.height === height)) continue
-    out.push({ height, url })
+    // The bandwidth is how a quality is REQUESTED. A variant playlist cannot be
+    // played on its own: on this CDN the audio tracks are separate renditions
+    // that only the master ties to the picture, so a variant URL is video with
+    // no sound at all.
+    // Anchored at a boundary, not a separator: m[1] is everything after the
+    // tag's own colon, so BANDWIDTH is usually the FIRST attribute with nothing
+    // before it. Requiring a leading comma read every bandwidth as absent.
+    const bw = /(?:^|,)\s*BANDWIDTH=(\d+)/i.exec(m[1])
+    out.push({ height, url, bandwidth: bw ? Number(bw[1]) : null })
   }
   return out.sort((a, b) => b.height - a.height)
-}
-
-// A variant's address. A manifest gives it relative to the master's own URL.
-// Null for anything unparsable, so a bad line drops its row instead of
-// becoming an entry that cannot play.
-function _resolveUrl(baseUrl, relative) {
-  try { return new URL(String(relative), String(baseUrl)).toString() } catch (_) { return null }
 }
 
 // A height as the app spells qualities. Its vocabulary is 480p/720p/1080p/2160p,
@@ -331,9 +332,23 @@ function createKickAssAnimeProvider({
         // existing quality picker works on these with nothing added to it.
         // A manifest that could not be read leaves one row playing the master,
         // where the player chooses the height for itself, exactly as before.
+        // Every row plays the MASTER manifest. Pointing a row straight at its own
+        // variant playlist was wrong and shipped silent video: on this CDN the
+        // audio tracks are separate renditions listed only in the master, and a
+        // variant carries the picture alone. Measured on the show he was
+        // watching — master: 8 audio tracks including English; variant: 0. The
+        // same mistake put the English dub out of reach, because that track
+        // exists only through the master. One error, both faults.
+        //
+        // A quality is therefore asked for with a bandwidth hint applied to the
+        // master, never by playing a different URL.
         const rows = variants.length
-          ? variants.map(v => ({ url: _resolveUrl(stream.url, v.url), quality: qualityOfHeight(v.height) }))
-          : [{ url: stream.url, quality: null }]
+          ? variants.map(v => ({
+            url: stream.url,
+            quality: qualityOfHeight(v.height),
+            hlsBitrate: v.bandwidth,
+          }))
+          : [{ url: stream.url, quality: null, hlsBitrate: null }]
 
         for (const row of rows) {
           if (entries.length >= maxResults) break
@@ -343,6 +358,9 @@ function createKickAssAnimeProvider({
             url: row.url,
             source: 'KickAssAnime',
             quality: row.quality,
+            // Which rendition of the master to prefer, as mpv's hls-bitrate.
+            // Absent, mpv chooses for itself exactly as it always did.
+            hlsBitrate: row.hlsBitrate,
             // Named like a release: the SHOW first, then the episode. The
             // renderer's plausibility filter rightly hides an entry whose name
             // does not carry the show's title — an entry titled only

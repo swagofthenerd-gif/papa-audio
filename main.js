@@ -16481,7 +16481,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       } // _startDebridFallbackTorrent
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
-      videoEngine().start(result.url, { wid, extraArgs: _httpStreamArgs(result) }).then(() => started(result.url)).catch(fail)
+      videoEngine().start(result.url, { wid, extraArgs: _httpStreamArgs(result), hlsBitrate: result.hlsBitrate }).then(() => started(result.url)).catch(fail)
     }
     return { ok: true }
   } catch (e) {

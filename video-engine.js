@@ -507,7 +507,7 @@ class VideoEngine extends EventEmitter {
     }
   }
 
-  async start(url, { wid, extraArgs } = {}) {
+  async start(url, { wid, extraArgs, hlsBitrate } = {}) {
     // A second start() must never leave the previous mpv running. Without this
     // every play stacked another process (and another audio output) on top of
     // the last one, because start() simply overwrote this.proc.
@@ -622,10 +622,22 @@ class VideoEngine extends EventEmitter {
     }
     this.alive = true
     this.emit('ready')
-    if (url) await this.load(url)
+    if (url) await this.load(url, { hlsBitrate })
   }
 
-  async load(url) {
+  // `opts.hlsBitrate` asks an adaptive stream for one of its renditions.
+  //
+  // It cannot be done by playing the rendition's own playlist: on the CDN this
+  // app streams from, the audio tracks are separate renditions that only the
+  // master manifest ties to the picture, so a variant URL plays silent video.
+  // mpv's hls-bitrate picks the rendition at or below a bandwidth, applied to
+  // the master, which keeps every audio track reachable.
+  //
+  // Set as a property rather than a per-file option because loadfile's argument
+  // list has changed shape across mpv releases and a property has not. Restored
+  // to mpv's own default when no rendition is asked for, so one quality choice
+  // cannot silently govern the next file.
+  async load(url, opts) {
     // A new file is a fresh stall history (Player #27). Reset here as well as on
     // the 'file-loaded' event: this fires the moment a new load is requested, so
     // a stall count from the previous file cannot briefly leak into the new one
@@ -634,6 +646,14 @@ class VideoEngine extends EventEmitter {
     this._stalled = false
     this._lastPos = null
     this._lastAdvanceAt = Date.now()
+    const bitrate = Number(opts && opts.hlsBitrate)
+    try {
+      await this._guard('load')('set_property', 'hls-bitrate',
+        Number.isFinite(bitrate) && bitrate > 0 ? bitrate : 'max')
+    } catch (_) {
+      // An mpv that will not take the property still plays the file; it simply
+      // chooses the rendition itself, which is what it did before this existed.
+    }
     await this._guard('load')('loadfile', url, 'replace')
     this.emit('loaded', url)
   }

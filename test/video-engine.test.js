@@ -1371,3 +1371,47 @@ test('the CURRENT mpv dying is still reported as the engine going down', async (
       'the surface size is for placing a click, not for the UI')
   })
 }
+
+// ── Asking an adaptive stream for one rendition ─────────────────────────────
+// Not by playing that rendition's playlist: on the CDN this app streams from,
+// the audio tracks are separate renditions that only the master manifest ties
+// to the picture, so a variant URL plays silent video. Measured on a live
+// stream — master: 8 audio tracks including English; variant: 0. mpv's
+// hls-bitrate asks for a rendition while keeping every audio track reachable.
+{
+  test('a quality is asked for as hls-bitrate, before the file is loaded', async () => {
+    const f = await fakeMpv()
+    const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+    await eng.start()
+    f.commands.length = 0
+    await eng.load('https://cdn/master.m3u8', { hlsBitrate: 5000000 })
+    const set = f.commands.find(c => c[0] === 'set_property' && c[1] === 'hls-bitrate')
+    assert.ok(set, 'the rendition must be chosen: ' + JSON.stringify(f.commands))
+    assert.strictEqual(set[2], 5000000)
+    const load = f.commands.findIndex(c => c[0] === 'loadfile')
+    assert.ok(f.commands.indexOf(set) < load, 'set before load, or it governs the wrong file')
+    assert.strictEqual(f.commands[load][1], 'https://cdn/master.m3u8', 'always the master')
+    eng.stop(); f.close()
+  })
+
+  test('no quality asked for restores mpv’s own choice', async () => {
+    // Or one quality choice would silently govern every later file.
+    const f = await fakeMpv()
+    const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+    await eng.start()
+    f.commands.length = 0
+    await eng.load('https://cdn/other.m3u8')
+    const set = f.commands.find(c => c[0] === 'set_property' && c[1] === 'hls-bitrate')
+    assert.ok(set && set[2] === 'max', 'expected the default back, got ' + JSON.stringify(set))
+    eng.stop(); f.close()
+  })
+
+  test('start() forwards the quality to the file it opens', async () => {
+    const f = await fakeMpv()
+    const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+    await eng.start('https://cdn/master.m3u8', { hlsBitrate: 2000000 })
+    const set = f.commands.find(c => c[0] === 'set_property' && c[1] === 'hls-bitrate')
+    assert.ok(set && set[2] === 2000000)
+    eng.stop(); f.close()
+  })
+}
